@@ -1,0 +1,14 @@
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Credentials - never commit
+.env
+*.env
+service-account*.json
+*-key.json
+gcloud-key*.json
+
+# IntelliJ run configs store env vars (including API keys) in workspace.xml
+.idea/workspace.xml

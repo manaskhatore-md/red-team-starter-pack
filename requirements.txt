@@ -1,0 +1,7 @@
+pyrit>=1.1.0
+
+# gemini target (PYRIT_TARGET=gemini)
+litellm>=1.0
+
+# vertex target (PYRIT_TARGET=vertex)
+anthropic[vertex]>=1.4.0
