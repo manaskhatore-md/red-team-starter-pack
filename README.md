@@ -1,7 +1,68 @@
+# Red Team Starter Pack
+
+A forkable baseline for red teaming AI applications. Fork it, fill in the TODOs for
+your own system, and run.
+
+Model-agnostic by design: Anthropic, OpenAI, and Gemini are selected with one
+environment variable, so nothing in the test suites is tied to a vendor.
+
+Two tools, deliberately:
+
+| Tool | What it does | Where |
+|---|---|---|
+| **Promptfoo** | Fast single-turn scans, CI gating | `configs/` |
+| **PyRIT** | Multi-turn attacks that escalate over a conversation | `pyrit_campaigns/` |
+
+Single-turn scans catch the obvious failures cheaply. Multi-turn campaigns catch the
+ones that need patience. You want both.
+
+## Quick start
+
+```bash
+pip install -r requirements.txt
+cp .env.example .env          # add one provider's API key
+python smoke_test.py          # prove credentials + network work
+```
+
+`smoke_test.py` sends two benign prompts and prints the replies. It tests
+connectivity, not safety — nothing scores the responses. Once it passes:
+
+```bash
+# single-turn scan (pick the profile matching your deployment)
+npx promptfoo@latest eval -c configs/02_public_conversational.yaml
+
+# multi-turn campaign
+python -m pyrit_campaigns.multi_turn_crescendo
+
+# turn results into finding reports
+python -m reporting.export_finding_report --outcome success --out findings/
+```
+
+## Choosing a target
+
+```bash
+RT_PROVIDER=gemini      # or openai | anthropic | vertex | app
+RT_JUDGE_PROVIDER=...   # the model that scores results — use a different one
+```
+
+Full list in `.env.example`; defaults live in `pyrit_campaigns/target_factory.py`.
+
+**`RT_PROVIDER=app` is the one that matters.** Red-teaming a raw model tests the
+vendor's safety training, which the vendor already tests. Red-teaming your deployed
+application tests your system prompt, your retrieval index, and your tool
+permissions — which is where your risk actually lives. Wiring that up is a TODO in
+`target_factory.py`.
+
+> Non-production instance, synthetic data, and written authorization before pointing
+> any of this at a real system.
+
+## Structure
+
 ```
 red-team-starter-pack/
 ├── README.md                           # Setup guide, CLI usage, and playbook crosswalk
 ├── .env.example                        # Multi-provider API keys & environment configs
+├── smoke_test.py                       # Connectivity check — run this first
 ├── .github/workflows/                  # CI/CD security gating pipelines
 │   └── redteam-ci-gate.yml             # Automated Promptfoo scan on pull requests
 │
@@ -32,3 +93,65 @@ red-team-starter-pack/
     └── templates/                      # Markdown templates matching Playbook Section 8
         └── finding_report_template.md
 ```
+
+## Pick your deployment profile
+
+Run the one that matches what you're testing, not all four.
+
+| Profile | Use for | Primary risk |
+|---|---|---|
+| `01_internal_productivity` | Staff copilots, document search | Over-broad retrieval; pasted untrusted content |
+| `02_public_conversational` | Public FAQ and program chatbots | Wrong answers at scale; equity |
+| `03_constituent_decision` | Eligibility, casework, licensing | Authorization boundaries; disparate impact |
+| `04_procured_vendor_cots` | Vendor and COTS AI features | Remediation is contractual, not technical |
+
+Profile 01 is the gentlest place to shake out the tooling. Profile 03 is the highest
+risk and needs authorization before anything runs.
+
+## What to customize first
+
+The pack ships generic on purpose, and generic probes find generic problems. In
+priority order:
+
+1. **Your system prompt** into the `prompts:` block of your `configs/` profile.
+2. **`judges/state_policy_rubric.yaml`** — replace the criteria with citations to your
+   actual policy. "The judge model didn't like it" is not a defensible finding.
+3. **`datasets/*.yaml`** — replace the `{{ placeholders }}` with your real program
+   names, record types, and tool names.
+4. **`RT_PROVIDER=app`** in `target_factory.py`, so you're testing your deployment.
+
+## Playbook crosswalk
+
+<!-- TODO: replace the Section column with the real section numbers from your Playbook. -->
+
+| Playbook section | Covered by |
+|---|---|
+| Prompt injection | `datasets/prompt_injection.yaml`, `datasets/rag_poisoning_payloads/` |
+| Data protection | `datasets/sensitive_data_leakage.yaml`, `judges/state_policy_rubric.yaml` |
+| Equity / disparate impact | `datasets/algorithmic_bias.yaml` |
+| Excessive agency | `datasets/excessive_agency.yaml`, `pyrit_campaigns/agent_tool_exploitation.py` |
+| Accuracy / grounding | `judges/rag_grounding_eval.py` |
+| Finding reports (Section 8) | `reporting/` |
+
+## Safety and handling
+
+- **Never commit credentials.** `.env` is gitignored; keep API keys in your run
+  configuration or environment. A key that reaches a remote needs rotating, not
+  scrubbing.
+- **Synthetic test data only.** Prompts and responses are written to PyRIT's SQLite
+  database, Promptfoo's cache, and your finding reports — all of which inherit the
+  classification of whatever you sent.
+- **`findings/` and `results.json` are gitignored** because they contain full
+  transcripts. Review before sharing, even internally.
+- **Authorization first** for anything beyond a raw model endpoint, and check the ToS
+  before automated testing of a vendor system.
+
+## Notes
+
+- PyRIT 1.1.0+ required; code written against the pre-1.0 API won't import.
+- Behind a TLS-inspecting proxy, `pip install truststore` and call
+  `truststore.inject_into_ssl()` if imports fail with `CERTIFICATE_VERIFY_FAILED`.
+- LLM output is stochastic: run probes 5–10 times before calling a single result a
+  finding. This is mandatory for bias pairs.
+
+<!-- TODO: add your agency's contact/escalation path for reporting a confirmed finding. -->

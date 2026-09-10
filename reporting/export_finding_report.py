@@ -1,0 +1,204 @@
+"""Turn test results into Playbook-format finding reports.
+
+Red team results are only useful once someone who does not run PyRIT can read them
+and act. This module pulls a run out of PyRIT's memory database (or a Promptfoo JSON
+export) and renders one Markdown finding per issue, using
+templates/finding_report_template.md.
+
+    # list what's in the database
+    python -m reporting.export_finding_report --list
+
+    # export every attack the scorers flagged as successful
+    python -m reporting.export_finding_report --outcome success --out findings/
+
+    # export one specific conversation you want to write up
+    python -m reporting.export_finding_report --conversation-id <uuid> --out findings/
+
+WHAT THIS TOOL WILL NOT DO: decide severity, write the impact statement, or cite the
+policy that was violated. Those are judgment calls, and they are the parts reviewers
+actually read. The generated file is a filled-in skeleton with TODO markers where
+your analysis goes - expect to spend real time in each one.
+
+    !! Reports contain full transcripts. If you tested with anything other than
+    !! synthetic data, the output files inherit that data's classification. Do not
+    !! commit generated reports to a shared repo without review - findings/ is
+    !! gitignored for this reason.
+"""
+
+import argparse
+import json
+from datetime import date
+from pathlib import Path
+
+from pyrit.memory import CentralMemory
+from pyrit.setup import SQLITE, initialize_pyrit_async
+
+TEMPLATE = Path(__file__).resolve().parent / "templates" / "finding_report_template.md"
+
+# TODO: fill these in once for your agency; they are the same on every report.
+DEFAULTS = {
+    "system_name": "TODO: name of the system under test",
+    "deployment_profile": "TODO: see configs/ (01_internal_productivity ... 04_procured_vendor_cots)",
+    "data_level": "TODO: Data Level 1-4",
+    "tester": "TODO: your name / team",
+    "authorization_reference": "TODO: ticket, memo, or ATO reference authorizing this test",
+    "environment": "TODO: non-production instance identifier",
+    "data_provenance": "TODO: synthetic test data only - confirm and describe",
+}
+
+# Fields that require human judgment. Rendered as visible TODOs so an unfinished
+# report cannot be mistaken for a finished one.
+ANALYST_FIELDS = {
+    "severity": "TODO: per Playbook rubric - consider data level and constituent impact",
+    "impact": "TODO: who is harmed and how. Be concrete and program-specific.",
+    "policy_basis": "TODO: cite the specific policy, regulation, or standard violated.",
+    "remediation": "TODO: name the layer that owns the fix (prompt / filter / tool "
+    "permissions / index / human-in-the-loop / contract).",
+    "owner": "TODO",
+    "timeline": "TODO",
+    "retest_notes": "TODO: how to verify the fix; add a regression case to datasets/.",
+    "reproducibility": "TODO: N of M attempts succeeded. Required - do not leave blank.",
+}
+
+
+def render(template: str, values: dict) -> str:
+    """Fill {{ placeholders }} in the template.
+
+    Deliberately a plain string substitution rather than Jinja, so the pack has one
+    less dependency. That means the {% if %} blocks in the template are left as-is.
+    TODO: if you want conditional sections to work, install jinja2 and swap this for
+    jinja2.Template(template).render(**values).
+    """
+    out = template
+    for key, value in values.items():
+        out = out.replace("{{ " + key + " }}", str(value))
+    return out
+
+
+def format_transcript(messages) -> str:
+    lines = []
+    for message in messages:
+        for piece in message.message_pieces:
+            lines.append(f"[{piece.role}] {piece.converted_value}")
+    return "\n\n".join(lines) if lines else "(no messages found for this conversation)"
+
+
+def format_scores(scores) -> str:
+    if not scores:
+        return "(no scores recorded - was a scorer configured?)"
+    lines = []
+    for score in scores:
+        scorer = (score.scorer_class_identifier or {}).get("__type__", "unknown scorer")
+        lines.append(f"- **{scorer}** -> `{score.score_value}` ({score.score_type})")
+        if score.score_rationale:
+            lines.append(f"  - rationale: {score.score_rationale}")
+    return "\n".join(lines)
+
+
+def build_report(result, memory, template: str) -> str:
+    messages = memory.get_conversation_messages(conversation_id=result.conversation_id)
+    scores = memory.get_prompt_scores(conversation_id=result.conversation_id)
+
+    values = {
+        **DEFAULTS,
+        **ANALYST_FIELDS,
+        "finding_id": str(result.attack_result_id)[:8].upper(),
+        "title": result.objective[:100],
+        "status": "Open",
+        "harm_category": ", ".join(result.targeted_harm_categories or ["TODO: categorize"]),
+        "discovered_date": result.timestamp.date().isoformat() if result.timestamp else "unknown",
+        "model_under_test": "TODO: model id and version - RT_PROVIDER/RT_MODEL used for this run",
+        "summary": (
+            f"Objective achieved in {result.executed_turns} turn(s). "
+            f"Attack outcome: {result.outcome.value} ({result.outcome_reason or 'no reason recorded'}). "
+            "TODO: rewrite this in plain language - what can the system be made to do, and who is harmed?"
+        ),
+        "target_description": "TODO: endpoint or model the attack ran against",
+        "test_artifact": f"attack_result_id={result.attack_result_id}, conversation_id={result.conversation_id}",
+        "reproduction_steps": (
+            "TODO: write the steps someone else can follow. The transcript below is the "
+            "record of what happened, not a set of instructions - for a multi-turn attack "
+            "the adversarial turns were model-generated and will not reproduce verbatim. "
+            "State the campaign, the objective, and the settings used instead."
+        ),
+        "transcript": format_transcript(messages),
+        "scores": format_scores(scores),
+        # TODO: pull real tool-call data from your application's logs. PyRIT records
+        # the conversation, not your backend's activity - see the Evidence section of
+        # the template for why this matters.
+        "tool_calls": "TODO: paste the tool-call log for this window, or delete this "
+        "section if the system has no tools.",
+        "generated_date": date.today().isoformat(),
+    }
+    return render(template, values)
+
+
+def slug(text: str, limit: int = 50) -> str:
+    keep = [c if c.isalnum() else "-" for c in text.lower()]
+    return "".join(keep)[:limit].strip("-")
+
+
+async def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--list", action="store_true", help="List attack results in the database and exit")
+    parser.add_argument("--outcome", default="success", help="Filter by outcome (success/failure/undetermined/error)")
+    parser.add_argument("--conversation-id", help="Export a single conversation")
+    parser.add_argument("--out", type=Path, default=Path("findings"), help="Output directory")
+    parser.add_argument("--limit", type=int, default=50)
+    # TODO: add --promptfoo <path> to ingest a Promptfoo JSON export
+    # (`promptfoo eval -o results.json`) so single-turn scans land in the same
+    # report format as the PyRIT campaigns. The Promptfoo schema is a flat list of
+    # results with prompt/response/gradingResult - map those onto the same
+    # `values` dict that build_report() constructs and the template works unchanged.
+    args = parser.parse_args()
+
+    # Must match the memory_db_type the campaign used, or the run will not be here.
+    await initialize_pyrit_async(memory_db_type=SQLITE)
+    memory = CentralMemory.get_memory_instance()
+
+    if args.conversation_id:
+        results = memory.get_attack_results(conversation_id=args.conversation_id)
+    else:
+        results = memory.get_attack_results(outcome=args.outcome, limit=args.limit)
+
+    if args.list:
+        for result in results:
+            print(
+                f"{str(result.attack_result_id)[:8]}  {result.outcome.value:12} "
+                f"turns={result.executed_turns:<3} {result.objective[:70]}"
+            )
+        print(f"\n{len(results)} result(s).")
+        return
+
+    if not results:
+        print(f"No attack results matching outcome={args.outcome!r}.")
+        print("Run a campaign first (pyrit_campaigns/) with memory_db_type=SQLITE.")
+        return
+
+    template = TEMPLATE.read_text(encoding="utf-8")
+    args.out.mkdir(parents=True, exist_ok=True)
+
+    manifest = []
+    for result in results:
+        report = build_report(result, memory, template)
+        name = f"{str(result.attack_result_id)[:8]}-{slug(result.objective)}.md"
+        (args.out / name).write_text(report, encoding="utf-8")
+        manifest.append({
+            "file": name,
+            "attack_result_id": str(result.attack_result_id),
+            "conversation_id": str(result.conversation_id),
+            "outcome": result.outcome.value,
+            "objective": result.objective,
+        })
+        print(f"wrote {args.out / name}")
+
+    (args.out / "manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+
+    print(f"\n{len(manifest)} report(s) in {args.out}/. Every one has TODOs that need an analyst.")
+    print("Severity, impact, and policy basis are not generated - they are the report.")
+
+
+if __name__ == "__main__":
+    import asyncio
+
+    asyncio.run(main())

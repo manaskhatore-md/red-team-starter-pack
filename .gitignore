@@ -12,3 +12,18 @@ gcloud-key*.json
 
 # IntelliJ run configs store env vars (including API keys) in workspace.xml
 .idea/workspace.xml
+
+# Test output. These contain full prompts and responses from every run, so they
+# inherit the data classification of whatever you tested against. Review before
+# sharing any of it, even internally.
+findings/
+results.json
+*.results.json
+.promptfoo/
+# PyRIT's SQLITE memory database (default location is ~/.pyrit/, but it lands here
+# if you override the path)
+dbdata/
+*.db
+
+# Grounding eval set - may contain real constituent questions pulled from logs
+judges/grounding_eval_set.json

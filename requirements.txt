@@ -1,7 +1,35 @@
+# pip install -r requirements.txt
+#
+# Provider selection is by env var (RT_PROVIDER), not by dependency - see
+# .env.example. Install litellm and you can target Gemini, OpenAI, or Anthropic
+# without touching requirements again.
+
+# PyRIT: the multi-turn campaign engine (pyrit_campaigns/) and the scorers used by
+# judges/. 1.1.0+ required - the pre-1.0 API (pyrit.orchestrator,
+# PromptRequestPiece) is gone and code written against it will not import.
 pyrit>=1.1.0
 
-# gemini target (PYRIT_TARGET=gemini)
+# LiteLLM: the routing layer that makes RT_PROVIDER=gemini|openai|anthropic work
+# through one code path. Needed for every provider except vertex.
 litellm>=1.0
 
-# vertex target (PYRIT_TARGET=vertex)
+# Claude on Google Vertex AI (RT_PROVIDER=vertex only).
+# Authenticates with Google ADC rather than an API key. Skip this unless your
+# agency buys Claude through Vertex.
 anthropic[vertex]>=1.4.0
+
+# TODO: uncomment if you need these -
+#
+# Corporate TLS-inspecting proxy: fixes CERTIFICATE_VERIFY_FAILED on import by
+# using the OS certificate store instead of certifi. Survives reinstalls, unlike
+# patching cert bundles by hand.
+# truststore>=0.9
+#
+# Conditional sections in reporting/templates/finding_report_template.md
+# ({% if %} blocks). Without it, render() does plain string substitution and the
+# conditional blocks are left in the output verbatim.
+# jinja2>=3.1
+
+# NOT a Python dependency: Promptfoo drives the single-turn scans in configs/ and
+# runs through npx, so there is nothing to pip install.
+#     npx promptfoo@latest eval -c configs/02_public_conversational.yaml
