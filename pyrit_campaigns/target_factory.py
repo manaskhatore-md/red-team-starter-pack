@@ -29,7 +29,13 @@ PROVIDER_DEFAULTS: dict[str, tuple[str, str]] = {
     "anthropic": ("anthropic/claude-haiku-4-5", "ANTHROPIC_API_KEY"),
 }
 
-DEFAULT_MAX_TOKENS = 1024
+# Generous on purpose. On reasoning models (Gemini 2.5, GPT-5, Claude with extended
+# thinking) internal reasoning tokens count against this same budget, so a tight limit
+# truncates the visible answer mid-sentence. That silently corrupts scoring: a
+# cut-off answer reads as a refusal to a judge, and a cut-off refusal reads as
+# compliance.
+# TODO: raise this further if you see responses ending mid-word.
+DEFAULT_MAX_TOKENS = 8192
 
 
 def build_target(*, provider: str | None = None, model: str | None = None) -> PromptTarget:
