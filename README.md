@@ -1,3 +1,4 @@
+```
 red-team-starter-pack/
 ├── README.md                           # Setup guide, CLI usage, and playbook crosswalk
 ├── .env.example                        # Multi-provider API keys & environment configs
@@ -30,3 +31,4 @@ red-team-starter-pack/
     ├── export_finding_report.py        # Converts test JSON/CSV into Playbook Markdown
     └── templates/                      # Markdown templates matching Playbook Section 8
         └── finding_report_template.md
+```
