@@ -37,6 +37,11 @@ providers:
   # - id: anthropic:messages:claude-haiku-4-5
   #   config: { temperature: 0 }
   #
+  # AWS Bedrock - no API key; uses the AWS credential chain (see .env.example).
+  # TODO: change the model id to one your account has Model Access granted for.
+  # - id: bedrock:us.anthropic.claude-sonnet-4-20250514-v1:0
+  #   config: { region: us-east-1, temperature: 0 }
+  #
   # Your actual application (preferred):
   # - id: https
   #   config:
