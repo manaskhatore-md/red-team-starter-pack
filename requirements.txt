@@ -13,6 +13,11 @@ pyrit>=1.1.0
 # through one code path. Needed for every provider except vertex.
 litellm>=1.0
 
+# AWS Bedrock (RT_PROVIDER=bedrock only).
+# LiteLLM does not pull boto3 in, so Bedrock calls fail without it. Authenticates
+# with the standard AWS credential chain, not an API key.
+boto3>=1.34
+
 # Claude on Google Vertex AI (RT_PROVIDER=vertex only).
 # Authenticates with Google ADC rather than an API key. Skip this unless your
 # agency buys Claude through Vertex.
@@ -30,6 +35,6 @@ anthropic[vertex]>=1.4.0
 # conditional blocks are left in the output verbatim.
 # jinja2>=3.1
 
-# NOT a Python dependency: Promptfoo drives the single-turn scans in configs/ and
-# runs through npx, so there is nothing to pip install.
-#     npx promptfoo@latest eval -c configs/02_public_conversational.yaml
+# Reading the datasets, profiles, and judge rubrics. PyRIT pulls this in already;
+# pinned explicitly because our own modules import it directly.
+pyyaml>=6.0

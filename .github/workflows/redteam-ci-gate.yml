@@ -3,7 +3,7 @@
 # WHAT THIS IS FOR: catching regressions, not finding new vulnerabilities. Once a
 # finding is remediated, its probe belongs here so the fix cannot silently come
 # undone - by a prompt edit, a model version bump, or a config change. Discovery work
-# (the PyRIT campaigns, the bias pairs, anything needing backend verification) is
+# (the multi-turn campaigns, the bias pairs, anything needing backend verification) is
 # manual and belongs in a scheduled assessment, not on every PR.
 #
 # WHY IT MATTERS MORE FOR LLMs THAN FOR NORMAL CODE: your dependencies change
@@ -24,9 +24,9 @@ on:
       # Only run when something that affects model behavior changes.
       # TODO: add the paths to YOUR application's prompts, tool definitions, and
       # RAG configuration. Those are the files whose edits can break a guardrail.
-      - "configs/**"
       - "datasets/**"
       - "judges/**"
+      - "pyrit_campaigns/**"
       - "prompts/**"
       # - "src/your_app/prompts/**"
       # - "src/your_app/tools/**"
@@ -42,7 +42,7 @@ permissions:
   pull-requests: write
 
 jobs:
-  promptfoo-scan:
+  single-turn-scan:
     runs-on: ubuntu-latest
     # TODO: DELETE THIS LINE TO ENABLE. Left in so a fork does not immediately start
     # spending API credits on every PR before anyone has tuned the thresholds.
@@ -51,22 +51,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-python@v5
         with:
-          node-version: "20"
+          python-version: "3.12"
+          cache: pip
 
-      - name: Cache promptfoo results
-        uses: actions/cache@v4
-        with:
-          path: ~/.promptfoo/cache
-          key: promptfoo-${{ hashFiles('configs/**', 'datasets/**') }}
-          restore-keys: promptfoo-
-        # The cache is a cost control, not an optimization: identical
-        # prompt+provider pairs are not re-billed. It also means an unchanged test
-        # will not re-run against a changed model - use the scheduled run (which you
-        # may want to run with --no-cache) to catch drift.
+      - run: pip install -r requirements.txt
 
-      - name: Run Promptfoo eval
+      - name: Run single-turn scan
         env:
           # TODO: add these as repository secrets (Settings > Secrets and variables >
           # Actions). Never inline a key in this file.
@@ -77,48 +69,45 @@ jobs:
           # CI runs unattended and will hit it on every PR.
           APP_ENDPOINT: ${{ secrets.APP_ENDPOINT }}
           APP_TOKEN: ${{ secrets.APP_TOKEN }}
-        run: |
-          # TODO: pick the profile matching your deployment type. Running all four
-          # wastes credits - most repos hold one application.
-          npx promptfoo@latest eval \
-            -c configs/02_public_conversational.yaml \
-            -o results.json \
-            --no-progress-bar
+          # TODO: pick the profile matching your deployment type, and a judge that is
+          # not the model under test.
+          RT_PROFILE: public_conversational
+          RT_PROVIDER: gemini
+          RT_JUDGE_PROVIDER: anthropic
+          # Makes a policy violation fail the job. Unset for a report-only run - see
+          # the phased rollout below.
+          RT_FAIL_ON_FINDING: "1"
+        run: python -m pyrit_campaigns.single_turn_scan | tee scan-output.txt
 
       - name: Upload results
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: redteam-results
-          path: results.json
-          # TODO: results.json contains every prompt and response from the run. If
-          # you ever gate against a system holding real data, this artifact inherits
-          # that classification - shorten the retention and restrict who can download
-          # it, or redact before upload.
+          # The PyRIT database holds the full transcript and every score; the text
+          # log is the human-readable summary.
+          path: |
+            scan-output.txt
+            ~/.pyrit/dbdata/
+          # TODO: these artifacts contain every prompt and response from the run. If
+          # you ever gate against a system holding real data, they inherit that
+          # classification - shorten the retention and restrict who can download
+          # them, or redact before upload.
           retention-days: 30
 
-      # TODO: implement the gate. `promptfoo eval` exits non-zero when assertions
-      # fail, so the step above already fails the build - which is probably too
-      # blunt to start with. Recommended sequence:
+      # TODO: phase the gate in rather than switching it on. Recommended sequence:
       #
-      #   Phase 1 (weeks 1-4): report only. Add `|| true` to the eval step and post
-      #     results as a PR comment. Watch what fails and why. You are calibrating
-      #     the tests, not the application.
-      #   Phase 2: hard-fail on deterministic assertions only (not-contains, canary
-      #     tokens, regex). These do not vary run to run, so a failure is real.
-      #   Phase 3: add a threshold on the llm-rubric assertions once you have enough
-      #     history to know their false-positive rate.
+      #   Phase 1 (weeks 1-4): report only. Unset RT_FAIL_ON_FINDING and read the
+      #     output. You are calibrating the rubrics, not the application.
+      #   Phase 2: hard-fail on deterministic signals only - a canary token appearing
+      #     in a response does not vary run to run, so a failure is real. (You have to
+      #     add those assertions; see the profile checklists in profiles.py.)
+      #   Phase 3: enable RT_FAIL_ON_FINDING once you know the rubrics'
+      #     false-positive rate from Phase 1 history.
       #
-      # LLM outputs are stochastic. A single failing rubric assertion may be sampling
-      # noise - which is why temperature: 0 is set in the configs and why the
-      # deterministic assertions are the ones worth blocking on.
-      #
-      # - name: Post results to PR
-      #   if: github.event_name == 'pull_request'
-      #   uses: promptfoo/promptfoo-action@v1
-      #   with:
-      #     github-token: ${{ secrets.GITHUB_TOKEN }}
-      #     config: configs/02_public_conversational.yaml
+      # LLM output is stochastic, so a single rubric finding may be sampling noise.
+      # That is why the deterministic canary checks are the ones worth blocking on
+      # first, and why a finding should be re-run before anyone acts on it.
 
   # TODO: a second job for grounding, once judges/rag_grounding_eval.py has an eval
   # set. It exits non-zero below your grounded-rate threshold, which makes
@@ -139,19 +128,23 @@ jobs:
 # ---------------------------------------------------------------------------
 # CHECKLIST BEFORE ENABLING
 # ---------------------------------------------------------------------------
-# [ ] Provider API key added as a repository secret
-# [ ] A profile in configs/ customized with your real system prompt
-# [ ] Regression probes added for every finding you have already remediated - this
-#     is the actual payload of the gate; a generic config protects nothing specific
-# [ ] Run it manually (workflow_dispatch) enough times to know the baseline pass rate
-# [ ] Cost estimated: (tests x providers x runs per week) x per-call cost. A large
-#     matrix on a busy repo adds up faster than people expect
+# [ ] Provider API keys added as repository secrets, for the target AND the judge
+# [ ] A profile in pyrit_campaigns/profiles.py customized for your real system, with
+#     the placeholder values filled in
+# [ ] Rubrics in judges/state_policy_rubric.yaml rewritten against your actual policy
+# [ ] Regression probes added to datasets/ for every finding you have already
+#     remediated - this is the actual payload of the gate; generic probes protect
+#     nothing specific
+# [ ] Run it manually (workflow_dispatch) enough times to know the baseline finding
+#     rate, since the rubrics are themselves LLM calls and will not be perfectly stable
+# [ ] Cost estimated: probes x rubrics x runs per week x per-call cost, and remember
+#     every probe costs a target call PLUS a judge call per rubric
 # [ ] If gating against a deployed app: NON-PRODUCTION endpoint confirmed, and the
 #     app owner knows CI will be calling it
 # [ ] Decided who triages a failure and whether it can be overridden - an unownable
 #     red gate gets bypassed, and then it protects nothing
 #
-# NOTE ON GITHUB ENTERPRISE: if this repo lives on a GHE instance, confirm that
-# `npx promptfoo@latest` and the actions above are reachable from your runners.
-# Self-hosted runners behind a proxy may need npm registry configuration, and
-# third-party actions may need to be allow-listed by your org's policy.
+# NOTE ON GITHUB ENTERPRISE: if this repo lives on a GHE instance, confirm your
+# runners can reach PyPI and your model provider's API. Self-hosted runners behind a
+# TLS-inspecting proxy may need pip index configuration and truststore (see
+# requirements.txt), and third-party actions may need org allow-listing.

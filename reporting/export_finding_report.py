@@ -1,9 +1,8 @@
 """Turn test results into Playbook-format finding reports.
 
 Red team results are only useful once someone who does not run PyRIT can read them
-and act. This module pulls a run out of PyRIT's memory database (or a Promptfoo JSON
-export) and renders one Markdown finding per issue, using
-templates/finding_report_template.md.
+and act. This module pulls a run out of PyRIT's memory database and renders one
+Markdown finding per issue, using templates/finding_report_template.md.
 
     # list what's in the database
     python -m reporting.export_finding_report --list
@@ -38,7 +37,7 @@ TEMPLATE = Path(__file__).resolve().parent / "templates" / "finding_report_templ
 # TODO: fill these in once for your agency; they are the same on every report.
 DEFAULTS = {
     "system_name": "TODO: name of the system under test",
-    "deployment_profile": "TODO: see configs/ (01_internal_productivity ... 04_procured_vendor_cots)",
+    "deployment_profile": "TODO: the RT_PROFILE the run used - see pyrit_campaigns/profiles.py",
     "data_level": "TODO: Data Level 1-4",
     "tester": "TODO: your name / team",
     "authorization_reference": "TODO: ticket, memo, or ATO reference authorizing this test",
@@ -145,11 +144,10 @@ async def main():
     parser.add_argument("--conversation-id", help="Export a single conversation")
     parser.add_argument("--out", type=Path, default=Path("findings"), help="Output directory")
     parser.add_argument("--limit", type=int, default=50)
-    # TODO: add --promptfoo <path> to ingest a Promptfoo JSON export
-    # (`promptfoo eval -o results.json`) so single-turn scans land in the same
-    # report format as the PyRIT campaigns. The Promptfoo schema is a flat list of
-    # results with prompt/response/gradingResult - map those onto the same
-    # `values` dict that build_report() constructs and the template works unchanged.
+    # TODO: add a --rubric filter. single_turn_scan.py records policy violations as
+    # auxiliary scores rather than attack outcomes, so `--outcome success` does not
+    # surface them - pass the conversation_id the scan printed, or query
+    # memory.get_prompt_scores() and select on score_category.
     args = parser.parse_args()
 
     # Must match the memory_db_type the campaign used, or the run will not be here.
