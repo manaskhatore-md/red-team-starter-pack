@@ -32,13 +32,6 @@ python-dotenv>=1.0
 # truststore.inject_into_ssl(); harmless on a network without a proxy.
 truststore>=0.9
 
-# TODO: uncomment if you need this -
-#
-# Conditional sections in reporting/templates/finding_report_template.md
-# ({% if %} blocks). Without it, render() does plain string substitution and the
-# conditional blocks are left in the output verbatim.
-# jinja2>=3.1
-
 # Reading the datasets, profiles, and judge rubrics. PyRIT pulls this in already;
 # pinned explicitly because our own modules import it directly.
 pyyaml>=6.0

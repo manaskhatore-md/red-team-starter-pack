@@ -77,10 +77,9 @@ ANALYST_FIELDS = {
 def render(template: str, values: dict) -> str:
     """Fill {{ placeholders }} in the template.
 
-    Deliberately a plain string substitution rather than Jinja, so the pack has one
-    less dependency. That means the {% if %} blocks in the template are left as-is.
-    TODO: if you want conditional sections to work, install jinja2 and swap this for
-    jinja2.Template(template).render(**values).
+    Plain string substitution rather than Jinja, so the pack has one less
+    dependency. Keep the template free of Jinja logic ({% if %} and the like);
+    it would be copied into the report as-is.
     """
     out = template
     for key, value in values.items():
@@ -138,7 +137,8 @@ def build_report(result, memory, template: str) -> str:
         **DEFAULTS,
         **ANALYST_FIELDS,
         "finding_id": str(result.attack_result_id)[:8].upper(),
-        "title": result.objective[:100],
+        "title": result.objective if len(result.objective) <= 100 else result.objective[:100] + "...",
+        "objective": result.objective,
         "status": "Open",
         "harm_category": ", ".join(result.targeted_harm_categories or ["TODO: categorize"]),
         "discovered_date": result.timestamp.date().isoformat() if result.timestamp else "unknown",

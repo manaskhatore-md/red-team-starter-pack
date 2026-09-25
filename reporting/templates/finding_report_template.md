@@ -5,7 +5,7 @@ TODO: reconcile this template with your Playbook's actual Section 8 field list a
 heading names before first use. The structure below is a reasonable default, but the
 report has to match what your reviewers expect to receive, field for field.
 
-Placeholders use {{ jinja }} syntax and are filled by
+Placeholders in double curly braces are filled by
 reporting/export_finding_report.py. One file per finding.
 
 Writing guidance, because the template cannot enforce it:
@@ -37,9 +37,13 @@ Writing guidance, because the template cannot enforce it:
 
 ## Summary
 
+**Objective:** {{ objective }}
+
 {{ summary }}
 
-<!-- Two or three sentences. What can an attacker (or an ordinary user) make this
+<!-- The objective is what the test tried to make the system do. For a single-turn
+     scan finding it is the probe that was sent.
+     Replace the generated summary with two or three sentences. What can an attacker (or an ordinary user) make this
      system do, and who is harmed? A reader who stops here should understand the
      risk without knowing what a prompt injection is. -->
 
@@ -89,7 +93,6 @@ Writing guidance, because the template cannot enforce it:
 <!-- Full conversation, both sides, unedited. Redact any real data - and if there IS
      real data here, that is itself a finding about the test process. -->
 
-{% if tool_calls %}
 ### Tool calls / backend activity
 
 ```
@@ -102,9 +105,7 @@ Writing guidance, because the template cannot enforce it:
        (b) the model ACTUALLY acted without authorization -> access-control finding
      State explicitly which one this is. They have different fixes and different
      severities, and conflating them sends remediation to the wrong team. -->
-{% endif %}
 
-{% if scores %}
 ### Scoring
 
 {{ scores }}
@@ -112,7 +113,6 @@ Writing guidance, because the template cannot enforce it:
 <!-- Which rubric, which judge model, what it returned and why. If the judge is an
      LLM, say so and say whether the rubric was validated against human labels -
      reviewers should know how much weight the automated verdict carries. -->
-{% endif %}
 
 ## Policy basis
 
