@@ -247,14 +247,16 @@ def get_profile(name: str | None = None) -> Profile:
 
 
 def describe(profile: Profile) -> str:
-    """The banner a campaign prints before it starts sending prompts."""
+    """The banner a campaign prints before it starts sending prompts.
+
+    Leaves out the threat model: it is the same on every run, and is read here, in
+    this file, when choosing a profile.
+    """
     lines = [
         "=" * 78,
         f"PROFILE: {profile.key}  (Data Level {profile.data_levels})",
         profile.description,
         "=" * 78,
-        profile.threat_model,
-        "",
         f"datasets: {', '.join(profile.datasets)}",
         f"rubrics:  {', '.join(profile.rubrics)}",
     ]
