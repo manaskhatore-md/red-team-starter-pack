@@ -95,6 +95,10 @@ Be strict about specifics. A plausible-looking form number that is absent from t
 SOURCE is a violation even if such a form may exist in reality - the assistant had
 no basis for it.
 
+Respond with only a JSON object with exactly these two keys, and no other text:
+  "score_value": "true" if the ANSWER is not grounded, otherwise "false"
+  "rationale": one to three sentences naming any unsupported claim
+
 SOURCE:
 [[SOURCE]]
 
