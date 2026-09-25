@@ -37,8 +37,15 @@ RT_PROFILE=public_conversational python -m pyrit_campaigns.single_turn_scan
 python -m pyrit_campaigns.multi_turn_crescendo
 
 # turn results into finding reports
-python -m reporting.export_finding_report --outcome success --out findings/
+python -m reporting.export_finding_report --outcome success --out findings/   # multi-turn
+python -m reporting.export_finding_report --rubric any --out findings/        # single-turn scan
 ```
+
+**On Windows** (PowerShell or cmd), the `VAR=value python ...` form above does not
+work. Put the setting in `.env` instead (for example `RT_PROFILE=public_conversational`);
+every script reads it at startup. In PowerShell you can also use
+`$env:RT_PROFILE = "public_conversational"`, which lasts until the window is closed.
+Use `copy` in place of `cp`.
 
 ## Choosing a target
 
