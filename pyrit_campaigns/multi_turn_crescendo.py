@@ -105,7 +105,8 @@ async def main():
     # The attacker model. Defaults to the judge provider so a single-provider setup
     # still runs, but override it: an attacker with the same guardrails as the
     # target will refuse to escalate, and you will mistake that for a passing test.
-    adversarial = build_target(provider=os.getenv("RT_ADVERSARIAL_PROVIDER", os.getenv("RT_JUDGE_PROVIDER", "gemini")))
+    adversarial_provider = os.getenv("RT_ADVERSARIAL_PROVIDER", os.getenv("RT_JUDGE_PROVIDER", "gemini"))
+    adversarial = build_target(provider=adversarial_provider)
     judge = build_scoring_target()
 
     attack = CrescendoAttack(
@@ -148,7 +149,9 @@ async def main():
             "rt_run_id": str(uuid.uuid4()),
             "rt_provider": os.getenv("RT_PROVIDER", "gemini"),
             "rt_target": model_name(target),
+            "rt_adversarial_provider": adversarial_provider,
             "rt_adversarial": model_name(adversarial),
+            "rt_judge_provider": os.getenv("RT_JUDGE_PROVIDER", os.getenv("RT_PROVIDER", "gemini")),
             "rt_judge": model_name(judge),
             "rt_max_turns": str(MAX_TURNS),
             "rt_max_backtracks": str(MAX_BACKTRACKS),

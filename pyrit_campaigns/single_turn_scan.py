@@ -21,8 +21,13 @@ true = policy violation = A FINDING. So a "true" score means your system failed,
 that the test passed. Scores are written to PyRIT's memory database alongside the
 transcript, so reporting/export_finding_report.py can pick them up by conversation_id.
 
-COST: one target call plus one judge call per probe per rubric, plus one judge call
-per matched pair. A profile with 13 probes and 3 rubrics is ~52 calls. Start with one dataset while you tune the rubrics.
+WHICH RUBRIC GRADES WHICH PROBE: each rubric in judges/state_policy_rubric.yaml lists
+the datasets it `grades`, and a probe is graded only by the profile's rubrics that
+list its dataset. A probe no rubric grades is not sent, and the scan says so.
+
+COST: one target call per probe, one judge call per probe per rubric that grades it,
+plus one judge call per matched pair. public_conversational is 16 + 16 + 5 = 37
+calls. Start with one dataset while you tune the rubrics.
 """
 
 import asyncio
@@ -110,33 +115,43 @@ def load_rubrics() -> dict:
     return yaml.safe_load(RUBRIC_FILE.read_text(encoding="utf-8"))["rubrics"]
 
 
-def build_rubric_scorers(profile: Profile, judge) -> list[tuple[str, SelfAskGeneralTrueFalseScorer]]:
-    """Turn the profile's named rubrics into scorers.
+def build_rubric_scorers(profile: Profile, judge) -> dict[str, SelfAskGeneralTrueFalseScorer]:
+    """Turn the profile's named rubrics into scorers, keyed by rubric name.
 
     Leaves out the pair rubrics: they compare two responses rather than grade one,
     and compare_pairs() runs them.
     """
     rubrics = load_rubrics()
 
-    scorers = []
+    scorers = {}
     for key in profile.rubrics:
-        if key in PAIR_RUBRICS:
-            continue
         if key not in rubrics:
             raise SystemExit(f"Profile {profile.key!r} names rubric {key!r}, absent from {RUBRIC_FILE.name}")
-        scorers.append(
-            (
-                key,
-                SelfAskGeneralTrueFalseScorer(
-                    system_prompt_format_string=rubrics[key]["system_prompt"],
-                    chat_target=judge,
-                    # Lands in Score.score_category so findings can be grouped by
-                    # rubric in the report.
-                    category=key,
-                ),
-            )
+        if key in PAIR_RUBRICS:
+            continue
+        scorers[key] = SelfAskGeneralTrueFalseScorer(
+            system_prompt_format_string=rubrics[key]["system_prompt"],
+            chat_target=judge,
+            # Lands in Score.score_category so findings can be grouped by
+            # rubric in the report.
+            category=key,
         )
     return scorers
+
+
+def group_by_rubrics(probes: list[Probe], rubric_keys, compare: bool) -> dict[tuple[str, ...], list[Probe]]:
+    """Group probes by which of the given rubrics grade them (their `grades` list).
+
+    A pair probe with no rubric of its own is still sent when pairs are compared,
+    under the empty key: its reply is half of a comparison.
+    """
+    rubrics = load_rubrics()
+    groups: dict[tuple[str, ...], list[Probe]] = defaultdict(list)
+    for probe in probes:
+        keys = tuple(k for k in rubric_keys if probe.dataset in rubrics[k].get("grades", []))
+        if keys or (compare and probe.pair_id):
+            groups[keys].append(probe)
+    return groups
 
 
 def _escape_braces(text: str) -> str:
@@ -251,22 +266,28 @@ async def main() -> int:
     judge = build_scoring_target()
     scorers = build_rubric_scorers(profile, judge)
 
-    if not scorers:
-        raise SystemExit(f"Profile {profile.key!r} has no single-response rubrics to score with.")
-
     compare = "disparate_treatment" in profile.rubrics and any(p.pair_id for p in probes)
-    pair_note = ", then matched pairs compared" if compare else ""
-    print(f"\nSending {len(probes)} probes, scored by {len(scorers)} rubric(s){pair_note}...\n")
+    groups = group_by_rubrics(probes, scorers, compare)
+    sent = [probe for group in groups.values() for probe in group]
 
-    attack = PromptSendingAttack(
-        objective_target=target,
-        attack_scoring_config=AttackScoringConfig(
-            # Auxiliary rather than objective: there is no single "did the attack
-            # win" question here, there are N independent policy questions. Auxiliary
-            # scores are still written to memory against the response.
-            auxiliary_scorers=[scorer for _, scorer in scorers],
-        ),
-    )
+    ungraded = [probe for probe in probes if probe not in sent]
+    if ungraded:
+        datasets = sorted({probe.dataset for probe in ungraded})
+        print(
+            f"\n!! {len(ungraded)} probe(s) from {', '.join(datasets)} are NOT sent: no rubric in profile\n"
+            f"!! {profile.key!r} grades them. Add a rubric whose `grades` list names the dataset\n"
+            "!! (judges/state_policy_rubric.yaml) to the profile, or drop the dataset.\n"
+        )
+    if not sent:
+        raise SystemExit(f"Profile {profile.key!r} has no rubric that grades any of its probes.")
+
+    pair_count = len({p.pair_id for p in sent if p.pair_id}) if compare else 0
+    graded = [f"{len(group)} graded by {' + '.join(keys)}" for keys, group in groups.items() if keys]
+    ungraded_pairs = sum(len(group) for keys, group in groups.items() if not keys)
+    if ungraded_pairs:
+        graded.append(f"{ungraded_pairs} sent only for pair comparison")
+    pair_note = f"; then {pair_count} matched pairs compared" if pair_count else ""
+    print(f"\nSending {len(sent)} probes: {', '.join(graded)}{pair_note}...\n")
 
     # Labels are stored with each result, so the finding report can say what ran
     # without anyone copying it over by hand.
@@ -277,35 +298,52 @@ async def main() -> int:
         "rt_profile": profile.key,
         "rt_provider": os.getenv("RT_PROVIDER", "gemini"),
         "rt_target": model_name(target),
+        "rt_judge_provider": os.getenv("RT_JUDGE_PROVIDER", os.getenv("RT_PROVIDER", "gemini")),
         "rt_judge": model_name(judge),
     }
-    executor_result = await AttackExecutor(max_concurrency=MAX_CONCURRENCY).execute_attack_async(
-        attack=attack,
-        objectives=[probe.prompt for probe in probes],
-        field_overrides=[
-            {
-                "memory_labels": {
-                    **run_labels,
-                    "rt_dataset": probe.dataset,
-                    "rt_probe": probe.name,
-                    "rt_harm_categories": ", ".join(probe.harm_categories),
-                    "rt_pair_id": probe.pair_id,
-                    "rt_variant": probe.variant,
+
+    # One attack per group, because an attack applies its scorers to every probe
+    # it sends.
+    completed, incomplete = [], []
+    for keys, group in groups.items():
+        attack = PromptSendingAttack(
+            objective_target=target,
+            attack_scoring_config=AttackScoringConfig(
+                # Auxiliary rather than objective: there is no single "did the attack
+                # win" question here, there are N independent policy questions.
+                # Auxiliary scores are still written to memory against the response.
+                auxiliary_scorers=[scorers[key] for key in keys],
+            ),
+        )
+        executor_result = await AttackExecutor(max_concurrency=MAX_CONCURRENCY).execute_attack_async(
+            attack=attack,
+            objectives=[probe.prompt for probe in group],
+            field_overrides=[
+                {
+                    "memory_labels": {
+                        **run_labels,
+                        "rt_dataset": probe.dataset,
+                        "rt_probe": probe.name,
+                        "rt_harm_categories": ", ".join(probe.harm_categories),
+                        "rt_pair_id": probe.pair_id,
+                        "rt_variant": probe.variant,
+                    }
                 }
-            }
-            for probe in probes
-        ],
-    )
+                for probe in group
+            ],
+        )
+        completed += executor_result.completed_results
+        incomplete += executor_result.incomplete_objectives
 
     memory = CentralMemory.get_memory_instance()
     findings: list[tuple[str, str, str]] = []   # (rubric, probe, rationale)
     errors: list[str] = []
     by_rubric: Counter[str] = Counter()
 
-    for objective, exception in executor_result.incomplete_objectives:
+    for objective, exception in incomplete:
         errors.append(f"{objective[:70]!r} did not complete: {exception}")
 
-    for result in executor_result.completed_results:
+    for result in completed:
         response = result.last_response
         probe = result.objective
 
@@ -329,9 +367,9 @@ async def main() -> int:
 
     if compare:
         print("\nComparing matched pairs...")
-        results_by_prompt = {r.objective: r for r in executor_result.completed_results}
+        results_by_prompt = {r.objective: r for r in completed}
         rubric_prompt = load_rubrics()["disparate_treatment"]["system_prompt"]
-        for pair_id, a, b, score in await compare_pairs(probes, results_by_prompt, memory, judge, rubric_prompt):
+        for pair_id, a, b, score in await compare_pairs(sent, results_by_prompt, memory, judge, rubric_prompt):
             flagged = score.get_value() is True
             label = f"pair {pair_id} ({a.variant} vs. {b.variant})"
             print(f"  {label}: {'DIFFERENT TREATMENT' if flagged else 'equivalent'}")
@@ -340,7 +378,7 @@ async def main() -> int:
                 by_rubric["disparate_treatment"] += 1
 
     print("\n" + "=" * 78)
-    print(f"SCAN COMPLETE - {len(probes)} probes, {len(findings)} finding(s)")
+    print(f"SCAN COMPLETE - {len(sent)} probes, {len(findings)} finding(s)")
     print("=" * 78)
 
     for rubric, count in by_rubric.most_common():
@@ -350,6 +388,9 @@ async def main() -> int:
         print(f"\n[FINDING: {rubric}]")
         print(f"  probe:     {probe[:150]}")
         print(f"  rationale: {rationale[:300]}")
+
+    if ungraded:
+        print(f"\n{len(ungraded)} probe(s) were not sent because no rubric in this profile grades them (see above).")
 
     if errors:
         print(f"\n{len(errors)} probe(s) produced no usable response:")

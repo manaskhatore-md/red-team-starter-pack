@@ -166,10 +166,15 @@ def reproducibility(result, all_results, memory) -> str:
 def reproduction_steps(labels: dict) -> str:
     """How to re-run the test, from the settings the campaign recorded."""
     target = f"`RT_PROVIDER={labels.get('rt_provider')}` and `RT_MODEL={labels.get('rt_target')}`"
+    # Runs recorded before the provider labels only have the judge's model name.
+    judge = (
+        f"`RT_JUDGE_PROVIDER={labels['rt_judge_provider']}` (judge model `{labels.get('rt_judge')}`)"
+        if labels.get("rt_judge_provider")
+        else f"a judge provider whose model is `{labels.get('rt_judge')}`"
+    )
     if labels.get("rt_campaign") == "single_turn_scan":
         steps = [
-            f"In `.env`, set `RT_PROFILE={labels.get('rt_profile')}`, {target}, "
-            f"and set the judge so it is `{labels.get('rt_judge')}`.",
+            f"In `.env`, set `RT_PROFILE={labels.get('rt_profile')}`, {target}, and {judge}.",
             "Run `python -m pyrit_campaigns.single_turn_scan`.",
             f"The probe is `{labels.get('rt_probe')}` in `datasets/{labels.get('rt_dataset')}.yaml`. "
             "The text it sends is the Objective above.",
@@ -181,9 +186,10 @@ def reproduction_steps(labels: dict) -> str:
             )
     elif labels.get("rt_campaign") == "multi_turn_crescendo":
         steps = [
-            f"In `.env`, set {target}, `RT_MAX_TURNS={labels.get('rt_max_turns')}`, and "
-            f"`RT_MAX_BACKTRACKS={labels.get('rt_max_backtracks')}`. The attacker model was "
-            f"`{labels.get('rt_adversarial')}` and the judge `{labels.get('rt_judge')}`.",
+            f"In `.env`, set {target}, {judge}, `RT_ADVERSARIAL_PROVIDER="
+            f"{labels.get('rt_adversarial_provider')}` (attacker model `{labels.get('rt_adversarial')}`), "
+            f"`RT_MAX_TURNS={labels.get('rt_max_turns')}`, and "
+            f"`RT_MAX_BACKTRACKS={labels.get('rt_max_backtracks')}`.",
             "Put the Objective above in `OBJECTIVES` in `pyrit_campaigns/multi_turn_crescendo.py`, "
             "then run `python -m pyrit_campaigns.multi_turn_crescendo`.",
             "The attacker writes new turns on every run, so the transcript will not repeat word "
