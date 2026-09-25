@@ -29,6 +29,10 @@ import json
 from datetime import date
 from pathlib import Path
 
+# Load .env file
+from dotenv import load_dotenv
+load_dotenv()
+
 from pyrit.memory import CentralMemory
 from pyrit.setup import SQLITE, initialize_pyrit_async
 
@@ -87,7 +91,12 @@ def format_scores(scores) -> str:
         return "(no scores recorded - was a scorer configured?)"
     lines = []
     for score in scores:
-        scorer = (score.scorer_class_identifier or {}).get("__type__", "unknown scorer")
+        # scorer_class_identifier is a ComponentIdentifier object, not a dict
+        scorer_id = score.scorer_class_identifier
+        if scorer_id and hasattr(scorer_id, '__type__'):
+            scorer = scorer_id.__type__
+        else:
+            scorer = "unknown scorer"
         lines.append(f"- **{scorer}** -> `{score.score_value}` ({score.score_type})")
         if score.score_rationale:
             lines.append(f"  - rationale: {score.score_rationale}")

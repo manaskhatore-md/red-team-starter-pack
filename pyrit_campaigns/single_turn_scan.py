@@ -27,6 +27,10 @@ import sys
 from collections import Counter
 from pathlib import Path
 
+# Load .env file
+from dotenv import load_dotenv
+load_dotenv()
+
 import yaml
 
 from pyrit.executor.attack import AttackExecutor, AttackScoringConfig, PromptSendingAttack
