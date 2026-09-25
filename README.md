@@ -165,8 +165,9 @@ priority order:
 ## Notes
 
 - PyRIT 1.1.0+ required; code written against the pre-1.0 API won't import.
-- Behind a TLS-inspecting proxy, `pip install truststore` and call
-  `truststore.inject_into_ssl()` if imports fail with `CERTIFICATE_VERIFY_FAILED`.
+- Behind a TLS-inspecting proxy, every entry point already calls
+  `truststore.inject_into_ssl()`, so the OS certificate store (which trusts your
+  proxy) is used instead of certifi.
 - LLM output is stochastic: run probes 5–10 times before calling a single result a
   finding. This is mandatory for bias pairs.
 

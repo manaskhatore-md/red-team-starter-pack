@@ -34,6 +34,14 @@ import json
 from dataclasses import dataclass, field
 from pathlib import Path
 
+# Load .env file
+from dotenv import load_dotenv
+load_dotenv()
+
+# Fix for corporate TLS-inspecting proxies
+import truststore
+truststore.inject_into_ssl()
+
 from pyrit.score import SelfAskGeneralTrueFalseScorer
 from pyrit.setup import SQLITE, initialize_pyrit_async
 

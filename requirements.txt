@@ -23,12 +23,16 @@ boto3>=1.34
 # agency buys Claude through Vertex.
 anthropic[vertex]>=1.4.0
 
-# TODO: uncomment if you need these -
-#
-# Corporate TLS-inspecting proxy: fixes CERTIFICATE_VERIFY_FAILED on import by
-# using the OS certificate store instead of certifi. Survives reinstalls, unlike
-# patching cert bundles by hand.
-# truststore>=0.9
+# Loads .env from the repo root. Every entry point calls load_dotenv() first,
+# because PyRIT on its own only reads ~/.pyrit/.env.
+python-dotenv>=1.0
+
+# Corporate TLS-inspecting proxy: fixes CERTIFICATE_VERIFY_FAILED by using the OS
+# certificate store instead of certifi. Every entry point calls
+# truststore.inject_into_ssl(); harmless on a network without a proxy.
+truststore>=0.9
+
+# TODO: uncomment if you need this -
 #
 # Conditional sections in reporting/templates/finding_report_template.md
 # ({% if %} blocks). Without it, render() does plain string substitution and the

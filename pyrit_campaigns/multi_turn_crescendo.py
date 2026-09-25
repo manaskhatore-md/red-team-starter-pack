@@ -28,6 +28,14 @@ calls. Start with one objective and max_turns=3.
 import asyncio
 import os
 
+# Load .env file
+from dotenv import load_dotenv
+load_dotenv()
+
+# Fix for corporate TLS-inspecting proxies
+import truststore
+truststore.inject_into_ssl()
+
 from pyrit.executor.attack import (
     AttackAdversarialConfig,
     AttackExecutor,

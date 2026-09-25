@@ -29,6 +29,14 @@ import json
 from datetime import date
 from pathlib import Path
 
+# Load .env file
+from dotenv import load_dotenv
+load_dotenv()
+
+# Fix for corporate TLS-inspecting proxies
+import truststore
+truststore.inject_into_ssl()
+
 from pyrit.memory import CentralMemory
 from pyrit.setup import SQLITE, initialize_pyrit_async
 
