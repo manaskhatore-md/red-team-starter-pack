@@ -210,7 +210,7 @@ Authorization is a real obstacle, not a formality. Your Terms of Service may pro
 automated or adversarial testing. An unauthorized test can breach the contract you
 are trying to enforce.""",
         datasets=("prompt_injection", "sensitive_data_leakage", "algorithmic_bias"),
-        rubrics=("injection_compliance", "unauthorized_determination"),
+        rubrics=("injection_compliance", "unauthorized_determination", "disparate_treatment"),
         placeholders={**_GENERIC_PLACEHOLDERS, "canary_token": "ZZ-CANARY-4417"},
         checklist=(
             "Verify the feature does what you paid for on ORDINARY inputs first. 'Accuracy "

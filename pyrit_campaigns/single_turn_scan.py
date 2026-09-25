@@ -11,20 +11,26 @@ What runs is decided by the profile, not by this file: the profile names which
 datasets/*.yaml probes to send and which judges/state_policy_rubric.yaml rubrics grade
 them. See pyrit_campaigns/profiles.py.
 
+MATCHED PAIRS (datasets/algorithmic_bias.yaml): bias only shows when two replies are
+compared, so after the scan, the two replies to each pair are handed to the judge
+together under the disparate_treatment rubric. The verdict is recorded on the second
+reply of the pair, so it reports and exports like any other finding.
+
 POLARITY, because it inverts twice and trips everyone up: the rubrics return
 true = policy violation = A FINDING. So a "true" score means your system failed, not
 that the test passed. Scores are written to PyRIT's memory database alongside the
 transcript, so reporting/export_finding_report.py can pick them up by conversation_id.
 
-COST: one target call plus one judge call per probe per rubric. A profile with 13
-probes and 3 rubrics is ~52 calls. Start with one dataset while you tune the rubrics.
+COST: one target call plus one judge call per probe per rubric, plus one judge call
+per matched pair. A profile with 13 probes and 3 rubrics is ~52 calls. Start with one dataset while you tune the rubrics.
 """
 
 import asyncio
 import os
 import re
 import sys
-from collections import Counter
+from collections import Counter, defaultdict
+from dataclasses import dataclass
 from pathlib import Path
 
 # Load .env file
@@ -39,7 +45,7 @@ import yaml
 
 from pyrit.executor.attack import AttackExecutor, AttackScoringConfig, PromptSendingAttack
 from pyrit.memory import CentralMemory
-from pyrit.models import SeedDataset
+from pyrit.models import MessageScorable, SeedDataset
 from pyrit.score import SelfAskGeneralTrueFalseScorer
 from pyrit.setup import SQLITE, initialize_pyrit_async
 
@@ -60,34 +66,65 @@ MAX_CONCURRENCY = int(os.getenv("RT_MAX_CONCURRENCY", "3"))
 FAIL_ON_FINDING = os.getenv("RT_FAIL_ON_FINDING") == "1"
 
 
-def load_probes(profile: Profile) -> list[tuple[str, str]]:
-    """Return (dataset_name, rendered_prompt) for every seed the profile selects."""
-    probes: list[tuple[str, str]] = []
+@dataclass(frozen=True)
+class Probe:
+    dataset: str
+    name: str
+    prompt: str
+    harm_categories: tuple[str, ...]
+    # Set only for matched-pair probes (datasets/algorithmic_bias.yaml).
+    pair_id: str = ""
+    variant: str = ""
+    compare_on: str = ""
+
+
+def load_probes(profile: Profile) -> list[Probe]:
+    """Return a Probe for every seed the profile selects."""
+    probes: list[Probe] = []
     for name in profile.datasets:
         path = DATASETS_DIR / f"{name}.yaml"
         if not path.exists():
             raise SystemExit(f"Profile {profile.key!r} names a missing dataset: {path}")
         dataset = SeedDataset.from_yaml_file(path)
         for seed in dataset.seeds:
-            # _silent leaves unrecognized placeholders in place rather than raising,
-            # so adding a token to a dataset does not break the run before you have
-            # filled it in on the profile.
-            probes.append((name, seed.render_template_value_silent(**profile.placeholders)))
+            metadata = seed.metadata or {}
+            probes.append(
+                Probe(
+                    dataset=name,
+                    name=seed.name or "",
+                    # _silent leaves unrecognized placeholders in place rather than
+                    # raising, so adding a token to a dataset does not break the run
+                    # before you have filled it in on the profile.
+                    prompt=seed.render_template_value_silent(**profile.placeholders),
+                    harm_categories=tuple(seed.harm_categories or ()),
+                    pair_id=str(metadata.get("pair_id", "")),
+                    variant=str(metadata.get("variant", "")),
+                    compare_on=str(metadata.get("compare_on", "")),
+                )
+            )
     return probes
+
+
+def load_rubrics() -> dict:
+    return yaml.safe_load(RUBRIC_FILE.read_text(encoding="utf-8"))["rubrics"]
+
+
+def model_name(target) -> str:
+    """The model id a target calls, for labeling results."""
+    return target.get_identifier().params.get("model_name") or type(target).__name__
 
 
 def build_rubric_scorers(profile: Profile, judge) -> list[tuple[str, SelfAskGeneralTrueFalseScorer]]:
     """Turn the profile's named rubrics into scorers.
 
-    Skips the pair rubrics: they compare two responses to matched-pair inputs, and
-    there is nothing to compare against in a single-response scan.
+    Leaves out the pair rubrics: they compare two responses rather than grade one,
+    and compare_pairs() runs them.
     """
-    rubrics = yaml.safe_load(RUBRIC_FILE.read_text(encoding="utf-8"))["rubrics"]
+    rubrics = load_rubrics()
 
     scorers = []
     for key in profile.rubrics:
         if key in PAIR_RUBRICS:
-            print(f"  skipping rubric {key!r}: needs a matched pair, not a single response")
             continue
         if key not in rubrics:
             raise SystemExit(f"Profile {profile.key!r} names rubric {key!r}, absent from {RUBRIC_FILE.name}")
@@ -106,10 +143,59 @@ def build_rubric_scorers(profile: Profile, judge) -> list[tuple[str, SelfAskGene
     return scorers
 
 
+def _escape_braces(text: str) -> str:
+    # The scorer runs str.format() over its system prompt, so literal braces in a
+    # reply (JSON, code) would break it.
+    return text.replace("{", "{{").replace("}", "}}")
+
+
+async def compare_pairs(probes: list[Probe], results_by_prompt: dict, memory, judge, rubric_prompt: str):
+    """Judge each matched pair: did the substance change when one attribute changed?
+
+    Returns (pair_id, probe_a, probe_b, score) for every pair where both replies came back.
+    The score is recorded against the second reply, so it lands in that
+    conversation's scores like any rubric verdict.
+    """
+    pairs: dict[str, list[Probe]] = defaultdict(list)
+    for probe in probes:
+        if probe.pair_id:
+            pairs[probe.pair_id].append(probe)
+
+    verdicts = []
+    for pair_id, members in pairs.items():
+        if len(members) != 2:
+            print(f"  pair {pair_id!r} has {len(members)} probe(s), not 2 - not compared")
+            continue
+        a, b = members
+        result_a, result_b = results_by_prompt.get(a.prompt), results_by_prompt.get(b.prompt)
+        if not (result_a and result_b and result_a.last_response and result_b.last_response):
+            print(f"  pair {pair_id!r}: a reply is missing - not compared")
+            continue
+
+        # Pair ids look like "dialect_01"; the prefix names the attribute.
+        attribute = f"{pair_id.rsplit('_', 1)[0]} ({a.variant} vs. {b.variant})"
+        if a.compare_on:
+            attribute += f". Compare especially: {a.compare_on}"
+        filled = (
+            rubric_prompt.replace("[[RESPONSE_A]]", result_a.last_response.converted_value or "")
+            .replace("[[RESPONSE_B]]", result_b.last_response.converted_value or "")
+            .replace("[[ATTRIBUTE]]", attribute)
+        )
+        scorer = SelfAskGeneralTrueFalseScorer(
+            system_prompt_format_string=_escape_braces(filled),
+            chat_target=judge,
+            category="disparate_treatment",
+        )
+        reply_b = memory.get_conversation_messages(conversation_id=result_b.conversation_id)[-1]
+        scores = await scorer.score_async(scorable=MessageScorable.from_message(reply_b))
+        verdicts.append((pair_id, a, b, scores[0]))
+    return verdicts
+
+
 UNRENDERED = re.compile(r"\{\{\s*(\w+)\s*\}\}")
 
 
-def warn_on_placeholders(profile: Profile, probes: list[tuple[str, str]]) -> None:
+def warn_on_placeholders(profile: Profile, probes: list[Probe]) -> None:
     """Generic probes find generic problems. Say so, loudly, but do not block.
 
     Two different failures, and the second is the one that wastes a whole run: a
@@ -125,7 +211,7 @@ def warn_on_placeholders(profile: Profile, probes: list[tuple[str, str]]) -> Non
             "!! types find far more than generic ones. Fill them in pyrit_campaigns/profiles.py.\n"
         )
 
-    missing = sorted({m for _, prompt in probes for m in UNRENDERED.findall(prompt)})
+    missing = sorted({m for probe in probes for m in UNRENDERED.findall(probe.prompt)})
     if missing:
         print(
             f"\n!! {len(missing)} dataset token(s) have no value in profile {profile.key!r}:\n"
@@ -156,7 +242,9 @@ async def main() -> int:
     if not scorers:
         raise SystemExit(f"Profile {profile.key!r} has no single-response rubrics to score with.")
 
-    print(f"\nSending {len(probes)} probes, scored by {len(scorers)} rubric(s)...\n")
+    compare = "disparate_treatment" in profile.rubrics and any(p.pair_id for p in probes)
+    pair_note = ", then matched pairs compared" if compare else ""
+    print(f"\nSending {len(probes)} probes, scored by {len(scorers)} rubric(s){pair_note}...\n")
 
     attack = PromptSendingAttack(
         objective_target=target,
@@ -168,9 +256,29 @@ async def main() -> int:
         ),
     )
 
+    # Labels are stored with each result, so the finding report can say what ran
+    # without anyone copying it over by hand.
+    run_labels = {
+        "rt_campaign": "single_turn_scan",
+        "rt_profile": profile.key,
+        "rt_target": model_name(target),
+        "rt_judge": model_name(judge),
+    }
     executor_result = await AttackExecutor(max_concurrency=MAX_CONCURRENCY).execute_attack_async(
         attack=attack,
-        objectives=[prompt for _, prompt in probes],
+        objectives=[probe.prompt for probe in probes],
+        field_overrides=[
+            {
+                "memory_labels": {
+                    **run_labels,
+                    "rt_dataset": probe.dataset,
+                    "rt_probe": probe.name,
+                    "rt_harm_categories": ", ".join(probe.harm_categories),
+                    "rt_pair_id": probe.pair_id,
+                }
+            }
+            for probe in probes
+        ],
     )
 
     memory = CentralMemory.get_memory_instance()
@@ -202,6 +310,18 @@ async def main() -> int:
         print(f"--- [{result.conversation_id}]")
         print(f"    probe: {probe[:100]}")
         print(f"    reply: {(response.converted_value or '')[:200]}")
+
+    if compare:
+        print("\nComparing matched pairs...")
+        results_by_prompt = {r.objective: r for r in executor_result.completed_results}
+        rubric_prompt = load_rubrics()["disparate_treatment"]["system_prompt"]
+        for pair_id, a, b, score in await compare_pairs(probes, results_by_prompt, memory, judge, rubric_prompt):
+            flagged = score.get_value() is True
+            label = f"pair {pair_id} ({a.variant} vs. {b.variant})"
+            print(f"  {label}: {'DIFFERENT TREATMENT' if flagged else 'equivalent'}")
+            if flagged:
+                findings.append(("disparate_treatment", label, score.score_rationale or ""))
+                by_rubric["disparate_treatment"] += 1
 
     print("\n" + "=" * 78)
     print(f"SCAN COMPLETE - {len(probes)} probes, {len(findings)} finding(s)")
