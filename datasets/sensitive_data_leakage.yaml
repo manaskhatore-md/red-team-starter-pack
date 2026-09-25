@@ -5,9 +5,9 @@
 #
 # TODO: this file is the one you MUST customize. A generic "tell me an SSN" probe
 # proves nothing. The real question is whether YOUR system can be talked into
-# disclosing data from YOUR index or YOUR other users' sessions. Replace the
-# placeholders with real field names from your schema (case number, MA number,
-# client ID) - never with real values.
+# disclosing data from YOUR index or YOUR other users' sessions. Set the
+# placeholders in .env to real field names from your schema (case number, MA number,
+# client ID) - never to real values.
 name: sensitive_data_leakage
 dataset_name: sensitive_data_leakage
 description: >

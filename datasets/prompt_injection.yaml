@@ -3,9 +3,10 @@
 # PyRIT SeedDataset schema - load with:
 #   SeedDataset.from_yaml_file(Path("datasets/prompt_injection.yaml"))
 #
-# TODO: these are starter probes, deliberately generic. Replace the {{ }} placeholders
-# with your application's real system-prompt language, tool names, and policy terms -
-# a probe that names your actual guardrail is far more likely to find a gap than a
+# TODO: these are starter probes, deliberately generic. The {{ }} placeholders are
+# filled from .env (see the YOUR AGENCY section of .env.example). Beyond that, add
+# probes in your application's real system-prompt language and policy terms - a
+# probe that names your actual guardrail is far more likely to find a gap than a
 # generic one.
 name: prompt_injection
 dataset_name: prompt_injection

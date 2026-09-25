@@ -50,7 +50,7 @@ from pyrit.models import MessageScorable, SeedDataset
 from pyrit.score import SelfAskGeneralTrueFalseScorer
 from pyrit.setup import SQLITE, initialize_pyrit_async
 
-from pyrit_campaigns.profiles import PAIR_RUBRICS, Profile, describe, get_profile
+from pyrit_campaigns.profiles import PAIR_RUBRICS, Profile, describe, env_var, get_profile
 from pyrit_campaigns.target_factory import build_scoring_target, build_target, close_target, model_name
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -191,20 +191,36 @@ async def compare_pairs(probes: list[Probe], results_by_prompt: dict, memory, ju
 UNRENDERED = re.compile(r"\{\{\s*(\w+)\s*\}\}")
 
 
-def warn_on_placeholders(profile: Profile, probes: list[Probe]) -> None:
-    """Generic probes find generic problems. Say so, loudly, but do not block.
+def check_placeholders(profile: Profile, probes: list[Probe]) -> None:
+    """Stop before sending probes that still say "TODO Program".
 
-    Two different failures, and the second is the one that wastes a whole run: a
-    placeholder left at its TODO default, and a dataset token the profile has no value
-    for at all. The latter has to be checked on the RENDERED probes - the profile dict
-    cannot tell you about a token it is missing.
+    A model asked about "TODO Program" answers about a program that does not
+    exist, and the judges then grade that - so the findings describe the
+    placeholder, not your system. RT_ALLOW_PLACEHOLDERS=1 runs anyway, for trying
+    out the tooling.
+
+    Also warns about a dataset token the profile has no value for at all. That has
+    to be checked on the RENDERED probes - the profile dict cannot tell you about a
+    token it is missing.
     """
-    unfilled = sorted(k for k, v in profile.placeholders.items() if str(v).startswith("TODO"))
+    unfilled = sorted(
+        key
+        for key, value in profile.placeholders.items()
+        if str(value).startswith("TODO") and any(str(value) in probe.prompt for probe in probes)
+    )
+    if unfilled and os.getenv("RT_ALLOW_PLACEHOLDERS") != "1":
+        lines = "\n".join(f"    {env_var(key)}=" for key in unfilled)
+        raise SystemExit(
+            f"\nStopped before sending anything: {len(unfilled)} value(s) the probes use are still\n"
+            "placeholders, so the model would be asked about \"TODO Program\" instead of yours.\n"
+            "Add these lines to .env with your own values (.env.example explains each one):\n\n"
+            f"{lines}\n\n"
+            "To run anyway, only to try out the tooling, also add RT_ALLOW_PLACEHOLDERS=1."
+        )
     if unfilled:
         print(
-            f"\n!! Profile {profile.key!r} still has placeholder values for: {', '.join(unfilled)}\n"
-            "!! The scan will run, but probes naming your real program, tools, and record\n"
-            "!! types find far more than generic ones. Fill them in pyrit_campaigns/profiles.py.\n"
+            f"\n!! Running with placeholder values for: {', '.join(unfilled)} (RT_ALLOW_PLACEHOLDERS=1).\n"
+            "!! Findings from this run describe the placeholders, not your system.\n"
         )
 
     missing = sorted({m for probe in probes for m in UNRENDERED.findall(probe.prompt)})
@@ -229,7 +245,7 @@ async def main() -> int:
     print(describe(profile))
 
     probes = load_probes(profile)
-    warn_on_placeholders(profile, probes)
+    check_placeholders(profile, probes)
 
     target = build_target()
     judge = build_scoring_target()

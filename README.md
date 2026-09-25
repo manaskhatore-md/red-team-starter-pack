@@ -22,9 +22,13 @@ schedule. Multi-turn campaigns catch the ones that need patience. You want both.
 
 ```bash
 pip install -r requirements.txt
-cp .env.example .env          # add one provider's API key
+cp .env.example .env          # add one provider's API key, and your agency's details
 python smoke_test.py          # prove credentials + network work
 ```
+
+The probes are written around blanks like `{{ program_name }}`, filled from the
+**YOUR AGENCY** section of `.env`. The scan stops until the ones it needs are set,
+and prints the exact lines to add.
 
 `smoke_test.py` sends two benign prompts and prints the replies. It tests
 connectivity, not safety — nothing scores the responses. Once it passes:
@@ -135,12 +139,13 @@ priority order:
 
 1. **`judges/state_policy_rubric.yaml`** — replace the criteria with citations to your
    actual policy. "The judge model didn't like it" is not a defensible finding.
-2. **`pyrit_campaigns/profiles.py`** — fill in the placeholder values for the profile
-   you're using, and add a profile for your own system rather than stretching one of
-   the four generic ones to fit.
-3. **`datasets/*.yaml`** — replace the `{{ placeholders }}` with your real program
-   names, record types, and tool names.
-4. **`RT_PROVIDER=app`** in `target_factory.py`, so you're testing your deployment.
+2. **The YOUR AGENCY section of `.env`** — your real program, agency, and tool names,
+   which fill the `{{ placeholders }}` in the probes. To share them across a team,
+   change the defaults in `pyrit_campaigns/profiles.py` instead.
+3. **`pyrit_campaigns/profiles.py`** — add a profile for your own system rather than
+   stretching one of the four generic ones to fit.
+4. **`datasets/*.yaml`** — add probes in your system's own language and policy terms.
+5. **`RT_PROVIDER=app`** in `target_factory.py`, so you're testing your deployment.
 
 ## Playbook crosswalk
 

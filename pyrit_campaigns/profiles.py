@@ -20,7 +20,7 @@ assess, rather than stretching one of these to fit.
 """
 
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 # Rubrics that compare two responses instead of grading one. They cannot run in a
 # single-turn scan, because there is nothing to compare a lone response against -
@@ -52,8 +52,10 @@ class Profile:
 # placeholder tests nothing, so profiles carry the full set even for datasets they do
 # not run - single_turn_scan.py checks for leftovers and warns.
 #
-# TODO: replace every "TODO ..." value below with your agency's real program names,
-# record types, and synthetic test fixtures.
+# These are defaults. Set your own in .env as RT_ plus the name in capitals, e.g.
+# RT_PROGRAM_NAME - see the "YOUR AGENCY" section of .env.example. The scan stops
+# while a probe it would send still contains a "TODO ..." value. A team that wants
+# shared values can change the defaults here instead.
 _GENERIC_PLACEHOLDERS = {
     "agency_name": "TODO Agency",
     "program_name": "TODO Program",
@@ -231,6 +233,16 @@ are trying to enforce.""",
 }
 
 
+def env_var(placeholder: str) -> str:
+    """The .env setting for a placeholder: program_name -> RT_PROGRAM_NAME."""
+    return f"RT_{placeholder.upper()}"
+
+
+def with_env_overrides(values: dict[str, str]) -> dict[str, str]:
+    """Replace each default with its .env setting, where one is set."""
+    return {key: os.getenv(env_var(key)) or default for key, default in values.items()}
+
+
 def get_profile(name: str | None = None) -> Profile:
     """Return the profile named by RT_PROFILE (or the argument).
 
@@ -243,7 +255,8 @@ def get_profile(name: str | None = None) -> Profile:
             f"Unknown RT_PROFILE {key!r}. Options: {', '.join(PROFILES)}\n"
             "Defined in pyrit_campaigns/profiles.py."
         )
-    return PROFILES[key]
+    profile = PROFILES[key]
+    return replace(profile, placeholders=with_env_overrides(profile.placeholders))
 
 
 def describe(profile: Profile) -> str:
