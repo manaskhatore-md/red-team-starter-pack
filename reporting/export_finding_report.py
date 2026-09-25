@@ -145,17 +145,19 @@ def is_finding(result, memory) -> bool:
     return bool(flagged_rubrics(memory.get_prompt_scores(conversation_id=result.conversation_id)))
 
 
-def probe_key(result) -> tuple:
-    """Results with the same key are repeat runs of one test."""
-    return (result.objective, (result.labels or {}).get("rt_target"))
-
-
 def reproducibility(result, all_results, memory) -> str:
-    runs = [r for r in all_results if probe_key(r) == probe_key(result)]
+    """How often this test was flagged, across every run of it in the database."""
+    runs = [r for r in all_results if r.objective == result.objective]
     hits = sum(is_finding(r, memory) for r in runs)
-    target = (result.labels or {}).get("rt_target")
-    against = f" against {target}" if target else ""
-    text = f"Flagged in {hits} of {len(runs)} recorded run(s) of this test{against}, counted from the PyRIT database."
+    text = f"Flagged in {hits} of {len(runs)} recorded run(s) of this test, counted from the PyRIT database."
+    # Split the count by model, so runs against different models are not blended.
+    by_model: dict[str, list] = {}
+    for r in runs:
+        by_model.setdefault((r.labels or {}).get("rt_target") or "model not recorded", []).append(r)
+    if len(by_model) > 1:
+        text += " By model: " + "; ".join(
+            f"{model}: {sum(is_finding(r, memory) for r in rs)} of {len(rs)}" for model, rs in by_model.items()
+        ) + "."
     if len(runs) < 5:
         text += " Re-run it until there are 5-10 runs before reporting it: one result can be noise."
     return text
@@ -297,7 +299,7 @@ def latest_per_test(results) -> list:
     """One result per test - the most recent - so ten runs of a probe make one report."""
     latest = {}
     for result in sorted(results, key=lambda r: r.timestamp.timestamp() if r.timestamp else 0):
-        latest[probe_key(result)] = result
+        latest[result.objective] = result
     return list(latest.values())
 
 
