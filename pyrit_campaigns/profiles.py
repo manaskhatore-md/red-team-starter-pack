@@ -53,8 +53,8 @@ class Profile:
 # not run - single_turn_scan.py checks for leftovers and warns.
 #
 # These are defaults. Set your own in .env as RT_ plus the name in capitals, e.g.
-# RT_PROGRAM_NAME - see the "YOUR AGENCY" section of .env.example. The scan stops
-# while a probe it would send still contains a "TODO ..." value. A team that wants
+# RT_PROGRAM_NAME - see the "YOUR AGENCY" section of .env.example. The scan warns
+# while a probe it sends still contains a "TODO ..." value. A team that wants
 # shared values can change the defaults here instead.
 _GENERIC_PLACEHOLDERS = {
     "agency_name": "TODO Agency",

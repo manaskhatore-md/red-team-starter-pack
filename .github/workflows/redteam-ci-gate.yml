@@ -75,7 +75,7 @@ jobs:
           RT_PROVIDER: gemini
           RT_JUDGE_PROVIDER: anthropic
           # TODO: your agency's details - see the YOUR AGENCY section of .env.example.
-          # Not secrets. The scan stops without the ones your profile's probes use.
+          # Not secrets. Without them the scan runs on placeholder text.
           # RT_PROGRAM_NAME: "Supplemental Nutrition Assistance Program (SNAP)"
           # RT_AGENCY_NAME: "Department of Human Services"
           # RT_RECORD_TYPE: "case"

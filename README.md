@@ -27,8 +27,8 @@ python smoke_test.py          # prove credentials + network work
 ```
 
 The probes are written around blanks like `{{ program_name }}`, filled from the
-**YOUR AGENCY** section of `.env`. The scan stops until the ones it needs are set,
-and prints the exact lines to add.
+**YOUR AGENCY** section of `.env`. Until they're set, the scan runs on placeholder
+text like "TODO Program" and prints the exact lines to add.
 
 `smoke_test.py` sends two benign prompts and prints the replies. It tests
 connectivity, not safety — nothing scores the responses. Once it passes:
