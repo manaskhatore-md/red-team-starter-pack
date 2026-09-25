@@ -27,6 +27,7 @@ calls. Start with one objective and max_turns=3.
 
 import asyncio
 import os
+import uuid
 
 # Load .env file
 from dotenv import load_dotenv
@@ -51,7 +52,7 @@ from pyrit.score import (
 )
 from pyrit.setup import SQLITE, initialize_pyrit_async
 
-from pyrit_campaigns.target_factory import build_scoring_target, build_target, close_target
+from pyrit_campaigns.target_factory import build_scoring_target, build_target, close_target, model_name
 
 # TODO: REPLACE EVERY OBJECTIVE BELOW.
 #
@@ -141,6 +142,17 @@ async def main():
     executor_result = await AttackExecutor(max_concurrency=1).execute_attack_async(
         attack=attack,
         objectives=OBJECTIVES,
+        # Stored with each result, so the finding report can say what ran.
+        memory_labels={
+            "rt_campaign": "multi_turn_crescendo",
+            "rt_run_id": str(uuid.uuid4()),
+            "rt_provider": os.getenv("RT_PROVIDER", "gemini"),
+            "rt_target": model_name(target),
+            "rt_adversarial": model_name(adversarial),
+            "rt_judge": model_name(judge),
+            "rt_max_turns": str(MAX_TURNS),
+            "rt_max_backtracks": str(MAX_BACKTRACKS),
+        },
     )
 
     for result in executor_result.completed_results:

@@ -29,6 +29,7 @@ import asyncio
 import os
 import re
 import sys
+import uuid
 from collections import Counter, defaultdict
 from dataclasses import dataclass
 from pathlib import Path
@@ -50,7 +51,7 @@ from pyrit.score import SelfAskGeneralTrueFalseScorer
 from pyrit.setup import SQLITE, initialize_pyrit_async
 
 from pyrit_campaigns.profiles import PAIR_RUBRICS, Profile, describe, get_profile
-from pyrit_campaigns.target_factory import build_scoring_target, build_target, close_target
+from pyrit_campaigns.target_factory import build_scoring_target, build_target, close_target, model_name
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DATASETS_DIR = REPO_ROOT / "datasets"
@@ -107,11 +108,6 @@ def load_probes(profile: Profile) -> list[Probe]:
 
 def load_rubrics() -> dict:
     return yaml.safe_load(RUBRIC_FILE.read_text(encoding="utf-8"))["rubrics"]
-
-
-def model_name(target) -> str:
-    """The model id a target calls, for labeling results."""
-    return target.get_identifier().params.get("model_name") or type(target).__name__
 
 
 def build_rubric_scorers(profile: Profile, judge) -> list[tuple[str, SelfAskGeneralTrueFalseScorer]]:
@@ -260,7 +256,10 @@ async def main() -> int:
     # without anyone copying it over by hand.
     run_labels = {
         "rt_campaign": "single_turn_scan",
+        # Ties a run's results together - the report uses it to find a pair's partner.
+        "rt_run_id": str(uuid.uuid4()),
         "rt_profile": profile.key,
+        "rt_provider": os.getenv("RT_PROVIDER", "gemini"),
         "rt_target": model_name(target),
         "rt_judge": model_name(judge),
     }
@@ -275,6 +274,7 @@ async def main() -> int:
                     "rt_probe": probe.name,
                     "rt_harm_categories": ", ".join(probe.harm_categories),
                     "rt_pair_id": probe.pair_id,
+                    "rt_variant": probe.variant,
                 }
             }
             for probe in probes

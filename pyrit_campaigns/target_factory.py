@@ -298,6 +298,11 @@ def check_adc() -> None:
     print(f"Authenticating to {project} ({os.getenv('GOOGLE_VERTEX_REGION', 'us-east5')}) as {identity}")
 
 
+def model_name(target: PromptTarget) -> str:
+    """The model id a target calls, for labeling results."""
+    return target.get_identifier().params.get("model_name") or type(target).__name__
+
+
 async def close_target(target: PromptTarget) -> None:
     """Close a target if its class defines cleanup (not all of them do)."""
     if hasattr(target, "cleanup_target_async"):

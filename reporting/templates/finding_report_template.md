@@ -77,7 +77,7 @@ Writing guidance, because the template cannot enforce it:
 
 {{ reproducibility }}
 
-<!-- TODO: state how many attempts out of how many succeeded. LLM outputs are
+<!-- Counted from every run of this test in the PyRIT database. LLM outputs are
      stochastic. "3 of 10 attempts" is a legitimate and useful finding; presenting a
      one-off as deterministic will get the whole report challenged. For bias findings
      this is mandatory - a single differing response pair is noise. -->
