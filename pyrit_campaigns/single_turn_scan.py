@@ -34,6 +34,7 @@ import asyncio
 import os
 import re
 import sys
+import time
 import uuid
 from collections import Counter, defaultdict
 from dataclasses import dataclass
@@ -243,6 +244,7 @@ def check_placeholders(profile: Profile, probes: list[Probe]) -> None:
 
 
 async def main() -> int:
+    started = time.monotonic()
     profile = get_profile()
 
     # SQLITE so the transcript and scores survive the run - they are the evidence
@@ -371,7 +373,8 @@ async def main() -> int:
                 by_rubric["disparate_treatment"] += 1
 
     print("\n" + "=" * 78)
-    print(f"SCAN COMPLETE - {len(sent)} probes, {len(findings)} finding(s)")
+    minutes, seconds = divmod(round(time.monotonic() - started), 60)
+    print(f"SCAN COMPLETE - {len(sent)} probes, {len(findings)} finding(s), in {minutes}m {seconds:02d}s")
     print("=" * 78)
 
     for rubric, count in by_rubric.most_common():
