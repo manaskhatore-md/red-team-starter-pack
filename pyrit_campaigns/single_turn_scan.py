@@ -226,9 +226,8 @@ async def main() -> int:
         for item in profile.checklist:
             print(f"  [ ] {item}")
 
-    # TODO: turn these into report drafts automatically -
-    #   python -m reporting.export_finding_report --conversation-id <id> --out findings/
-    print("\nNext: reporting/export_finding_report.py takes any conversation_id above.")
+    print("\nNext: python -m reporting.export_finding_report --rubric any --out findings/")
+    print("      writes a report for every finding above (--conversation-id exports one).")
     print("LLM output is stochastic - re-run a finding 5-10 times before you report it.")
 
     for t in (target, judge):

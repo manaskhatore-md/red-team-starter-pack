@@ -10,8 +10,12 @@ Markdown finding per issue, using templates/finding_report_template.md.
     # export every attack the scorers flagged as successful
     python -m reporting.export_finding_report --outcome success --out findings/
 
+    # export every single-turn scan finding (any rubric, or name one)
+    python -m reporting.export_finding_report --rubric any --out findings/
+    python -m reporting.export_finding_report --rubric pii_disclosure --out findings/
+
     # export one specific conversation you want to write up
-    python -m reporting.export_finding_report --conversation-id <uuid> --out findings/
+    python -m reporting.export_finding_report --conversation-id CONVERSATION_ID --out findings/
 
 WHAT THIS TOOL WILL NOT DO: decide severity, write the impact statement, or cite the
 policy that was violated. Those are judgment calls, and they are the parts reviewers
@@ -37,10 +41,12 @@ load_dotenv()
 import truststore
 truststore.inject_into_ssl()
 
+import yaml
 from pyrit.memory import CentralMemory
 from pyrit.setup import SQLITE, initialize_pyrit_async
 
 TEMPLATE = Path(__file__).resolve().parent / "templates" / "finding_report_template.md"
+RUBRIC_FILE = Path(__file__).resolve().parent.parent / "judges" / "state_policy_rubric.yaml"
 
 # TODO: fill these in once for your agency; they are the same on every report.
 DEFAULTS = {
@@ -108,9 +114,25 @@ def format_scores(scores) -> str:
     return "\n".join(lines)
 
 
+def rubric_names() -> set[str]:
+    return set(yaml.safe_load(RUBRIC_FILE.read_text(encoding="utf-8"))["rubrics"])
+
+
 def build_report(result, memory, template: str) -> str:
     messages = memory.get_conversation_messages(conversation_id=result.conversation_id)
     scores = memory.get_prompt_scores(conversation_id=result.conversation_id)
+
+    # A scan finding is flagged by a rubric judge; a Crescendo finding by its outcome.
+    flagged = sorted(
+        {c for score in scores if score.get_value() is True for c in (score.score_category or [])}
+        & rubric_names()
+    )
+    if flagged:
+        verdict = f"Flagged by rubric judge(s): {', '.join(flagged)}. "
+    elif result.outcome.value == "success":
+        verdict = f"Objective achieved in {result.executed_turns} turn(s). "
+    else:
+        verdict = ""
 
     values = {
         **DEFAULTS,
@@ -122,8 +144,8 @@ def build_report(result, memory, template: str) -> str:
         "discovered_date": result.timestamp.date().isoformat() if result.timestamp else "unknown",
         "model_under_test": "TODO: model id and version - RT_PROVIDER/RT_MODEL used for this run",
         "summary": (
-            f"Objective achieved in {result.executed_turns} turn(s). "
-            f"Attack outcome: {result.outcome.value} ({result.outcome_reason or 'no reason recorded'}). "
+            verdict
+            + f"Attack outcome: {result.outcome.value} ({result.outcome_reason or 'no reason recorded'}). "
             "TODO: rewrite this in plain language - what can the system be made to do, and who is harmed?"
         ),
         "target_description": "TODO: endpoint or model the attack ran against",
@@ -146,6 +168,19 @@ def build_report(result, memory, template: str) -> str:
     return render(template, values)
 
 
+def flagged_by_rubric(result, memory, rubrics: set[str]) -> bool:
+    """True if one of the given rubric judges scored this conversation as a violation.
+
+    single_turn_scan.py records policy violations as auxiliary scores, not as the
+    attack outcome, so --outcome does not find them. This is the same test the scan
+    uses to count a finding: a true score, in the rubric's score_category.
+    """
+    for score in memory.get_prompt_scores(conversation_id=result.conversation_id):
+        if score.get_value() is True and rubrics & set(score.score_category or []):
+            return True
+    return False
+
+
 def slug(text: str, limit: int = 50) -> str:
     keep = [c if c.isalnum() else "-" for c in text.lower()]
     return "".join(keep)[:limit].strip("-")
@@ -157,11 +192,12 @@ async def main():
     parser.add_argument("--outcome", default="success", help="Filter by outcome (success/failure/undetermined/error)")
     parser.add_argument("--conversation-id", help="Export a single conversation")
     parser.add_argument("--out", type=Path, default=Path("findings"), help="Output directory")
+    parser.add_argument(
+        "--rubric",
+        help="Export single-turn scan findings: results a rubric judge flagged. "
+        "Give a rubric name from judges/state_policy_rubric.yaml, or 'any'. Ignores --outcome.",
+    )
     parser.add_argument("--limit", type=int, default=50)
-    # TODO: add a --rubric filter. single_turn_scan.py records policy violations as
-    # auxiliary scores rather than attack outcomes, so `--outcome success` does not
-    # surface them - pass the conversation_id the scan printed, or query
-    # memory.get_prompt_scores() and select on score_category.
     args = parser.parse_args()
 
     # Must match the memory_db_type the campaign used, or the run will not be here.
@@ -170,6 +206,17 @@ async def main():
 
     if args.conversation_id:
         results = memory.get_attack_results(conversation_id=args.conversation_id)
+    elif args.rubric:
+        # Scan results are recorded with outcome "undetermined", so search every
+        # result and keep the ones a rubric judge flagged.
+        # Only rubric scores count: other true/false scores, like Crescendo's refusal
+        # scorer, record "the model refused", which is not a finding.
+        known = rubric_names()
+        if args.rubric != "any" and args.rubric not in known:
+            raise SystemExit(f"Unknown rubric {args.rubric!r}. Choose from: {', '.join(sorted(known))}, any")
+        wanted = known if args.rubric == "any" else {args.rubric}
+        results = [r for r in memory.get_attack_results() if flagged_by_rubric(r, memory, wanted)]
+        results = results[: args.limit]
     else:
         results = memory.get_attack_results(outcome=args.outcome, limit=args.limit)
 
@@ -183,8 +230,11 @@ async def main():
         return
 
     if not results:
-        print(f"No attack results matching outcome={args.outcome!r}.")
-        print("Run a campaign first (pyrit_campaigns/) with memory_db_type=SQLITE.")
+        if args.rubric:
+            print(f"No scan results flagged by rubric {args.rubric!r}.")
+        else:
+            print(f"No attack results matching outcome={args.outcome!r}.")
+            print("Run a campaign first (pyrit_campaigns/) with memory_db_type=SQLITE.")
         return
 
     template = TEMPLATE.read_text(encoding="utf-8")
