@@ -95,8 +95,14 @@ def format_scores(scores) -> str:
         return "(no scores recorded - was a scorer configured?)"
     lines = []
     for score in scores:
-        scorer = (score.scorer_class_identifier or {}).get("__type__", "unknown scorer")
-        lines.append(f"- **{scorer}** -> `{score.score_value}` ({score.score_type})")
+        # scorer_class_identifier is a ComponentIdentifier object (PyRIT 1.1+), not a dict.
+        identifier = score.scorer_class_identifier
+        scorer = identifier.class_name if identifier else "unknown scorer"
+        # Every rubric uses the same scorer class, so the rubric name (score_category)
+        # is what tells them apart.
+        rubric = ", ".join(score.score_category or [])
+        label = f"{scorer} [{rubric}]" if rubric else scorer
+        lines.append(f"- **{label}** -> `{score.score_value}` ({score.score_type})")
         if score.score_rationale:
             lines.append(f"  - rationale: {score.score_rationale}")
     return "\n".join(lines)
