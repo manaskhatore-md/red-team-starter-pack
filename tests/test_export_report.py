@@ -181,7 +181,24 @@ def test_reproduction_steps_for_a_scan_result():
     })
     assert "RT_PROFILE=public_conversational" in steps
     assert "RT_JUDGE_PROVIDER=anthropic" in steps
+    assert "RT_JUDGE_MODEL=anthropic/claude-haiku-4-5" in steps
     assert "datasets/prompt_injection.yaml" in steps
+
+
+def test_reproduction_steps_for_a_crescendo_result_pin_every_model():
+    steps = ex.reproduction_steps({
+        "rt_campaign": "multi_turn_crescendo",
+        "rt_provider": "gemini",
+        "rt_target": "gemini/gemini-2.5-flash",
+        "rt_judge_provider": "bedrock",
+        "rt_judge": "bedrock/converse/us.anthropic.claude-sonnet-5-5",
+        "rt_adversarial_provider": "openai",
+        "rt_adversarial": "openai/gpt-5",
+        "rt_max_turns": "5",
+        "rt_max_backtracks": "5",
+    })
+    assert "RT_JUDGE_MODEL=bedrock/converse/us.anthropic.claude-sonnet-5-5" in steps
+    assert "RT_ADVERSARIAL_PROVIDER=openai` and `RT_ADVERSARIAL_MODEL=openai/gpt-5" in steps
 
 
 def test_reproduction_steps_without_labels_asks_the_analyst():

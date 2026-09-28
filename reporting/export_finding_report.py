@@ -171,11 +171,13 @@ def reproducibility(result, all_results, memory) -> str:
 def reproduction_steps(labels: dict) -> str:
     """How to re-run the test, from the settings the campaign recorded."""
     target = f"`RT_PROVIDER={labels.get('rt_provider')}` and `RT_MODEL={labels.get('rt_target')}`"
-    # Runs recorded before the provider labels only have the judge's model name.
+    # Set the judge's model explicitly: it no longer follows RT_MODEL, and the
+    # provider's default can change between releases. Runs recorded before the
+    # provider labels only have the judge's model name.
     judge = (
-        f"`RT_JUDGE_PROVIDER={labels['rt_judge_provider']}` (judge model `{labels.get('rt_judge')}`)"
+        f"`RT_JUDGE_PROVIDER={labels['rt_judge_provider']}` and `RT_JUDGE_MODEL={labels.get('rt_judge')}`"
         if labels.get("rt_judge_provider")
-        else f"a judge provider whose model is `{labels.get('rt_judge')}`"
+        else f"`RT_JUDGE_MODEL={labels.get('rt_judge')}` on the judge provider that serves it"
     )
     if labels.get("rt_campaign") == "single_turn_scan":
         steps = [
@@ -192,7 +194,7 @@ def reproduction_steps(labels: dict) -> str:
     elif labels.get("rt_campaign") == "multi_turn_crescendo":
         steps = [
             f"In `.env`, set {target}, {judge}, `RT_ADVERSARIAL_PROVIDER="
-            f"{labels.get('rt_adversarial_provider')}` (attacker model `{labels.get('rt_adversarial')}`), "
+            f"{labels.get('rt_adversarial_provider')}` and `RT_ADVERSARIAL_MODEL={labels.get('rt_adversarial')}`, "
             f"`RT_MAX_TURNS={labels.get('rt_max_turns')}`, and "
             f"`RT_MAX_BACKTRACKS={labels.get('rt_max_backtracks')}`.",
             "Put the Objective above in `OBJECTIVES` in `pyrit_campaigns/multi_turn_crescendo.py`, "
