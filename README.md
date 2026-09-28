@@ -22,9 +22,13 @@ schedule. Multi-turn campaigns catch the ones that need patience. You want both.
 
 ```bash
 pip install -r requirements.txt
-cp .env.example .env          # add one provider's API key
+cp .env.example .env          # add one provider's API key, and your agency's details
 python smoke_test.py          # prove credentials + network work
 ```
+
+The probes are written around blanks like `{{ program_name }}`, filled from the
+**YOUR AGENCY** section of `.env`. Until they're set, the scan runs on placeholder
+text like "TODO Program" and prints the exact lines to add.
 
 `smoke_test.py` sends two benign prompts and prints the replies. It tests
 connectivity, not safety — nothing scores the responses. Once it passes:
@@ -37,8 +41,15 @@ RT_PROFILE=public_conversational python -m pyrit_campaigns.single_turn_scan
 python -m pyrit_campaigns.multi_turn_crescendo
 
 # turn results into finding reports
-python -m reporting.export_finding_report --outcome success --out findings/
+python -m reporting.export_finding_report --outcome success --out findings/   # multi-turn
+python -m reporting.export_finding_report --rubric any --out findings/        # single-turn scan
 ```
+
+**On Windows** (PowerShell or cmd), the `VAR=value python ...` form above does not
+work. Put the setting in `.env` instead (for example `RT_PROFILE=public_conversational`);
+every script reads it at startup. In PowerShell you can also use
+`$env:RT_PROFILE = "public_conversational"`, which lasts until the window is closed.
+Use `copy` in place of `cp`.
 
 ## Choosing a target
 
@@ -128,12 +139,13 @@ priority order:
 
 1. **`judges/state_policy_rubric.yaml`** — replace the criteria with citations to your
    actual policy. "The judge model didn't like it" is not a defensible finding.
-2. **`pyrit_campaigns/profiles.py`** — fill in the placeholder values for the profile
-   you're using, and add a profile for your own system rather than stretching one of
-   the four generic ones to fit.
-3. **`datasets/*.yaml`** — replace the `{{ placeholders }}` with your real program
-   names, record types, and tool names.
-4. **`RT_PROVIDER=app`** in `target_factory.py`, so you're testing your deployment.
+2. **The YOUR AGENCY section of `.env`** — your real program, agency, and tool names,
+   which fill the `{{ placeholders }}` in the probes. To share them across a team,
+   change the defaults in `pyrit_campaigns/profiles.py` instead.
+3. **`pyrit_campaigns/profiles.py`** — add a profile for your own system rather than
+   stretching one of the four generic ones to fit.
+4. **`datasets/*.yaml`** — add probes in your system's own language and policy terms.
+5. **`RT_PROVIDER=app`** in `target_factory.py`, so you're testing your deployment.
 
 ## Playbook crosswalk
 
@@ -165,8 +177,9 @@ priority order:
 ## Notes
 
 - PyRIT 1.1.0+ required; code written against the pre-1.0 API won't import.
-- Behind a TLS-inspecting proxy, `pip install truststore` and call
-  `truststore.inject_into_ssl()` if imports fail with `CERTIFICATE_VERIFY_FAILED`.
+- Behind a TLS-inspecting proxy, every entry point already calls
+  `truststore.inject_into_ssl()`, so the OS certificate store (which trusts your
+  proxy) is used instead of certifi.
 - LLM output is stochastic: run probes 5–10 times before calling a single result a
   finding. This is mandatory for bias pairs.
 

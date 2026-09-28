@@ -18,6 +18,14 @@ response_error is what distinguishes "the model answered" from "something came b
 import asyncio
 import sys
 
+# Load .env file
+from dotenv import load_dotenv
+load_dotenv()
+
+# Fix for corporate TLS-inspecting proxies
+import truststore
+truststore.inject_into_ssl()
+
 from pyrit.executor.attack import AttackExecutor, PromptSendingAttack
 from pyrit.setup import IN_MEMORY, initialize_pyrit_async
 
