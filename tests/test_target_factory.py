@@ -91,6 +91,17 @@ def test_unknown_judge_provider_names_the_judge_setting(fake_keys, clean_env):
         build_scoring_target()
 
 
+def test_a_judge_that_is_the_target_gets_a_note(fake_keys, capsys):
+    build_scoring_target()
+    assert "the judge is the model under test" in capsys.readouterr().out
+
+
+def test_a_judge_on_another_model_gets_no_note(fake_keys, clean_env, capsys):
+    clean_env.setenv("RT_JUDGE_PROVIDER", "anthropic")
+    build_scoring_target()
+    assert "model under test" not in capsys.readouterr().out
+
+
 # --- Bedrock preflight ------------------------------------------------------------
 
 

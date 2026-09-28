@@ -115,6 +115,8 @@ def build_target(role: str = "target", *, provider: str | None = None, model: st
     provider = (provider or resolve_provider(role)).lower()
     model = model or resolve_model(role, provider)
     label = {"target": "Target", "judge": "Judge", "adversarial": "Attacker"}[role]
+    if role != "target" and model and model == resolve_model("target"):
+        _warn_same_as_target(role, model)
 
     if provider in PROVIDER_DEFAULTS:
         _default, key_var = PROVIDER_DEFAULTS[provider]
@@ -184,6 +186,16 @@ def build_target(role: str = "target", *, provider: str | None = None, model: st
     raise SystemExit(
         f"Unknown {ROLES[role][0]} {provider!r}. Options: {', '.join(PROVIDER_DEFAULTS)}, bedrock, vertex, app"
     )
+
+
+def _warn_same_as_target(role: str, model: str) -> None:
+    """Say so when a judge or attacker is the model under test. Allowed, not advised."""
+    provider_var, model_var, _fallback = ROLES[role]
+    why = {
+        "judge": "A model grading its own answers tends to go easy on them.",
+        "adversarial": "An attacker with the target's guardrails tends to refuse to escalate.",
+    }[role]
+    print(f"Note: the {role} is the model under test ({model}). {why} Set {provider_var} and {model_var}.")
 
 
 def _require_litellm() -> None:
