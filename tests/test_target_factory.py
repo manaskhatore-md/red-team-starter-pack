@@ -12,7 +12,7 @@ from pyrit_campaigns.target_factory import build_scoring_target, build_target, m
 
 
 def test_default_provider_is_gemini(fake_keys):
-    assert model_name(build_target()) == "gemini/gemini-2.5-flash"
+    assert model_name(build_target()) == "gemini/gemini-3.8-flash"
 
 
 @pytest.mark.parametrize("provider", sorted(target_factory.PROVIDER_DEFAULTS))

@@ -40,20 +40,20 @@ from pyrit.prompt_target import LiteLLMChatTarget, PromptTarget, limit_requests_
 # row for Azure OpenAI ("azure/<deployment>", AZURE_API_KEY) if that is how you buy
 # inference. Bedrock and Vertex are credential-based and handled separately below.
 PROVIDER_DEFAULTS: dict[str, tuple[str, str]] = {
-    "gemini": ("gemini/gemini-2.5-flash", "GEMINI_API_KEY"),
+    "gemini": ("gemini/gemini-3.8-flash", "GEMINI_API_KEY"),
     "openai": ("openai/gpt-5", "OPENAI_API_KEY"),
     "anthropic": ("anthropic/claude-haiku-4-5", "ANTHROPIC_API_KEY"),
 }
 
-# Claude Sonnet 4 on Bedrock via the Converse API. Prefer "bedrock/converse/" over
+# Claude Sonnet 5.5 on Bedrock via the Converse API. Prefer "bedrock/converse/" over
 # plain "bedrock/" for Anthropic models - it is the current API and handles system
 # prompts and multi-turn correctly.
 # TODO: change this to a model your account has actually been granted. Bedrock
 # requires per-model access approval in the console, and the "us." prefix selects a
 # cross-region inference profile (drop it for a single-region model id).
-DEFAULT_BEDROCK_MODEL = "bedrock/converse/us.anthropic.claude-sonnet-4-20250514-v1:0"
+DEFAULT_BEDROCK_MODEL = "bedrock/converse/us.anthropic.claude-sonnet-5-5"
 
-# Generous on purpose. On reasoning models (Gemini 2.5, GPT-5, Claude with extended
+# Generous on purpose. On reasoning models (Gemini 2.5 and later, GPT-5, Claude with extended
 # thinking) internal reasoning tokens count against this same budget, so a tight limit
 # truncates the visible answer mid-sentence. That silently corrupts scoring: a
 # cut-off answer reads as a refusal to a judge, and a cut-off refusal reads as
