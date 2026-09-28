@@ -108,10 +108,12 @@ red-team-starter-pack/
 │   ├── state_policy_rubric.yaml        # Criteria-based scoring prompts (Pass/Fail)
 │   └── rag_grounding_eval.py           # Grounding & hallucination reference checker
 │
-└── reporting/                          # Playbook Finding Report Generators
-    ├── export_finding_report.py        # Converts test JSON/CSV into Playbook Markdown
-    └── templates/                      # Markdown templates matching Playbook Section 8
-        └── finding_report_template.md
+├── reporting/                          # Playbook Finding Report Generators
+│   ├── export_finding_report.py        # Converts test JSON/CSV into Playbook Markdown
+│   └── templates/                      # Markdown templates matching Playbook Section 8
+│       └── finding_report_template.md
+│
+└── tests/                              # Offline checks of the pack itself - no keys needed
 ```
 
 ## Pick your deployment profile
@@ -173,6 +175,21 @@ priority order:
   transcripts. Review before sharing, even internally.
 - **Authorization first** for anything beyond a raw model endpoint, and check the ToS
   before automated testing of a vendor system.
+
+## Testing the pack itself
+
+`tests/` checks the pack's own code offline: provider selection, the report
+exporter, the CI workflow, and that profiles, datasets, and rubrics agree. It needs
+no API keys or network and never reads your `.env`, so it is safe to run anywhere.
+
+```
+pip install -r requirements-dev.txt
+python -m pytest
+```
+
+Known bugs are written as tests marked `xfail` ("expected to fail"), so they show
+as `xfailed` rather than failing the run. When one is fixed, its test starts
+passing and pytest reports that as a failure until the marker is removed.
 
 ## Notes
 

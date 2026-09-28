@@ -25,3 +25,6 @@ dbdata/
 
 # Grounding eval set - may contain real constituent questions pulled from logs
 judges/grounding_eval_set.json
+
+# pytest
+.pytest_cache/

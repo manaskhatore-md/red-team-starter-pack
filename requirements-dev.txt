@@ -1,0 +1,7 @@
+# pip install -r requirements-dev.txt
+#
+# For working on the pack itself. Not needed to run a campaign.
+-r requirements.txt
+
+# The offline test suite in tests/. No API keys or network needed.
+pytest>=8
