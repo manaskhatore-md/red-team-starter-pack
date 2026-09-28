@@ -2,7 +2,6 @@
 
 from pathlib import Path
 
-import pytest
 import yaml
 
 WORKFLOW = Path(__file__).resolve().parents[1] / ".github" / "workflows" / "redteam-ci-gate.yml"
@@ -17,7 +16,6 @@ def _steps():
         yield from job.get("steps", [])
 
 
-@pytest.mark.xfail(strict=True, reason="Bug C: `scan | tee` hides the scan's exit code, so the gate never fails")
 def test_piped_steps_keep_the_exit_code():
     # GitHub's default run shell is `bash -e {0}`: no pipefail, so a pipeline exits
     # with its LAST command's status. `scan | tee log` then reports tee's success
@@ -29,6 +27,5 @@ def test_piped_steps_keep_the_exit_code():
         assert step.get("shell") == "bash", f"step {step.get('name')!r} pipes output without shell: bash"
 
 
-@pytest.mark.xfail(strict=True, reason="The workflow asks for pull-requests: write and never uses it")
 def test_workflow_asks_only_for_the_permissions_it_uses():
     assert _workflow()["permissions"] == {"contents": "read"}

@@ -37,9 +37,10 @@ on:
     - cron: "0 8 * * 1"
   workflow_dispatch:
 
+# Read-only. Nothing here comments on the PR; results go to the job log and the
+# uploaded artifact. Grant more only when a step needs it.
 permissions:
   contents: read
-  pull-requests: write
 
 jobs:
   single-turn-scan:
@@ -83,6 +84,10 @@ jobs:
           # Makes a policy violation fail the job. Unset for a report-only run - see
           # the phased rollout below.
           RT_FAIL_ON_FINDING: "1"
+        # shell: bash adds pipefail. GitHub's default shell does not, and a pipeline
+        # then exits with tee's status - so the scan could exit 1 on a finding and
+        # the job would still pass.
+        shell: bash
         run: python -m pyrit_campaigns.single_turn_scan | tee scan-output.txt
 
       - name: Upload results
