@@ -46,13 +46,20 @@ def run_exporter(memory, monkeypatch, capsys):
 # --- --list and the outcome filter --------------------------------------------
 
 
-@pytest.mark.xfail(strict=True, reason="Bug D: --list silently applies the default --outcome success filter")
 def test_list_shows_every_outcome(memory, run_exporter):
     add_result(memory, "scan probe", AttackOutcome.UNDETERMINED)
     add_result(memory, "crescendo objective", AttackOutcome.SUCCESS)
     add_result(memory, "held firm", AttackOutcome.FAILURE)
     out = run_exporter("--list")
     assert "scan probe" in out and "held firm" in out and "crescendo objective" in out
+
+
+def test_list_says_when_it_is_truncated(memory, run_exporter):
+    for i in range(3):
+        add_result(memory, f"probe {i}", AttackOutcome.UNDETERMINED, minutes=i)
+    out = run_exporter("--list", "--limit", "2")
+    assert "probe 0" not in out and "probe 2" in out
+    assert "newest 2 of 3" in out
 
 
 def test_list_with_an_explicit_outcome_filters(memory, run_exporter):

@@ -4,8 +4,9 @@ Red team results are only useful once someone who does not run PyRIT can read th
 and act. This module pulls a run out of PyRIT's memory database and renders one
 Markdown finding per issue, using templates/finding_report_template.md.
 
-    # list what's in the database
+    # list what's in the database (every outcome, unless you filter)
     python -m reporting.export_finding_report --list
+    python -m reporting.export_finding_report --list --outcome success
 
     # export every attack the scorers flagged as successful
     python -m reporting.export_finding_report --outcome success --out findings/
@@ -330,7 +331,11 @@ def slug(text: str, limit: int = 50) -> str:
 async def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--list", action="store_true", help="List attack results in the database and exit")
-    parser.add_argument("--outcome", default="success", help="Filter by outcome (success/failure/undetermined/error)")
+    parser.add_argument(
+        "--outcome",
+        help="Filter by outcome (success/failure/undetermined/error). Exports default to success; "
+        "--list shows every outcome unless you give one.",
+    )
     parser.add_argument("--conversation-id", help="Export a single conversation")
     parser.add_argument("--out", type=Path, default=Path("findings"), help="Output directory")
     parser.add_argument(
@@ -360,17 +365,28 @@ async def main():
         wanted = known if args.rubric == "any" else {args.rubric}
         results = latest_per_test(r for r in all_results if flagged_by_rubric(r, memory, wanted))
         results = results[: args.limit]
+    elif args.list and not args.outcome:
+        # Listing is for seeing what is there, so it shows every result. Scan results
+        # are all "undetermined" - an outcome filter here would hide every one of them.
+        results = sorted(all_results, key=lambda r: r.timestamp.timestamp() if r.timestamp else 0)
+        results = results[-args.limit :]
     else:
+        args.outcome = args.outcome or "success"
         results = latest_per_test(r for r in all_results if r.outcome.value == args.outcome)
         results = results[: args.limit]
 
     if args.list:
         for result in results:
+            labels = result.labels or {}
             print(
                 f"{str(result.attack_result_id)[:8]}  {result.outcome.value:12} "
-                f"turns={result.executed_turns:<3} {result.objective[:70]}"
+                f"{labels.get('rt_campaign', 'unlabeled'):20} run={labels.get('rt_run_id', '-')[:8]:8} "
+                f"turns={result.executed_turns:<3} {result.objective[:60]}"
             )
-        print(f"\n{len(results)} result(s).")
+        shown = f"{len(results)} result(s)"
+        if len(results) < len(all_results) and not (args.outcome or args.rubric or args.conversation_id):
+            shown += f" - the newest {len(results)} of {len(all_results)}; raise --limit to see more"
+        print(f"\n{shown}.")
         return
 
     if not results:
