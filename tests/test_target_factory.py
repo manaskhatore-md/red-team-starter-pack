@@ -41,23 +41,54 @@ def test_judge_defaults_to_the_target_provider(fake_keys, clean_env):
     assert model_name(build_scoring_target()) == "openai/gpt-5"
 
 
-@pytest.mark.xfail(strict=True, reason="Bug A: the judge inherits RT_MODEL from the target's provider")
 def test_judge_on_another_provider_gets_that_providers_model(fake_keys, clean_env):
-    # Target on Gemini with an explicit model, judge on Anthropic. Today the judge
-    # is built with model "gemini/gemini-2.5-flash" and the Anthropic key, so every
-    # judge call fails - or, with a model string LiteLLM routes elsewhere, silently
-    # grades with the wrong model.
+    # Target on Gemini with an explicit model, judge on Anthropic. The judge used to
+    # be built with the Gemini model id and the Anthropic key, so every judge call
+    # failed.
     clean_env.setenv("RT_PROVIDER", "gemini")
     clean_env.setenv("RT_MODEL", "gemini/gemini-2.5-flash")
     clean_env.setenv("RT_JUDGE_PROVIDER", "anthropic")
     assert model_name(build_scoring_target()) == "anthropic/claude-haiku-4-5"
 
 
-@pytest.mark.xfail(strict=True, reason="Bug A: there is no RT_JUDGE_MODEL setting")
 def test_rt_judge_model_picks_the_judge_model(fake_keys, clean_env):
     clean_env.setenv("RT_JUDGE_PROVIDER", "anthropic")
     clean_env.setenv("RT_JUDGE_MODEL", "anthropic/claude-sonnet-4-5")
     assert model_name(build_scoring_target()) == "anthropic/claude-sonnet-4-5"
+
+
+def test_judge_on_the_target_provider_does_not_inherit_rt_model(fake_keys, clean_env):
+    # RT_MODEL is the model under test. A judge that picked it up would grade its
+    # own answers without anyone having asked for that.
+    clean_env.setenv("RT_MODEL", "gemini/gemini-2.5-pro")
+    assert model_name(build_scoring_target()) == target_factory.PROVIDER_DEFAULTS["gemini"][0]
+
+
+@pytest.mark.parametrize(
+    "settings, expected",
+    [
+        ({}, "gemini"),
+        ({"RT_PROVIDER": "bedrock"}, "bedrock"),
+        ({"RT_PROVIDER": "bedrock", "RT_JUDGE_PROVIDER": "anthropic"}, "anthropic"),
+        ({"RT_PROVIDER": "bedrock", "RT_JUDGE_PROVIDER": "anthropic", "RT_ADVERSARIAL_PROVIDER": "openai"}, "openai"),
+    ],
+)
+def test_attacker_provider_falls_back_to_judge_then_target(clean_env, settings, expected):
+    for name, value in settings.items():
+        clean_env.setenv(name, value)
+    assert target_factory.resolve_provider("adversarial") == expected
+
+
+def test_rt_adversarial_model_picks_the_attacker_model(fake_keys, clean_env):
+    clean_env.setenv("RT_ADVERSARIAL_PROVIDER", "openai")
+    clean_env.setenv("RT_ADVERSARIAL_MODEL", "openai/gpt-5-mini")
+    assert model_name(build_target("adversarial")) == "openai/gpt-5-mini"
+
+
+def test_unknown_judge_provider_names_the_judge_setting(fake_keys, clean_env):
+    clean_env.setenv("RT_JUDGE_PROVIDER", "nope")
+    with pytest.raises(SystemExit, match="Unknown RT_JUDGE_PROVIDER"):
+        build_scoring_target()
 
 
 # --- Bedrock preflight ------------------------------------------------------------

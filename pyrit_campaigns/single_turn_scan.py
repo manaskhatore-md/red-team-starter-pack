@@ -57,7 +57,13 @@ from pyrit.score import SelfAskGeneralTrueFalseScorer
 from pyrit.setup import SQLITE, initialize_pyrit_async
 
 from pyrit_campaigns.profiles import PAIR_RUBRICS, Profile, describe, env_var, get_profile
-from pyrit_campaigns.target_factory import build_scoring_target, build_target, close_target, model_name
+from pyrit_campaigns.target_factory import (
+    build_scoring_target,
+    build_target,
+    close_target,
+    model_name,
+    resolve_provider,
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DATASETS_DIR = REPO_ROOT / "datasets"
@@ -291,9 +297,9 @@ async def main() -> int:
         # Ties a run's results together - the report uses it to find a pair's partner.
         "rt_run_id": str(uuid.uuid4()),
         "rt_profile": profile.key,
-        "rt_provider": os.getenv("RT_PROVIDER", "gemini"),
+        "rt_provider": resolve_provider("target"),
         "rt_target": model_name(target),
-        "rt_judge_provider": os.getenv("RT_JUDGE_PROVIDER", os.getenv("RT_PROVIDER", "gemini")),
+        "rt_judge_provider": resolve_provider("judge"),
         "rt_judge": model_name(judge),
     }
 

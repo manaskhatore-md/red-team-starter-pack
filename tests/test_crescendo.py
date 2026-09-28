@@ -4,7 +4,7 @@ import asyncio
 
 import pytest
 
-from pyrit_campaigns import multi_turn_crescendo
+from pyrit_campaigns import multi_turn_crescendo, target_factory
 
 
 class _Stop(Exception):
@@ -19,8 +19,8 @@ def built_providers(monkeypatch):
     async def no_db(*args, **kwargs):
         pass
 
-    def fake_build_target(*, provider=None, model=None):
-        calls.append(provider)
+    def fake_build_target(role="target", *, provider=None, model=None):
+        calls.append(provider or target_factory.resolve_provider(role))
         return object()
 
     def stop():
@@ -52,10 +52,9 @@ def test_attacker_falls_back_to_the_judge_provider(built_providers, clean_env):
     assert attacker == "anthropic"
 
 
-@pytest.mark.xfail(strict=True, reason="Bug B: with no judge or attacker set, the attacker falls back to gemini")
 def test_single_provider_setup_attacks_with_that_provider(built_providers, clean_env):
-    # A Bedrock-only setup has no Gemini key, so today the run dies building an
-    # attacker nobody asked for.
+    # A Bedrock-only setup has no Gemini key. The attacker used to fall back to
+    # gemini, so the run died building an attacker nobody asked for.
     clean_env.setenv("RT_PROVIDER", "bedrock")
     target, attacker = built_providers()
     assert attacker == "bedrock"
