@@ -1,6 +1,7 @@
 """Provider selection: which model gets attacked, which one attacks, which one judges."""
 
 import asyncio
+import os
 import uuid
 
 import pytest
@@ -57,6 +58,83 @@ def test_rt_judge_model_picks_the_judge_model(fake_keys, clean_env):
     clean_env.setenv("RT_JUDGE_PROVIDER", "anthropic")
     clean_env.setenv("RT_JUDGE_MODEL", "anthropic/claude-sonnet-4-5")
     assert model_name(build_scoring_target()) == "anthropic/claude-sonnet-4-5"
+
+
+# --- Bedrock preflight ------------------------------------------------------------
+
+
+@pytest.fixture
+def aws(monkeypatch, tmp_path):
+    """An AWS setup built from scratch: one profile "p" with static keys, no network.
+
+    STS is replaced by a fake that answers with the access key it was signed with,
+    and rejects the keys in `rejected` the way AWS rejects an invalid key.
+    """
+    import boto3
+    from botocore.exceptions import ClientError
+
+    for name in list(os.environ):
+        if name.startswith("AWS_"):
+            monkeypatch.delenv(name)
+    (tmp_path / "credentials").write_text("[p]\naws_access_key_id = PROFILEKEY\naws_secret_access_key = s\n")
+    (tmp_path / "config").write_text("[profile p]\nregion = us-east-1\n")
+    monkeypatch.setenv("AWS_SHARED_CREDENTIALS_FILE", str(tmp_path / "credentials"))
+    monkeypatch.setenv("AWS_CONFIG_FILE", str(tmp_path / "config"))
+    monkeypatch.setenv("AWS_REGION_NAME", "us-east-1")
+    rejected = set()
+
+    class FakeSTS:
+        def __init__(self, key):
+            self.key = key
+
+        def get_caller_identity(self):
+            if self.key in rejected:
+                error = {"Error": {"Code": "InvalidClientTokenId", "Message": "The security token is invalid."}}
+                raise ClientError(error, "GetCallerIdentity")
+            return {"Arn": f"arn:aws:iam::000000000000:user/{self.key}"}
+
+    monkeypatch.setattr(boto3.session.Session, "client", lambda self, name, **kw: FakeSTS(self.get_credentials().access_key))
+    return rejected
+
+
+def _env_keys(monkeypatch, key):
+    monkeypatch.setenv("AWS_ACCESS_KEY_ID", key)
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "s")
+
+
+def _litellm_key():
+    from litellm.llms.bedrock.base_aws_llm import BaseAWSLLM
+
+    return BaseAWSLLM().get_credentials(aws_region_name="us-east-1").access_key
+
+
+def test_preflight_uses_aws_profile_when_no_keys_are_set(aws, clean_env, capsys):
+    clean_env.setenv("AWS_PROFILE", "p")
+    target_factory.check_aws_creds()
+    assert "user/PROFILEKEY" in capsys.readouterr().out
+    assert _litellm_key() == "PROFILEKEY"
+
+
+def test_preflight_checks_the_keys_litellm_signs_with(aws, clean_env):
+    # The failure this guards: AWS_PROFILE names a working SSO profile, and .env
+    # still holds a placeholder AWS_ACCESS_KEY_ID. LiteLLM signs with the
+    # placeholder. The preflight used to open the profile, print a valid identity,
+    # and let every judge call fail.
+    clean_env.setenv("AWS_PROFILE", "p")
+    _env_keys(clean_env, "your-access-key-id")
+    aws.add("your-access-key-id")
+    assert _litellm_key() == "your-access-key-id"
+    with pytest.raises(SystemExit, match="AWS_ACCESS_KEY_ID in the environment"):
+        target_factory.check_aws_creds()
+
+
+def test_aws_profile_name_outranks_keys_for_both(aws, clean_env, capsys):
+    clean_env.setenv("AWS_PROFILE_NAME", "p")
+    _env_keys(clean_env, "ENVKEY")
+    aws.add("ENVKEY")
+    target_factory.check_aws_creds()
+    assert "user/PROFILEKEY" in capsys.readouterr().out
+    assert _litellm_key() == "PROFILEKEY"
 
 
 # --- Vertex --------------------------------------------------------------------
