@@ -225,7 +225,8 @@ def _warn_same_as_target(role: str, model: str) -> None:
         "judge": "A model grading its own answers tends to go easy on them.",
         "adversarial": "An attacker with the target's guardrails tends to refuse to escalate.",
     }[role]
-    print(f"Note: the {role} is the model under test ({model}). {why} Set {provider_var} and {model_var}.")
+    name = {"judge": "judge", "adversarial": "attacker"}[role]
+    print(f"Note: the {name} is the model under test ({model}). {why} Set {provider_var} and {model_var}.")
 
 
 def _require_litellm() -> None:
