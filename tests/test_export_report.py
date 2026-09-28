@@ -87,6 +87,50 @@ def test_second_export_keeps_the_first_in_the_manifest(memory, run_exporter, tmp
     assert {m["objective"] for m in manifest} == {"first objective", "second objective"}
 
 
+# --- selecting one run -----------------------------------------------------------
+
+
+@pytest.fixture
+def two_runs(memory):
+    old = [
+        add_result(memory, "probe", AttackOutcome.SUCCESS, minutes=0, rt_run_id="aaaa1111-old"),
+        add_result(memory, "other", AttackOutcome.SUCCESS, minutes=1, rt_run_id="aaaa1111-old"),
+    ]
+    new = [add_result(memory, "probe", AttackOutcome.SUCCESS, minutes=10, rt_run_id="bbbb2222-new")]
+    return old, new
+
+
+def test_run_id_prefix_exports_only_that_run(two_runs, run_exporter, tmp_path):
+    run_exporter("--run-id", "aaaa1111", "--out", str(tmp_path))
+    manifest = json.loads((tmp_path / "manifest.json").read_text(encoding="utf-8"))
+    assert {m["objective"] for m in manifest} == {"probe", "other"}
+
+
+def test_latest_run_exports_only_the_newest(two_runs, run_exporter, tmp_path):
+    run_exporter("--latest-run", "--out", str(tmp_path))
+    manifest = json.loads((tmp_path / "manifest.json").read_text(encoding="utf-8"))
+    assert [m["objective"] for m in manifest] == ["probe"]
+
+
+def test_reproducibility_still_counts_every_run(two_runs, run_exporter, tmp_path):
+    # Exporting one run must not shrink "flagged in N of M runs" to that run.
+    run_exporter("--latest-run", "--out", str(tmp_path))
+    report = next(tmp_path.glob("*-probe.md")).read_text(encoding="utf-8")
+    assert "Flagged in 2 of 2" in report
+
+
+def test_unknown_run_id_stops(two_runs, run_exporter):
+    with pytest.raises(SystemExit, match="No run with id"):
+        run_exporter("--list", "--run-id", "zzzz")
+
+
+def test_ambiguous_run_id_stops(memory, run_exporter):
+    add_result(memory, "a", AttackOutcome.SUCCESS, rt_run_id="cccc-1")
+    add_result(memory, "b", AttackOutcome.SUCCESS, rt_run_id="cccc-2")
+    with pytest.raises(SystemExit, match="matches 2 runs"):
+        run_exporter("--list", "--run-id", "cccc")
+
+
 # --- pure helpers ----------------------------------------------------------------
 
 

@@ -43,6 +43,8 @@ python -m pyrit_campaigns.multi_turn_crescendo
 # turn results into finding reports
 python -m reporting.export_finding_report --outcome success --out findings/   # multi-turn
 python -m reporting.export_finding_report --rubric any --out findings/        # single-turn scan
+python -m reporting.export_finding_report --rubric any --latest-run --out findings/  # just the last run
+python -m reporting.export_finding_report --list                              # what's in the database
 ```
 
 **On Windows** (PowerShell or cmd), the `VAR=value python ...` form above does not

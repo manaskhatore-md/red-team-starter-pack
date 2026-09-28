@@ -15,6 +15,10 @@ Markdown finding per issue, using templates/finding_report_template.md.
     python -m reporting.export_finding_report --rubric any --out findings/
     python -m reporting.export_finding_report --rubric pii_disclosure --out findings/
 
+    # only one run's findings - the id the campaign printed, or the newest run
+    python -m reporting.export_finding_report --rubric any --run-id 1a2b3c4d --out findings/
+    python -m reporting.export_finding_report --rubric any --latest-run --out findings/
+
     # export one specific conversation you want to write up
     python -m reporting.export_finding_report --conversation-id CONVERSATION_ID --out findings/
 
@@ -323,6 +327,32 @@ def flagged_by_rubric(result, memory, rubrics: set[str]) -> bool:
     return False
 
 
+def select_run(results, run_id: str | None, latest: bool) -> tuple[list, str | None]:
+    """Narrow results to one campaign run, by id (or its first characters) or the newest.
+
+    Returns the run's results and its full id, or all results and None when
+    neither is asked for.
+    """
+    if not (run_id or latest):
+        return list(results), None
+    labeled = sorted(
+        (r for r in results if (r.labels or {}).get("rt_run_id")),
+        key=lambda r: r.timestamp.timestamp() if r.timestamp else 0,
+    )
+    if latest:
+        if not labeled:
+            raise SystemExit("No result in the database has a run id. Runs made before run ids were recorded "
+                             "cannot be selected by run; use --conversation-id instead.")
+        run_id = labeled[-1].labels["rt_run_id"]
+    matches = {r.labels["rt_run_id"] for r in labeled if r.labels["rt_run_id"].startswith(run_id)}
+    if not matches:
+        raise SystemExit(f"No run with id {run_id!r}. See the run= column of --list.")
+    if len(matches) > 1:
+        raise SystemExit(f"Run id {run_id!r} matches {len(matches)} runs - give more of it.")
+    (full_id,) = matches
+    return [r for r in labeled if r.labels["rt_run_id"] == full_id], full_id
+
+
 def slug(text: str, limit: int = 50) -> str:
     keep = [c if c.isalnum() else "-" for c in text.lower()]
     return "".join(keep)[:limit].strip("-")
@@ -343,6 +373,9 @@ async def main():
         help="Export single-turn scan findings: results a rubric judge flagged. "
         "Give a rubric name from judges/state_policy_rubric.yaml, or 'any'. Ignores --outcome.",
     )
+    runs = parser.add_mutually_exclusive_group()
+    runs.add_argument("--run-id", help="Only this campaign run. The first 8 characters are enough (see --list).")
+    runs.add_argument("--latest-run", action="store_true", help="Only the most recent campaign run")
     parser.add_argument("--limit", type=int, default=50)
     args = parser.parse_args()
 
@@ -350,7 +383,12 @@ async def main():
     await initialize_pyrit_async(memory_db_type=SQLITE)
     memory = CentralMemory.get_memory_instance()
 
+    # all_results stays the whole database: reproducibility counts every run of a
+    # test, including runs outside the one being exported.
     all_results = memory.get_attack_results()
+    candidates, run_id = select_run(all_results, args.run_id, args.latest_run)
+    if run_id:
+        print(f"Run {run_id}: {len(candidates)} result(s).")
 
     if args.conversation_id:
         results = memory.get_attack_results(conversation_id=args.conversation_id)
@@ -363,16 +401,16 @@ async def main():
         if args.rubric != "any" and args.rubric not in known:
             raise SystemExit(f"Unknown rubric {args.rubric!r}. Choose from: {', '.join(sorted(known))}, any")
         wanted = known if args.rubric == "any" else {args.rubric}
-        results = latest_per_test(r for r in all_results if flagged_by_rubric(r, memory, wanted))
+        results = latest_per_test(r for r in candidates if flagged_by_rubric(r, memory, wanted))
         results = results[: args.limit]
     elif args.list and not args.outcome:
         # Listing is for seeing what is there, so it shows every result. Scan results
         # are all "undetermined" - an outcome filter here would hide every one of them.
-        results = sorted(all_results, key=lambda r: r.timestamp.timestamp() if r.timestamp else 0)
+        results = sorted(candidates, key=lambda r: r.timestamp.timestamp() if r.timestamp else 0)
         results = results[-args.limit :]
     else:
         args.outcome = args.outcome or "success"
-        results = latest_per_test(r for r in all_results if r.outcome.value == args.outcome)
+        results = latest_per_test(r for r in candidates if r.outcome.value == args.outcome)
         results = results[: args.limit]
 
     if args.list:
@@ -384,8 +422,8 @@ async def main():
                 f"turns={result.executed_turns:<3} {result.objective[:60]}"
             )
         shown = f"{len(results)} result(s)"
-        if len(results) < len(all_results) and not (args.outcome or args.rubric or args.conversation_id):
-            shown += f" - the newest {len(results)} of {len(all_results)}; raise --limit to see more"
+        if len(results) < len(candidates) and not (args.outcome or args.rubric or args.conversation_id):
+            shown += f" - the newest {len(results)} of {len(candidates)}; raise --limit to see more"
         print(f"\n{shown}.")
         return
 
