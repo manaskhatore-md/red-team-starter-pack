@@ -68,4 +68,8 @@ def fake_keys(monkeypatch):
 def memory():
     """A fresh, empty in-memory PyRIT database for one test."""
     asyncio.run(initialize_pyrit_async(memory_db_type=IN_MEMORY, env_files=[], silent=True))
-    return CentralMemory.get_memory_instance()
+    memory = CentralMemory.get_memory_instance()
+    # Re-initializing can hand back the same in-memory database, so empty it: a
+    # test must not see another test's results.
+    memory.reset_database()
+    return memory
