@@ -45,13 +45,15 @@ PROVIDER_DEFAULTS: dict[str, tuple[str, str]] = {
     "anthropic": ("anthropic/claude-haiku-4-5", "ANTHROPIC_API_KEY"),
 }
 
-# Claude Sonnet 5.5 on Bedrock via the Converse API. Prefer "bedrock/converse/" over
+# Claude Sonnet 4.5 on Bedrock via the Converse API. Prefer "bedrock/converse/" over
 # plain "bedrock/" for Anthropic models - it is the current API and handles system
 # prompts and multi-turn correctly.
 # TODO: change this to a model your account has actually been granted. Bedrock
 # requires per-model access approval in the console, and the "us." prefix selects a
-# cross-region inference profile (drop it for a single-region model id).
-DEFAULT_BEDROCK_MODEL = "bedrock/converse/us.anthropic.claude-sonnet-5-5"
+# cross-region inference profile (drop it for a single-region model id). The default
+# is deliberately not the newest Claude: accounts get access to a new model weeks
+# after release, and a default nobody can call fails every run.
+DEFAULT_BEDROCK_MODEL = "bedrock/converse/us.anthropic.claude-sonnet-4-5-20250929-v1:0"
 
 # Generous on purpose. On reasoning models (Gemini 2.5 and later, GPT-5, Claude with extended
 # thinking) internal reasoning tokens count against this same budget, so a tight limit
