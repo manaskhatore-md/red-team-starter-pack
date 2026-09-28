@@ -116,6 +116,7 @@ def build_target(role: str = "target", *, provider: str | None = None, model: st
     """
     provider = (provider or resolve_provider(role)).lower()
     model = model or resolve_model(role, provider)
+    _check_model_matches_provider(role, provider, model)
     label = {"target": "Target", "judge": "Judge", "adversarial": "Attacker"}[role]
     if role != "target" and model and model == resolve_model("target"):
         _warn_same_as_target(role, model)
@@ -187,6 +188,33 @@ def build_target(role: str = "target", *, provider: str | None = None, model: st
 
     raise SystemExit(
         f"Unknown {ROLES[role][0]} {provider!r}. Options: {', '.join(PROVIDER_DEFAULTS)}, bedrock, vertex, app"
+    )
+
+
+# The model-id prefix LiteLLM routes on, for each provider that has one.
+MODEL_PREFIXES = {"gemini": "gemini/", "openai": "openai/", "anthropic": "anthropic/", "bedrock": "bedrock/"}
+
+
+def _check_model_matches_provider(role: str, provider: str, model: str | None) -> None:
+    """Stop when a role's model id belongs to a different provider than the role runs on.
+
+    LiteLLM picks the vendor from the model id's prefix, not from our provider
+    setting, while the API key comes from the provider. A mismatch sends one
+    vendor's key to another - which rejects it, once per retry, for every call.
+    """
+    owner = next((p for p, prefix in MODEL_PREFIXES.items() if model and model.startswith(prefix)), None)
+    if owner is None or owner == provider:
+        return
+    provider_var, model_var, fallback = ROLES[role]
+    if os.getenv(provider_var):
+        why = f"{provider_var}={provider}"
+    elif fallback:
+        why = f"{provider_var} is unset, so it follows {ROLES[fallback][0]}"
+    else:
+        why = f"{provider_var} is unset, so it defaults to {provider}"
+    raise SystemExit(
+        f"{model_var}={model} is a {owner} model, but the {role} runs on {provider} ({why}). "
+        f"Set {provider_var}={owner}, or change {model_var}."
     )
 
 

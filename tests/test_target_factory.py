@@ -91,6 +91,29 @@ def test_unknown_judge_provider_names_the_judge_setting(fake_keys, clean_env):
         build_scoring_target()
 
 
+def test_judge_model_from_another_provider_stops_before_any_call(fake_keys, clean_env):
+    # RT_JUDGE_MODEL names a Bedrock model, RT_JUDGE_PROVIDER is unset, so the
+    # judge follows the target onto Gemini. LiteLLM would route on the "bedrock/"
+    # prefix and send the Gemini key to AWS.
+    clean_env.setenv("RT_JUDGE_MODEL", "bedrock/converse/us.anthropic.claude-opus-5-5")
+    with pytest.raises(SystemExit, match="is a bedrock model, but the judge runs on gemini .RT_JUDGE_PROVIDER is unset"):
+        build_scoring_target()
+
+
+def test_target_model_from_another_provider_stops(fake_keys, clean_env):
+    clean_env.setenv("RT_PROVIDER", "openai")
+    clean_env.setenv("RT_MODEL", "anthropic/claude-sonnet-5-5")
+    with pytest.raises(SystemExit, match="Set RT_PROVIDER=anthropic"):
+        build_target()
+
+
+def test_unprefixed_model_ids_are_left_to_the_provider(fake_keys, clean_env):
+    # LiteLLM accepts bare OpenAI names; only a prefix naming another provider is a mismatch.
+    clean_env.setenv("RT_PROVIDER", "openai")
+    clean_env.setenv("RT_MODEL", "gpt-5-mini")
+    assert model_name(build_target()) == "gpt-5-mini"
+
+
 def test_a_judge_that_is_the_target_gets_a_note(fake_keys, capsys):
     build_scoring_target()
     assert "the judge is the model under test" in capsys.readouterr().out
