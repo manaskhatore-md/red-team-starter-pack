@@ -94,7 +94,7 @@ MAX_BACKTRACKS = int(os.getenv("RT_MAX_BACKTRACKS", "5"))
 async def main():
     # SQLITE, not IN_MEMORY: multi-turn results are the evidence for your finding
     # reports, and you want the full conversation on disk after the run.
-    # Writes to ~/.pyrit/dbdata/ by default.
+    # Writes to PyRIT's data folder - print it with: python -c "from pyrit.common.path import DB_DATA_PATH; print(DB_DATA_PATH)"
     # TODO: that database will contain every prompt and response from the run. If
     # you tested with anything other than synthetic data, treat the file at the
     # data classification of what you sent.

@@ -248,8 +248,8 @@ async def main() -> int:
     profile = get_profile()
 
     # SQLITE so the transcript and scores survive the run - they are the evidence
-    # for the finding report. Writes to ~/.pyrit/dbdata/ by default, and inherits the
-    # classification of whatever you sent.
+    # for the finding report. Writes to PyRIT's data folder, and inherits the
+    # classification of whatever you sent. To find the file, print it with: python -c "from pyrit.common.path import DB_DATA_PATH; print(DB_DATA_PATH)"
     await initialize_pyrit_async(memory_db_type=SQLITE)
 
     print(describe(profile))

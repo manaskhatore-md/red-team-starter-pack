@@ -90,6 +90,15 @@ jobs:
         shell: bash
         run: python -m pyrit_campaigns.single_turn_scan | tee scan-output.txt
 
+      # Ask PyRIT where its database is rather than hard-coding it. The folder
+      # follows each OS's convention (~/.local/share/dbdata on this Linux runner),
+      # and a wrong path here fails silently: the upload skips it and ships only
+      # the text log.
+      - name: Find the PyRIT database
+        if: always()
+        shell: bash
+        run: echo "PYRIT_DB_DIR=$(python -c 'from pyrit.common.path import DB_DATA_PATH; print(DB_DATA_PATH)')" >> "$GITHUB_ENV"
+
       - name: Upload results
         if: always()
         uses: actions/upload-artifact@v4
@@ -99,7 +108,7 @@ jobs:
           # log is the human-readable summary.
           path: |
             scan-output.txt
-            ~/.pyrit/dbdata/
+            ${{ env.PYRIT_DB_DIR }}
           # TODO: these artifacts contain every prompt and response from the run. If
           # you ever gate against a system holding real data, they inherit that
           # classification - shorten the retention and restrict who can download

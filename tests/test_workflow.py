@@ -27,5 +27,19 @@ def test_piped_steps_keep_the_exit_code():
         assert step.get("shell") == "bash", f"step {step.get('name')!r} pipes output without shell: bash"
 
 
+def test_results_upload_uses_the_path_pyrit_reports():
+    # PyRIT's database folder depends on the OS, and upload-artifact skips a path
+    # that does not exist without failing. A hard-coded guess (it was ~/.pyrit/dbdata/)
+    # ships the text log alone, and the evidence is gone by the time anyone looks.
+    steps = list(_steps())
+    finder = next(s for s in steps if "DB_DATA_PATH" in s.get("run", ""))
+    assert "PYRIT_DB_DIR=" in finder["run"] and "GITHUB_ENV" in finder["run"]
+    assert finder.get("if") == "always()"
+    upload = next(s for s in steps if str(s.get("uses", "")).startswith("actions/upload-artifact"))
+    assert steps.index(finder) < steps.index(upload)
+    assert "${{ env.PYRIT_DB_DIR }}" in upload["with"]["path"]
+    assert "dbdata" not in upload["with"]["path"]
+
+
 def test_workflow_asks_only_for_the_permissions_it_uses():
     assert _workflow()["permissions"] == {"contents": "read"}

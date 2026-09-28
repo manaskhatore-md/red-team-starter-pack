@@ -12,7 +12,7 @@ Three things keep it offline:
     keys included) into the test process.
   - Every RT_* setting and provider key is removed from the environment for each
     test, so a test sees only what it sets. Keys it does set are fake.
-  - PyRIT memory is IN_MEMORY, so nothing is written to ~/.pyrit/dbdata/.
+  - PyRIT memory is IN_MEMORY, so nothing is written to your real results database.
 
 KNOWN BUGS are written as strict xfail tests: they fail today, and pytest reports
 them as "xfailed". When a fix lands, the test starts passing, strict mode turns
