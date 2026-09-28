@@ -77,7 +77,6 @@ def test_export_defaults_to_successful_attacks(memory, run_exporter, tmp_path):
     assert [m["objective"] for m in manifest] == ["crescendo objective"]
 
 
-@pytest.mark.xfail(strict=True, reason="Each export overwrites manifest.json, losing earlier reports in the folder")
 def test_second_export_keeps_the_first_in_the_manifest(memory, run_exporter, tmp_path):
     first = add_result(memory, "first objective", AttackOutcome.SUCCESS)
     second = add_result(memory, "second objective", AttackOutcome.SUCCESS)
@@ -85,6 +84,25 @@ def test_second_export_keeps_the_first_in_the_manifest(memory, run_exporter, tmp
     run_exporter("--conversation-id", second.conversation_id, "--out", str(tmp_path))
     manifest = json.loads((tmp_path / "manifest.json").read_text(encoding="utf-8"))
     assert {m["objective"] for m in manifest} == {"first objective", "second objective"}
+
+
+def test_reexport_replaces_its_entry_and_drops_deleted_reports(memory, run_exporter, tmp_path):
+    first = add_result(memory, "first objective", AttackOutcome.SUCCESS)
+    second = add_result(memory, "second objective", AttackOutcome.SUCCESS)
+    run_exporter("--conversation-id", first.conversation_id, "--out", str(tmp_path))
+    run_exporter("--conversation-id", second.conversation_id, "--out", str(tmp_path))
+    next(tmp_path.glob("*-first-objective.md")).unlink()
+    run_exporter("--conversation-id", second.conversation_id, "--out", str(tmp_path))
+    manifest = json.loads((tmp_path / "manifest.json").read_text(encoding="utf-8"))
+    assert [m["objective"] for m in manifest] == ["second objective"]
+
+
+def test_corrupt_manifest_is_replaced(memory, run_exporter, tmp_path):
+    (tmp_path / "manifest.json").write_text("not json", encoding="utf-8")
+    add_result(memory, "objective", AttackOutcome.SUCCESS)
+    out = run_exporter("--out", str(tmp_path))
+    assert "not valid JSON" in out
+    assert len(json.loads((tmp_path / "manifest.json").read_text(encoding="utf-8"))) == 1
 
 
 # --- selecting one run -----------------------------------------------------------

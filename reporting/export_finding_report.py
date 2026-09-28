@@ -353,6 +353,28 @@ def select_run(results, run_id: str | None, latest: bool) -> tuple[list, str | N
     return [r for r in labeled if r.labels["rt_run_id"] == full_id], full_id
 
 
+def merge_manifest(path: Path, written: list[dict]) -> list[dict]:
+    """Add this export's entries to the folder's manifest instead of replacing it.
+
+    Entries from earlier exports are kept while their report file is still in the
+    folder. A report written again replaces its old entry.
+    """
+    previous = []
+    if path.exists():
+        try:
+            previous = json.loads(path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            print(f"Note: {path} was not valid JSON; starting a new one.")
+    rewritten = {entry["file"] for entry in written}
+    kept = [
+        entry for entry in previous
+        if isinstance(entry, dict)
+        and entry.get("file") not in rewritten
+        and (path.parent / str(entry.get("file"))).exists()
+    ]
+    return kept + written
+
+
 def slug(text: str, limit: int = 50) -> str:
     keep = [c if c.isalnum() else "-" for c in text.lower()]
     return "".join(keep)[:limit].strip("-")
@@ -452,9 +474,13 @@ async def main():
         })
         print(f"wrote {args.out / name}")
 
-    (args.out / "manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+    manifest_path = args.out / "manifest.json"
+    merged = merge_manifest(manifest_path, manifest)
+    manifest_path.write_text(json.dumps(merged, indent=2), encoding="utf-8")
 
-    print(f"\n{len(manifest)} report(s) in {args.out}/. Every one has TODOs that need an analyst.")
+    earlier = len(merged) - len(manifest)
+    note = f" ({earlier} from earlier exports kept in manifest.json)" if earlier else ""
+    print(f"\n{len(manifest)} report(s) written to {args.out}/{note}. Every one has TODOs that need an analyst.")
     print("Impact, remediation, and the final severity and policy citation are yours - they are the report.")
 
 
