@@ -1,0 +1,21 @@
+# Checks that run on your machine before each commit. Optional, but this repo is
+# public: a key committed once is exposed even after the commit is removed, and
+# must be rotated.
+#
+#   pip install pre-commit
+#   pre-commit install              # once per clone
+#   pre-commit run --all-files      # check everything now
+#
+# gitleaks looks for API keys, tokens, and private keys in what you are about to
+# commit. It complements .gitignore, which only keeps .env out: it does not stop a
+# key pasted into a script, a notebook, or a finding report.
+#
+# The first run builds gitleaks from source, so it downloads a Go toolchain into
+# pre-commit's cache. If policy blocks that, install the gitleaks binary instead
+# (https://github.com/gitleaks/gitleaks/releases) and change the hook id to
+# gitleaks-system.
+repos:
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.30.1
+    hooks:
+      - id: gitleaks

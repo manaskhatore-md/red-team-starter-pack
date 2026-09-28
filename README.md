@@ -189,6 +189,14 @@ pip install -r requirements-dev.txt
 python -m pytest
 ```
 
+To catch a key before it is committed (this repo is public), turn on the
+pre-commit hooks once per clone. They run gitleaks on every commit - see
+`.pre-commit-config.yaml`:
+
+```
+pre-commit install
+```
+
 Known bugs are written as tests marked `xfail` ("expected to fail"), so they show
 as `xfailed` rather than failing the run. When one is fixed, its test starts
 passing and pytest reports that as a failure until the marker is removed.
