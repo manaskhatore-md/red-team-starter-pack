@@ -75,6 +75,9 @@ jobs:
           RT_PROFILE: public_conversational
           RT_PROVIDER: gemini
           RT_JUDGE_PROVIDER: anthropic
+          # TODO: pin the judge model. Left unset it follows the provider default in
+          # target_factory.py, and a new default changes the finding rate between PRs.
+          # RT_JUDGE_MODEL: anthropic/claude-sonnet-5-5
           # TODO: your agency's details - see the YOUR AGENCY section of .env.example.
           # Not secrets. Without them the scan runs on placeholder text.
           # RT_PROGRAM_NAME: "Supplemental Nutrition Assistance Program (SNAP)"

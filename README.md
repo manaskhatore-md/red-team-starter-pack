@@ -56,9 +56,18 @@ Use `copy` in place of `cp`.
 ## Choosing a target
 
 ```bash
-RT_PROVIDER=gemini      # or openai | anthropic | bedrock | vertex | app
-RT_JUDGE_PROVIDER=...   # the model that scores results — use a different one
+RT_PROVIDER=gemini            # the model under test: or openai | anthropic | bedrock | vertex | app
+RT_MODEL=...                  # optional; each provider has a default
+RT_JUDGE_PROVIDER=...         # the model that scores results — use a different one
+RT_JUDGE_MODEL=...            # pin it: a judge that changes between runs changes the finding rate
+RT_ADVERSARIAL_PROVIDER=...   # Crescendo's attacker
+RT_ADVERSARIAL_MODEL=...
 ```
+
+Each model setting belongs to one role: `RT_MODEL` is only ever the model under
+test. An unset provider falls back to the role before it (attacker → judge →
+target), but an unset model takes that provider's default and never another
+role's. A run prints a note when the judge or attacker is the model under test.
 
 Full list in `.env.example`; defaults live in `pyrit_campaigns/target_factory.py`.
 
@@ -69,7 +78,8 @@ a preflight that prints the resolved identity before the first call, because the
 cloud failure is a principal that authenticates fine but lacks model access.
 
 For Bedrock specifically: set `AWS_REGION_NAME`, put the model id in `RT_MODEL`
-(`bedrock/converse/...` for Anthropic models), and grant per-model access under
+(or `RT_JUDGE_MODEL` for a Bedrock judge; `bedrock/converse/...` for Anthropic
+models), and grant per-model access under
 **Model access** in the Bedrock console — until you do, calls return
 `AccessDeniedException`, which reads like an auth error but is an authorization one.
 

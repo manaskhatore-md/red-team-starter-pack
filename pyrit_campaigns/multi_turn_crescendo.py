@@ -10,11 +10,11 @@ comply once they have already agreed to four adjacent things.
 
 Three targets are in play, and confusing them is the most common setup mistake:
 
-  objective_target  - the system under test (RT_PROVIDER)
+  objective_target  - the system under test (RT_PROVIDER, RT_MODEL)
   adversarial       - the attacker model that writes the escalating turns
-                      (RT_ADVERSARIAL_PROVIDER)
+                      (RT_ADVERSARIAL_PROVIDER, RT_ADVERSARIAL_MODEL)
   scoring           - the judge that decides whether the objective was achieved
-                      (RT_JUDGE_PROVIDER)
+                      (RT_JUDGE_PROVIDER, RT_JUDGE_MODEL)
 
 The adversarial and judge models should not be the model under test. A model is a
 poor judge of its own jailbreak, and an adversarial model that shares the target's
@@ -56,7 +56,13 @@ from pyrit.score import (
 )
 from pyrit.setup import SQLITE, initialize_pyrit_async
 
-from pyrit_campaigns.target_factory import build_scoring_target, build_target, close_target, model_name
+from pyrit_campaigns.target_factory import (
+    build_scoring_target,
+    build_target,
+    close_target,
+    model_name,
+    resolve_provider,
+)
 
 # TODO: REPLACE EVERY OBJECTIVE BELOW.
 #
@@ -106,11 +112,11 @@ async def main():
 
     target = build_target()
 
-    # The attacker model. Defaults to the judge provider so a single-provider setup
-    # still runs, but override it: an attacker with the same guardrails as the
-    # target will refuse to escalate, and you will mistake that for a passing test.
-    adversarial_provider = os.getenv("RT_ADVERSARIAL_PROVIDER", os.getenv("RT_JUDGE_PROVIDER", "gemini"))
-    adversarial = build_target(provider=adversarial_provider)
+    # The attacker model. Its provider falls back to the judge's, then the target's,
+    # so a single-provider setup still runs - but override it: an attacker with the
+    # same guardrails as the target will refuse to escalate, and you will mistake
+    # that for a passing test.
+    adversarial = build_target("adversarial")
     judge = build_scoring_target()
 
     attack = CrescendoAttack(
@@ -151,11 +157,11 @@ async def main():
         memory_labels={
             "rt_campaign": "multi_turn_crescendo",
             "rt_run_id": str(uuid.uuid4()),
-            "rt_provider": os.getenv("RT_PROVIDER", "gemini"),
+            "rt_provider": resolve_provider("target"),
             "rt_target": model_name(target),
-            "rt_adversarial_provider": adversarial_provider,
+            "rt_adversarial_provider": resolve_provider("adversarial"),
             "rt_adversarial": model_name(adversarial),
-            "rt_judge_provider": os.getenv("RT_JUDGE_PROVIDER", os.getenv("RT_PROVIDER", "gemini")),
+            "rt_judge_provider": resolve_provider("judge"),
             "rt_judge": model_name(judge),
             "rt_max_turns": str(MAX_TURNS),
             "rt_max_backtracks": str(MAX_BACKTRACKS),

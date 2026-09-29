@@ -5,8 +5,17 @@ judges) asks this module for a target instead of constructing one itself. That i
 what keeps the starter pack model-agnostic: an agency running OpenAI and an agency
 running Claude change one env var, not the campaign code.
 
-Provider selection: RT_PROVIDER = gemini | openai | anthropic | bedrock | vertex | app
-Model override:     RT_MODEL (defaults per provider below)
+Three roles, each with its own provider and model setting:
+
+    role         provider                  model                  provider if unset
+    target       RT_PROVIDER               RT_MODEL               gemini
+    judge        RT_JUDGE_PROVIDER         RT_JUDGE_MODEL         the target's
+    adversarial  RT_ADVERSARIAL_PROVIDER   RT_ADVERSARIAL_MODEL   the judge's
+
+Providers: gemini | openai | anthropic | bedrock | vertex | app. An unset provider
+falls back to the role above it; an unset model never does - it takes the
+provider's default (below). A model id belongs to one provider and one role, so
+RT_MODEL only ever configures the model under test.
 
 Most providers route through LiteLLM, so the model string is a LiteLLM model id
 (https://docs.litellm.ai/docs/providers). "app" is the important one for real
@@ -31,20 +40,22 @@ from pyrit.prompt_target import LiteLLMChatTarget, PromptTarget, limit_requests_
 # row for Azure OpenAI ("azure/<deployment>", AZURE_API_KEY) if that is how you buy
 # inference. Bedrock and Vertex are credential-based and handled separately below.
 PROVIDER_DEFAULTS: dict[str, tuple[str, str]] = {
-    "gemini": ("gemini/gemini-2.5-flash", "GEMINI_API_KEY"),
+    "gemini": ("gemini/gemini-3.8-flash", "GEMINI_API_KEY"),
     "openai": ("openai/gpt-5", "OPENAI_API_KEY"),
     "anthropic": ("anthropic/claude-haiku-4-5", "ANTHROPIC_API_KEY"),
 }
 
-# Claude Sonnet 4 on Bedrock via the Converse API. Prefer "bedrock/converse/" over
+# Claude Sonnet 4.5 on Bedrock via the Converse API. Prefer "bedrock/converse/" over
 # plain "bedrock/" for Anthropic models - it is the current API and handles system
 # prompts and multi-turn correctly.
 # TODO: change this to a model your account has actually been granted. Bedrock
 # requires per-model access approval in the console, and the "us." prefix selects a
-# cross-region inference profile (drop it for a single-region model id).
-DEFAULT_BEDROCK_MODEL = "bedrock/converse/us.anthropic.claude-sonnet-4-20250514-v1:0"
+# cross-region inference profile (drop it for a single-region model id). The default
+# is deliberately not the newest Claude: accounts get access to a new model weeks
+# after release, and a default nobody can call fails every run.
+DEFAULT_BEDROCK_MODEL = "bedrock/converse/us.anthropic.claude-sonnet-4-5-20250929-v1:0"
 
-# Generous on purpose. On reasoning models (Gemini 2.5, GPT-5, Claude with extended
+# Generous on purpose. On reasoning models (Gemini 2.5 and later, GPT-5, Claude with extended
 # thinking) internal reasoning tokens count against this same budget, so a tight limit
 # truncates the visible answer mid-sentence. That silently corrupts scoring: a
 # cut-off answer reads as a refusal to a judge, and a cut-off refusal reads as
@@ -52,26 +63,73 @@ DEFAULT_BEDROCK_MODEL = "bedrock/converse/us.anthropic.claude-sonnet-4-20250514-
 # TODO: raise this further if you see responses ending mid-word.
 DEFAULT_MAX_TOKENS = 8192
 
+DEFAULT_VERTEX_MODEL = "claude-haiku-4-5"
 
-def build_target(*, provider: str | None = None, model: str | None = None) -> PromptTarget:
-    """Return the PyRIT target to attack.
+# role -> (provider setting, model setting, role whose provider it falls back to)
+ROLES: dict[str, tuple[str, str, str | None]] = {
+    "target": ("RT_PROVIDER", "RT_MODEL", None),
+    "judge": ("RT_JUDGE_PROVIDER", "RT_JUDGE_MODEL", "target"),
+    "adversarial": ("RT_ADVERSARIAL_PROVIDER", "RT_ADVERSARIAL_MODEL", "judge"),
+}
+
+
+def resolve_provider(role: str = "target") -> str:
+    """The provider a role runs on: its own setting, else the fallback role's."""
+    provider_var, _model_var, fallback = ROLES[role]
+    provider = os.getenv(provider_var)
+    if provider:
+        return provider.lower()
+    return resolve_provider(fallback) if fallback else "gemini"
+
+
+def default_model(provider: str) -> str | None:
+    """The model a provider uses when no model is set. None for "app"."""
+    if provider in PROVIDER_DEFAULTS:
+        return PROVIDER_DEFAULTS[provider][0]
+    return {"bedrock": DEFAULT_BEDROCK_MODEL, "vertex": DEFAULT_VERTEX_MODEL}.get(provider)
+
+
+def resolve_model(role: str = "target", provider: str | None = None) -> str | None:
+    """The model a role calls: its own model setting, else the provider's default.
+
+    The model setting applies only on the role's own provider. Asked about another
+    provider, this returns that provider's default instead.
+    """
+    role_provider = resolve_provider(role)
+    provider = (provider or role_provider).lower()
+    model = os.getenv(ROLES[role][1])
+    if model and provider == role_provider:
+        return model
+    return default_model(provider)
+
+
+def build_target(role: str = "target", *, provider: str | None = None, model: str | None = None) -> PromptTarget:
+    """Return the PyRIT target for one role.
 
     Args:
-        provider: Overrides RT_PROVIDER. One of PROVIDER_DEFAULTS, "bedrock",
-            "vertex", or "app".
-        model: Overrides RT_MODEL.
+        role: "target" (the model under test), "judge", or "adversarial" (the
+            attacker in multi-turn campaigns). Picks which settings are read - see
+            ROLES.
+        provider: Overrides the role's provider setting. One of PROVIDER_DEFAULTS,
+            "bedrock", "vertex", or "app".
+        model: Overrides the role's model setting.
     """
-    provider = (provider or os.getenv("RT_PROVIDER", "gemini")).lower()
+    provider = (provider or resolve_provider(role)).lower()
+    model = model or resolve_model(role, provider)
+    _check_model_matches_provider(role, provider, model)
+    label = {"target": "Target", "judge": "Judge", "adversarial": "Attacker"}[role]
+    if role != "target" and model and model == resolve_model("target"):
+        _warn_same_as_target(role, model)
 
     if provider in PROVIDER_DEFAULTS:
-        default_model, key_var = PROVIDER_DEFAULTS[provider]
+        _default, key_var = PROVIDER_DEFAULTS[provider]
         api_key = os.getenv(key_var)
         if not api_key:
             raise SystemExit(f"{key_var} is not set - see .env.example for the {provider} setup.")
 
         _require_litellm()
-        model_name = model or os.getenv("RT_MODEL") or default_model
-        print(f"Target: {model_name} ({provider})")
+        model_name = model
+        print(f"{label}: {model_name} ({provider})")
         return LiteLLMChatTarget(
             model_name=model_name,
             api_key=api_key,
@@ -93,8 +151,8 @@ def build_target(*, provider: str | None = None, model: str | None = None) -> Pr
         check_aws_creds()
         _require_litellm()
 
-        model_name = model or os.getenv("RT_MODEL") or DEFAULT_BEDROCK_MODEL
-        print(f"Target: {model_name} (bedrock)")
+        model_name = model
+        print(f"{label}: {model_name} (bedrock)")
         return LiteLLMChatTarget(
             model_name=model_name,
             max_tokens=DEFAULT_MAX_TOKENS,
@@ -107,7 +165,7 @@ def build_target(*, provider: str | None = None, model: str | None = None) -> Pr
         # Claude on Google Vertex. Auth is GCP ADC, not an API key, and the project
         # needs billing plus Anthropic models enabled in Vertex Model Garden.
         check_adc()
-        return AnthropicVertexChatTarget(model_name=model or os.getenv("RT_MODEL") or "claude-haiku-4-5")
+        return AnthropicVertexChatTarget(model_name=model)
 
     if provider == "app":
         # TODO: THIS IS THE ONE MOST AGENCIES ACTUALLY NEED.
@@ -129,8 +187,46 @@ def build_target(*, provider: str | None = None, model: str | None = None) -> Pr
         raise SystemExit("The 'app' provider is a TODO - see pyrit_campaigns/target_factory.py")
 
     raise SystemExit(
-        f"Unknown RT_PROVIDER {provider!r}. Options: {', '.join(PROVIDER_DEFAULTS)}, bedrock, vertex, app"
+        f"Unknown {ROLES[role][0]} {provider!r}. Options: {', '.join(PROVIDER_DEFAULTS)}, bedrock, vertex, app"
     )
+
+
+# The model-id prefix LiteLLM routes on, for each provider that has one.
+MODEL_PREFIXES = {"gemini": "gemini/", "openai": "openai/", "anthropic": "anthropic/", "bedrock": "bedrock/"}
+
+
+def _check_model_matches_provider(role: str, provider: str, model: str | None) -> None:
+    """Stop when a role's model id belongs to a different provider than the role runs on.
+
+    LiteLLM picks the vendor from the model id's prefix, not from our provider
+    setting, while the API key comes from the provider. A mismatch sends one
+    vendor's key to another - which rejects it, once per retry, for every call.
+    """
+    owner = next((p for p, prefix in MODEL_PREFIXES.items() if model and model.startswith(prefix)), None)
+    if owner is None or owner == provider:
+        return
+    provider_var, model_var, fallback = ROLES[role]
+    if os.getenv(provider_var):
+        why = f"{provider_var}={provider}"
+    elif fallback:
+        why = f"{provider_var} is unset, so it follows {ROLES[fallback][0]}"
+    else:
+        why = f"{provider_var} is unset, so it defaults to {provider}"
+    raise SystemExit(
+        f"{model_var}={model} is a {owner} model, but the {role} runs on {provider} ({why}). "
+        f"Set {provider_var}={owner}, or change {model_var}."
+    )
+
+
+def _warn_same_as_target(role: str, model: str) -> None:
+    """Say so when a judge or attacker is the model under test. Allowed, not advised."""
+    provider_var, model_var, _fallback = ROLES[role]
+    why = {
+        "judge": "A model grading its own answers tends to go easy on them.",
+        "adversarial": "An attacker with the target's guardrails tends to refuse to escalate.",
+    }[role]
+    name = {"judge": "judge", "adversarial": "attacker"}[role]
+    print(f"Note: the {name} is the model under test ({model}). {why} Set {provider_var} and {model_var}.")
 
 
 def _require_litellm() -> None:
@@ -148,17 +244,18 @@ def build_scoring_target() -> PromptTarget:
     own jailbreaks, and the judge usually wants to be a stronger model than the
     system under test.
 
-    TODO: point RT_JUDGE_PROVIDER at a different provider than RT_PROVIDER.
+    TODO: point RT_JUDGE_PROVIDER at a different provider than RT_PROVIDER, and
+    pin RT_JUDGE_MODEL - a judge that changes between runs changes the finding rate.
 
     GOTCHA: PyRIT's self-ask scorers require a judge that supports JSON response
     format, and LiteLLMChatTarget derives that capability from LiteLLM's model
-    metadata. If you set RT_MODEL to a model LiteLLM does not know about (a brand-new
+    metadata. If you set RT_JUDGE_MODEL to a model LiteLLM does not know about (a brand-new
     release, or a custom deployment name), the capability resolves to False and
     scoring fails with "This target LiteLLMChatTarget does not support JSON response
     format" - which reads like a bug in the judge rather than a metadata gap. Check
     it up front with target.is_json_response_supported().
     """
-    return build_target(provider=os.getenv("RT_JUDGE_PROVIDER", os.getenv("RT_PROVIDER", "gemini")))
+    return build_target("judge")
 
 
 class AnthropicVertexChatTarget(PromptTarget):
@@ -173,7 +270,7 @@ class AnthropicVertexChatTarget(PromptTarget):
         *,
         region: str | None = None,
         project_id: str | None = None,
-        model_name: str = "claude-haiku-4-5",
+        model_name: str = DEFAULT_VERTEX_MODEL,
         max_tokens: int = DEFAULT_MAX_TOKENS,
         **kwargs,
     ):
