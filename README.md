@@ -69,6 +69,11 @@ test. An unset provider falls back to the role before it (attacker → judge →
 target), but an unset model takes that provider's default and never another
 role's. A run prints a note when the judge or attacker is the model under test.
 
+Before the first probe, every run sends one short prompt to each model it will use,
+and stops with the provider's own error if one fails. A wrong model id or missing
+model access then shows up in seconds, instead of once per probe after the run.
+`RT_SKIP_MODEL_CHECK=1` turns the check off.
+
 Full list in `.env.example`; defaults live in `pyrit_campaigns/target_factory.py`.
 
 Providers split two ways. `gemini`, `openai`, and `anthropic` need one API key.

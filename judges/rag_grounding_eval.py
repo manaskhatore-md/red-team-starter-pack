@@ -45,7 +45,7 @@ truststore.inject_into_ssl()
 from pyrit.score import SelfAskGeneralTrueFalseScorer
 from pyrit.setup import SQLITE, initialize_pyrit_async
 
-from pyrit_campaigns.target_factory import build_scoring_target, close_target
+from pyrit_campaigns.target_factory import build_scoring_target, check_models, close_target
 
 # TODO: point this at your own evaluation set.
 #
@@ -169,6 +169,7 @@ async def get_answer_and_context(case: GroundingCase) -> GroundingCase:
 
 async def evaluate(cases: list[GroundingCase]) -> list[GroundingCase]:
     judge = build_scoring_target()
+    await check_models(judge=judge)
 
     for case in cases:
         case = await get_answer_and_context(case)
