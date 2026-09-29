@@ -18,10 +18,14 @@ gcloud-key*.json
 # sharing any of it, even internally.
 findings/
 scan-output.txt
-# PyRIT's SQLITE memory database (default location is ~/.pyrit/, but it lands here
-# if you override the path)
+# PyRIT's SQLITE memory database. By default it lives outside the repo, in PyRIT's
+# own data folder (%LOCALAPPDATA%\pyrit\dbdata on Windows, ~/.local/share/dbdata on
+# Linux), but it lands here if you override the path
 dbdata/
 *.db
 
 # Grounding eval set - may contain real constituent questions pulled from logs
 judges/grounding_eval_set.json
+
+# pytest
+.pytest_cache/

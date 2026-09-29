@@ -215,18 +215,22 @@ def check_aws_creds() -> None:
     """
     try:
         import boto3
-        from botocore.exceptions import BotoCoreError, ClientError, ProfileNotFound
+        from botocore.exceptions import BotoCoreError, ClientError, ProfileNotFound, SSOError, TokenRetrievalError
     except ImportError as e:
         raise SystemExit("Bedrock needs the AWS SDK: pip install boto3") from e
 
-    # LiteLLM's profile variable is AWS_PROFILE_NAME; boto3's is AWS_PROFILE. Honor
-    # both, or this preflight would check the default profile's identity while the
-    # actual call authenticates as someone else - the one failure mode a preflight
-    # must not have.
-    profile = os.getenv("AWS_PROFILE_NAME") or os.getenv("AWS_PROFILE")
+    # Resolve credentials exactly as LiteLLM will sign with them, or this preflight
+    # checks one identity while the calls use another - the one failure mode a
+    # preflight must not have. LiteLLM opens a profile explicitly only for
+    # AWS_PROFILE_NAME. Otherwise it takes boto3's default chain, where
+    # AWS_ACCESS_KEY_ID in the environment outranks AWS_PROFILE - and "the
+    # environment" includes .env, which every script loads. So AWS_PROFILE is left
+    # for boto3 to read; passing it here would skip those keys.
+    profile = os.getenv("AWS_PROFILE_NAME")
     try:
         session = boto3.Session(profile_name=profile) if profile else boto3.Session()
     except ProfileNotFound as e:
+        profile = profile or os.getenv("AWS_PROFILE")
         raise SystemExit(f"AWS profile {profile!r} not found ({e}). List them with: aws configure list-profiles") from e
 
     # LiteLLM reads AWS_REGION_NAME; boto3 reads AWS_REGION / AWS_DEFAULT_REGION or
@@ -249,7 +253,8 @@ def check_aws_creds() -> None:
         print(f"Authenticating to Bedrock ({region}) with AWS_BEARER_TOKEN_BEDROCK")
         return
 
-    if session.get_credentials() is None:
+    credentials = session.get_credentials()
+    if credentials is None:
         raise SystemExit(
             "No AWS credentials found. Pick whichever fits your environment:\n"
             "  1. aws configure                       (writes a local profile)\n"
@@ -261,15 +266,48 @@ def check_aws_creds() -> None:
             "the specific model in the Bedrock console."
         )
 
-    # Identity lookup is a network call to STS. Non-fatal: a proxy or a blocked
-    # sts endpoint should not stop the run, since the Bedrock call may still work.
+    # Identity lookup is a network call to STS. A proxy or a blocked STS endpoint
+    # should not stop the run, since the Bedrock call may still work. Credentials
+    # AWS rejects outright should: every Bedrock call would fail the same way, and
+    # each one is retried before it gives up.
+    source = f"profile={session.profile_name}, credentials from {credentials.method}"
     identity = "credentials found (identity lookup skipped)"
     try:
         identity = session.client("sts", region_name=region).get_caller_identity()["Arn"]
-    except (BotoCoreError, ClientError, KeyError) as e:
+    except ClientError as e:
+        code = e.response.get("Error", {}).get("Code", "")
+        if code in _REJECTED_CREDENTIALS:
+            raise SystemExit(_rejected_credentials_message(code, credentials.method, session.profile_name)) from e
+        identity = f"credentials found (could not resolve identity: {code or type(e).__name__})"
+    except (SSOError, TokenRetrievalError) as e:
+        raise SystemExit(
+            f"The AWS SSO login for profile {session.profile_name!r} has expired or was never made ({e}).\n"
+            f"Run: aws sso login --profile {session.profile_name}"
+        ) from e
+    except (BotoCoreError, KeyError) as e:
         identity = f"credentials found (could not resolve identity: {type(e).__name__})"
 
-    print(f"Authenticating to Bedrock ({region}) as {identity} [profile={session.profile_name}]")
+    print(f"Authenticating to Bedrock ({region}) as {identity} [{source}]")
+
+
+# STS error codes meaning AWS refused the credentials themselves.
+_REJECTED_CREDENTIALS = {"InvalidClientTokenId", "SignatureDoesNotMatch", "ExpiredToken", "UnrecognizedClientException"}
+
+
+def _rejected_credentials_message(code: str, method: str, profile: str) -> str:
+    """Explain a rejected credential in terms of where it came from."""
+    if method == "env":
+        return (
+            f"AWS rejected the credentials ({code}). They came from AWS_ACCESS_KEY_ID in the "
+            "environment, which includes .env - every script loads it - and those keys outrank "
+            "AWS_PROFILE. If that is a placeholder or an old key, delete it or comment it out "
+            "in .env (and AWS_SECRET_ACCESS_KEY / AWS_SESSION_TOKEN with it)."
+        )
+    return (
+        f"AWS rejected the credentials ({code}) from {method} [profile={profile}]. Refresh them "
+        f"(for an SSO profile: aws sso login --profile {profile}) or pick another source - "
+        "see the options above check_aws_creds in pyrit_campaigns/target_factory.py."
+    )
 
 
 def check_adc() -> None:
