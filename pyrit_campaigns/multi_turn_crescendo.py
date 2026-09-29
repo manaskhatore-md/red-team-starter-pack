@@ -59,6 +59,7 @@ from pyrit.setup import SQLITE, initialize_pyrit_async
 from pyrit_campaigns.target_factory import (
     build_scoring_target,
     build_target,
+    check_models,
     close_target,
     model_name,
     resolve_provider,
@@ -118,6 +119,7 @@ async def main():
     # that for a passing test.
     adversarial = build_target("adversarial")
     judge = build_scoring_target()
+    await check_models(target=target, attacker=adversarial, judge=judge)
 
     attack = CrescendoAttack(
         objective_target=target,

@@ -60,6 +60,7 @@ from pyrit_campaigns.profiles import PAIR_RUBRICS, Profile, describe, env_var, g
 from pyrit_campaigns.target_factory import (
     build_scoring_target,
     build_target,
+    check_models,
     close_target,
     model_name,
     resolve_provider,
@@ -265,6 +266,7 @@ async def main() -> int:
 
     target = build_target()
     judge = build_scoring_target()
+    await check_models(target=target, judge=judge)
     scorers = build_rubric_scorers(profile, judge)
 
     compare = "disparate_treatment" in profile.rubrics and any(p.pair_id for p in probes)

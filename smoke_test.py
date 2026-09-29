@@ -29,7 +29,7 @@ truststore.inject_into_ssl()
 from pyrit.executor.attack import AttackExecutor, PromptSendingAttack
 from pyrit.setup import IN_MEMORY, initialize_pyrit_async
 
-from pyrit_campaigns.target_factory import build_target, close_target
+from pyrit_campaigns.target_factory import build_target, check_models, close_target
 
 # TODO: swap these for two questions your own system should answer well, so a pass
 # confirms the right endpoint is wired up and not just that some model replied.
@@ -45,6 +45,7 @@ async def main():
     await initialize_pyrit_async(memory_db_type=IN_MEMORY)
 
     target = build_target()
+    await check_models(target=target)
     attack = PromptSendingAttack(objective_target=target)
 
     print("Sending prompts through PyRIT...")

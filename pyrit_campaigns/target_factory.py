@@ -31,9 +31,11 @@ Providers come in two flavors, which is why they are not all one dict:
 """
 
 import os
+import re
+import uuid
 
 from pyrit.exceptions import get_retry_max_num_attempts
-from pyrit.models import Message, construct_response_from_request
+from pyrit.models import Message, MessagePiece, construct_response_from_request
 from pyrit.prompt_target import LiteLLMChatTarget, PromptTarget, limit_requests_per_minute
 
 # Key-based providers: (LiteLLM model id, env var holding the API key).
@@ -459,6 +461,54 @@ def check_adc() -> None:
 def model_name(target: PromptTarget) -> str:
     """The model id a target calls, for labeling results."""
     return target.get_identifier().params.get("model_name") or type(target).__name__
+
+
+async def check_models(**targets: PromptTarget) -> None:
+    """Send one short prompt to each distinct model, and stop if any of them fails.
+
+    Called with the run's targets by role, e.g. check_models(target=t, judge=j).
+    Without it, a wrong model id or a model the account cannot use fails once per
+    probe and once per judge call, and the reason only shows up after the run, in
+    a traceback. This costs one tiny call per model. RT_SKIP_MODEL_CHECK=1 skips it.
+    """
+    if os.getenv("RT_SKIP_MODEL_CHECK", "").lower() in ("1", "true", "yes"):
+        print("Model check skipped (RT_SKIP_MODEL_CHECK is set).")
+        return
+
+    # A judge that is also the target is one model, so it gets one call.
+    roles_by_model: dict[str, list[str]] = {}
+    target_by_model: dict[str, PromptTarget] = {}
+    for role, target in targets.items():
+        name = model_name(target)
+        roles_by_model.setdefault(name, []).append(role)
+        target_by_model.setdefault(name, target)
+
+    for name, target in target_by_model.items():
+        piece = MessagePiece(role="user", original_value="Reply with the word OK.", conversation_id=str(uuid.uuid4()))
+        try:
+            await target.send_prompt_async(message=Message(message_pieces=[piece]))
+        except Exception as e:
+            roles = " and ".join(roles_by_model[name])
+            raise SystemExit(
+                f"Model check failed for the {roles} ({name}), so the run stopped before it started:\n"
+                f"  {_provider_message(e)}\n"
+                "Check the model id, that your account has access to that model (in that region, "
+                "for Bedrock and Vertex), and the key or credentials. RT_SKIP_MODEL_CHECK=1 skips this check."
+            ) from e
+    print(f"Model check passed: {', '.join(target_by_model)}")
+
+
+def _provider_message(error: Exception) -> str:
+    """The provider's own error text, without the wrapping PyRIT and LiteLLM add.
+
+    LiteLLM's "LiteLLM Retried: N times" is dropped because N is the retry count it
+    was configured with, not the number of attempts it made.
+    """
+    text = str(error)
+    text = re.sub(r"^Status Code: \d+, Message: ", "", text)
+    text = re.sub(r"^LiteLLM error: ", "", text)
+    text = re.sub(r"\s*LiteLLM Retried: \d+ times?\s*$", "", text)
+    return text.strip()
 
 
 async def close_target(target: PromptTarget) -> None:

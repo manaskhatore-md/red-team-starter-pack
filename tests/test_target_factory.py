@@ -5,7 +5,8 @@ import os
 import uuid
 
 import pytest
-from pyrit.models import Message, MessagePiece
+from pyrit.models import Message, MessagePiece, construct_response_from_request
+from pyrit.prompt_target import PromptTarget
 
 from pyrit_campaigns import target_factory
 from pyrit_campaigns.target_factory import build_scoring_target, build_target, model_name
@@ -187,6 +188,61 @@ def test_errors_that_cannot_clear_on_their_own_are_not_retried(failing_provider,
 
 def test_a_provider_outage_is_still_retried(failing_provider):
     assert failing_provider(503) > 1
+
+
+# --- Model check -----------------------------------------------------------------
+
+
+class _CountingTarget(PromptTarget):
+    """Answers OK, or raises `error`, and counts the calls it gets."""
+
+    def __init__(self, *, model, error=None):
+        super().__init__(model_name=model)
+        self.error = error
+        self.calls = 0
+
+    async def _send_prompt_to_target_async(self, *, normalized_conversation):
+        self.calls += 1
+        if self.error:
+            raise self.error
+        request = normalized_conversation[-1].message_pieces[0]
+        return [construct_response_from_request(request=request, response_text_pieces=["OK"])]
+
+
+def test_model_check_calls_each_distinct_model_once(memory, capsys):
+    target, judge, attacker = _CountingTarget(model="m1"), _CountingTarget(model="m1"), _CountingTarget(model="m2")
+    asyncio.run(target_factory.check_models(target=target, judge=judge, attacker=attacker))
+    assert (target.calls, judge.calls, attacker.calls) == (1, 0, 1)
+    assert "Model check passed: m1, m2" in capsys.readouterr().out
+
+
+def test_a_failed_model_check_stops_with_the_providers_message(memory):
+    # The text PyRIT raises for a Bedrock model id that does not exist.
+    error = Exception(
+        'Status Code: 500, Message: LiteLLM error: litellm.BadRequestError: BedrockException - '
+        '{"message":"The provided model identifier is invalid."} LiteLLM Retried: 9 times'
+    )
+    target, judge = _CountingTarget(model="m1"), _CountingTarget(model="bad-model", error=error)
+    with pytest.raises(SystemExit) as stop:
+        asyncio.run(target_factory.check_models(target=target, judge=judge))
+    message = str(stop.value)
+    assert "Model check failed for the judge (bad-model)" in message
+    assert "The provided model identifier is invalid." in message
+    # The count is what LiteLLM was configured with, not what it did - see retry_policy.
+    assert "Retried" not in message
+
+
+def test_model_check_names_every_role_on_the_failing_model(memory):
+    target, judge = _CountingTarget(model="m1", error=Exception("nope")), _CountingTarget(model="m1")
+    with pytest.raises(SystemExit, match="for the target and judge .m1."):
+        asyncio.run(target_factory.check_models(target=target, judge=judge))
+
+
+def test_model_check_can_be_skipped(memory, clean_env):
+    clean_env.setenv("RT_SKIP_MODEL_CHECK", "1")
+    target = _CountingTarget(model="m1", error=Exception("nope"))
+    asyncio.run(target_factory.check_models(target=target))
+    assert target.calls == 0
 
 
 # --- Bedrock preflight ------------------------------------------------------------
