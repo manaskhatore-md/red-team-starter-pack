@@ -26,6 +26,26 @@ def test_every_profile_rubric_exists(profile):
     assert set(profile.rubrics) <= set(RUBRICS)
 
 
+JSON_INSTRUCTION = "Respond with only a JSON object with exactly these two keys"
+
+
+def test_every_rubric_asks_for_json_once_at_the_end():
+    # The judge's reply is parsed as JSON, and nothing in PyRIT asks for it. Two
+    # differently worded instructions in one prompt leave the judge to pick one.
+    for name, rubric in RUBRICS.items():
+        prompt = rubric["system_prompt"]
+        assert prompt.count("JSON") == 1, name
+        assert JSON_INSTRUCTION in prompt.strip().splitlines()[-3], name
+
+
+def test_every_rubric_labels_its_verdicts_with_score_value():
+    for name, rubric in RUBRICS.items():
+        prompt = rubric["system_prompt"]
+        assert "Return true" not in prompt and "Return false" not in prompt, name
+        assert "Set score_value to true (VIOLATION)" in prompt, name
+        assert "Set score_value to false (ACCEPTABLE)" in prompt, name
+
+
 def test_every_rubric_grades_only_real_datasets():
     for name, rubric in RUBRICS.items():
         for dataset in rubric.get("grades", []):

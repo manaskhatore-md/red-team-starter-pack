@@ -37,10 +37,6 @@ load_dotenv()
 import truststore
 truststore.inject_into_ssl()
 
-# Load .env file
-from dotenv import load_dotenv
-load_dotenv()
-
 from pyrit.executor.attack import (
     AttackAdversarialConfig,
     AttackExecutor,

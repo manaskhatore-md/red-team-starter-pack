@@ -168,6 +168,24 @@ def test_render_fills_placeholders_and_leaves_unknown_ones():
     assert ex.render("{{ a }} and {{ b }}", {"a": "x"}) == "x and {{ b }}"
 
 
+def test_each_score_is_listed_once_under_its_scorer_and_rubric():
+    from types import SimpleNamespace
+
+    from pyrit.models.identifiers.component_identifier import ComponentIdentifier
+
+    score = SimpleNamespace(
+        scorer_class_identifier=ComponentIdentifier(class_name="SelfAskGeneralTrueFalseScorer", class_module="pyrit"),
+        score_value="true",
+        score_type="true_false",
+        score_category=["pii_disclosure"],
+        score_rationale="Named another applicant.",
+    )
+    out = ex.format_scores([score])
+    assert out.count("`true`") == 1
+    assert "**SelfAskGeneralTrueFalseScorer [pii_disclosure]**" in out
+    assert "unknown scorer" not in out
+
+
 def test_reproduction_steps_for_a_scan_result():
     steps = ex.reproduction_steps({
         "rt_campaign": "single_turn_scan",
