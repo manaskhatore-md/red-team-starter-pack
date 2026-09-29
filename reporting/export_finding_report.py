@@ -108,6 +108,13 @@ def format_scores(scores) -> str:
         return "(no scores recorded - was a scorer configured?)"
     lines = []
     for score in scores:
+        # scorer_class_identifier is a ComponentIdentifier object, not a dict
+        scorer_id = score.scorer_class_identifier
+        if scorer_id and hasattr(scorer_id, '__type__'):
+            scorer = scorer_id.__type__
+        else:
+            scorer = "unknown scorer"
+        lines.append(f"- **{scorer}** -> `{score.score_value}` ({score.score_type})")
         # scorer_class_identifier is a ComponentIdentifier object (PyRIT 1.1+), not a dict.
         identifier = score.scorer_class_identifier
         scorer = identifier.class_name if identifier else "unknown scorer"
