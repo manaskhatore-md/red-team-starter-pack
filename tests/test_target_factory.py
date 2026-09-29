@@ -130,6 +130,65 @@ def test_an_attacker_that_is_the_target_is_called_the_attacker(fake_keys, capsys
     assert "the attacker is the model under test" in capsys.readouterr().out
 
 
+# --- Retries ---------------------------------------------------------------------
+
+
+@pytest.fixture
+def failing_provider(clean_env, fake_keys, memory):
+    """A local OpenAI-style endpoint that fails every request with a given status.
+
+    Returns a function: send one prompt through build_target() with the server
+    answering `status`, and return how many requests reached the server.
+    """
+    import json
+    import threading
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+
+    state = {"status": 400, "hits": 0}
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self):
+            state["hits"] += 1
+            self.rfile.read(int(self.headers.get("Content-Length", 0)))
+            body = json.dumps({"error": {"message": f"fake {state['status']}"}}).encode()
+            self.send_response(state["status"])
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args):
+            pass
+
+    server = HTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    clean_env.setenv("OPENAI_API_BASE", f"http://127.0.0.1:{server.server_port}/v1")
+    # Two attempts at most for the errors worth retrying, to keep the test quick.
+    clean_env.setenv("RETRY_MAX_NUM_ATTEMPTS", "2")
+
+    def send(status):
+        state.update(status=status, hits=0)
+        target = build_target(provider="openai")
+        message = Message(message_pieces=[MessagePiece(role="user", original_value="hi", conversation_id="c")])
+        with pytest.raises(Exception):
+            asyncio.run(target.send_prompt_async(message=message))
+        return state["hits"]
+
+    yield send
+    server.shutdown()
+
+
+@pytest.mark.parametrize("status", [400, 401, 403, 404])
+def test_errors_that_cannot_clear_on_their_own_are_not_retried(failing_provider, status):
+    # A wrong model id, a model the account cannot use, a rejected key. Retried, each
+    # one cost ten requests per call, and a scan looked hung until it gave up.
+    assert failing_provider(status) == 1
+
+
+def test_a_provider_outage_is_still_retried(failing_provider):
+    assert failing_provider(503) > 1
+
+
 # --- Bedrock preflight ------------------------------------------------------------
 
 

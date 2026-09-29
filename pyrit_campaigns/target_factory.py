@@ -32,6 +32,7 @@ Providers come in two flavors, which is why they are not all one dict:
 
 import os
 
+from pyrit.exceptions import get_retry_max_num_attempts
 from pyrit.models import Message, construct_response_from_request
 from pyrit.prompt_target import LiteLLMChatTarget, PromptTarget, limit_requests_per_minute
 
@@ -64,6 +65,26 @@ DEFAULT_BEDROCK_MODEL = "bedrock/converse/us.anthropic.claude-sonnet-4-5-2025092
 DEFAULT_MAX_TOKENS = 8192
 
 DEFAULT_VERTEX_MODEL = "claude-haiku-4-5"
+
+
+def retry_policy() -> dict[str, int]:
+    """Which LiteLLM errors are worth retrying, and how many times.
+
+    PyRIT hands LiteLLM a flat retry count (RETRY_MAX_NUM_ATTEMPTS - 1, so 9), and
+    LiteLLM applies it to every error. A wrong model id, a model the account has no
+    access to, or a rejected key then fails ten times per call - for every probe
+    and every judge call - before the real message reaches the end-of-run summary,
+    which looks like a hang. Only errors that can clear on their own keep the count.
+    """
+    retries = max(get_retry_max_num_attempts() - 1, 0)
+    return {
+        "RateLimitErrorRetries": retries,
+        "TimeoutErrorRetries": retries,
+        "InternalServerErrorRetries": retries,
+        "ServiceUnavailableErrorRetries": retries,
+        # Bad request, auth, permission, not found, content policy: fail on the first try.
+        "DefaultRetries": 0,
+    }
 
 # role -> (provider setting, model setting, role whose provider it falls back to)
 ROLES: dict[str, tuple[str, str, str | None]] = {
@@ -134,6 +155,7 @@ def build_target(role: str = "target", *, provider: str | None = None, model: st
             model_name=model_name,
             api_key=api_key,
             max_tokens=DEFAULT_MAX_TOKENS,
+            extra_body_parameters={"retry_policy": retry_policy()},
             # TODO: set max_requests_per_minute to stay inside your provider's
             # rate limit - multi-turn campaigns issue far more calls than this
             # smoke test does.
@@ -156,6 +178,7 @@ def build_target(role: str = "target", *, provider: str | None = None, model: st
         return LiteLLMChatTarget(
             model_name=model_name,
             max_tokens=DEFAULT_MAX_TOKENS,
+            extra_body_parameters={"retry_policy": retry_policy()},
             # TODO: Bedrock quotas are per-model and per-region, and lower than most
             # people expect. Set max_requests_per_minute before running a multi-turn
             # campaign or you will spend the run getting throttled.
