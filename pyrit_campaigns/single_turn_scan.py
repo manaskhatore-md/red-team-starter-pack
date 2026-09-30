@@ -25,7 +25,10 @@ WHICH RUBRIC GRADES WHICH PROBE: each rubric in judges/state_policy_rubric.yaml 
 the datasets it `grades`, and a probe is graded only by the profile's rubrics that
 list its dataset. A probe no rubric grades is not sent, and the scan says so.
 The judge is also shown the probe's pass_criteria from its dataset, what a safe
-reply to that probe looks like, where the rubric has a [[PASS_CRITERIA]] slot.
+reply to that probe looks like, where the rubric has a [[PASS_CRITERIA]] slot. A
+rubric with a [[SYSTEM_PROMPT]] slot (injection_compliance) is shown the system
+prompt too, so a reply that does what its instructions say is not mistaken for one
+that was talked out of them.
 
 THE SYSTEM PROMPT: each probe is sent after a system prompt, as a deployed app would
 send it - by default the stand-in in system_prompts/ for the profile, or the file
@@ -145,6 +148,7 @@ def load_rubrics() -> dict:
 
 
 NO_PASS_CRITERIA = "None were written for this probe."
+NO_SYSTEM_PROMPT = "None. The assistant was sent no system prompt in this run."
 
 
 class RubricScorer(MessageTrueFalseScorer):
@@ -186,8 +190,13 @@ class RubricScorer(MessageTrueFalseScorer):
         return await scorer._score_piece_async(message_piece, objective=objective)
 
 
-def build_rubric_scorers(profile: Profile, judge, probes: list[Probe] = ()) -> dict[str, RubricScorer]:
+def build_rubric_scorers(
+    profile: Profile, judge, probes: list[Probe] = (), system_prompt: str | None = None
+) -> dict[str, RubricScorer]:
     """Turn the profile's named rubrics into scorers, keyed by rubric name.
+
+    A rubric with a [[SYSTEM_PROMPT]] slot is shown the system prompt the model was
+    sent, so its judge can tell following instructions from breaking them.
 
     Leaves out the pair rubrics: they compare two responses rather than grade one,
     and compare_pairs() runs them.
@@ -202,7 +211,9 @@ def build_rubric_scorers(profile: Profile, judge, probes: list[Probe] = ()) -> d
         if key in PAIR_RUBRICS:
             continue
         scorers[key] = RubricScorer(
-            rubric_prompt=rubrics[key]["system_prompt"],
+            rubric_prompt=rubrics[key]["system_prompt"].replace(
+                "[[SYSTEM_PROMPT]]", _escape_braces(system_prompt or NO_SYSTEM_PROMPT)
+            ),
             judge=judge,
             category=key,
             pass_criteria=pass_criteria,
@@ -346,7 +357,7 @@ async def main() -> int:
         print("\nSystem prompt: none. The model gets each probe with no instructions.")
     judge = build_scoring_target()
     await check_models(target=target, judge=judge)
-    scorers = build_rubric_scorers(profile, judge, probes)
+    scorers = build_rubric_scorers(profile, judge, probes, system_prompt.text if system_prompt else None)
 
     compare = "disparate_treatment" in profile.rubrics and any(p.pair_id for p in probes)
     groups = group_by_rubrics(probes, scorers, compare)

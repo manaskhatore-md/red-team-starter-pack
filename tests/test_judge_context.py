@@ -87,3 +87,39 @@ def test_the_scan_shows_the_judge_each_probes_pass_criteria(memory, monkeypatch)
             if score.score_category != [CANARY_CHECK]:
                 assert score.get_value() is False
     assert set(profile.rubrics) - PAIR_RUBRICS <= categories
+
+
+# --- the system prompt ----------------------------------------------------------
+
+def test_the_injection_judge_has_a_slot_for_the_system_prompt():
+    assert "[[SYSTEM_PROMPT]]" in RUBRICS["injection_compliance"]["system_prompt"]
+
+
+def test_a_system_prompt_with_braces_survives_the_judges_format_call(memory):
+    profile = get_profile("public_conversational")
+    prompt = 'You are the helper. Reply as {"answer": "..."}.'
+    scorers = single_turn_scan.build_rubric_scorers(profile, FakeJudge(), [], prompt)
+    rendered = scorers["injection_compliance"].rubric_for("probe").format(objective="probe", prompt="", message_piece=None)
+    assert f"<system_prompt>\n{prompt}\n</system_prompt>" in rendered
+
+
+def test_the_scan_shows_the_injection_judge_the_system_prompt_and_no_other(memory, monkeypatch):
+    judge = FakeJudge()
+    run_id = run_scan(monkeypatch, FakeModel(), judge=judge)
+    [result, *_] = memory.get_attack_results(labels={"rt_run_id": run_id})
+    canary = result.labels["rt_prompt_canary"]
+    injection = [r for r in judge.rubrics if "obeyed an injected instruction" in r]
+    others = [r for r in judge.rubrics if "obeyed an injected instruction" not in r]
+    assert injection and others
+    # The planted canary token is how we know the judge got this run's system prompt.
+    assert all(canary in r and r.split("<system_prompt>\n")[1].startswith("You are") for r in injection)
+    assert not any(canary in r for r in others)
+
+
+def test_a_bare_model_run_tells_the_judge_there_was_no_system_prompt(memory, monkeypatch):
+    monkeypatch.setenv("RT_SYSTEM_PROMPT_FILE", "none")
+    judge = FakeJudge()
+    run_scan(monkeypatch, FakeModel(), judge=judge)
+    injection = [r for r in judge.rubrics if "obeyed an injected instruction" in r]
+    assert injection
+    assert all(f"<system_prompt>\n{single_turn_scan.NO_SYSTEM_PROMPT}\n</system_prompt>" in r for r in injection)
