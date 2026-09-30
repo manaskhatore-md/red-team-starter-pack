@@ -147,15 +147,46 @@ def cell(text: str, limit: int = 80) -> str:
     return text if len(text) <= limit else text[: limit - 3] + "..."
 
 
+def repeat_of(result) -> int:
+    """Which repeat of its probe a result is, from 1. Runs from before repeats are repeat 1."""
+    return int((result.labels or {}).get("rt_repeat") or 1)
+
+
+def zero_flag_bound(n: int) -> float:
+    """The highest true failure rate still consistent (at 95%) with 0 flags in n tries.
+
+    Solves (1 - p) ** n = 0.05 for p: a probe that fails at this rate would pass all
+    n tries only 5% of the time. Roughly 3/n for larger n (the "rule of three").
+    """
+    return 1 - 0.05 ** (1 / n)
+
+
+def failure_rates(entries) -> list[dict]:
+    """One row per probe: how many of its repeats were flagged, passed, or have no verdict."""
+    rows: dict[tuple[str, str], dict] = {}
+    for e in entries:
+        result_labels = e["result"].labels or {}
+        key = (result_labels.get("rt_dataset", "-"), result_labels.get("rt_probe") or cell(e["result"].objective, 60))
+        row = rows.setdefault(key, {"dataset": key[0], "probe": key[1], "flagged": 0, "passed": 0, "no_verdict": 0})
+        if e["verdict"] == FLAGGED:
+            row["flagged"] += 1
+        elif e["verdict"] == PASSED:
+            row["passed"] += 1
+        elif e["verdict"] != PAIR_ONLY:
+            row["no_verdict"] += 1
+    # A probe sent only to be compared has no verdict of its own; its pair's row says how it did.
+    return [r for r in rows.values() if r["flagged"] or r["passed"] or r["no_verdict"]]
+
+
 def pair_verdicts(entries) -> list[dict]:
-    """Each matched pair in the run, with the judge's comparison if one was recorded."""
+    """Each matched pair in the run, per repeat, with the judge's comparison if one was recorded."""
     pairs = defaultdict(list)
     for entry in entries:
         pair_id = (entry["result"].labels or {}).get("rt_pair_id")
         if pair_id:
-            pairs[pair_id].append(entry)
+            pairs[(pair_id, repeat_of(entry["result"]))].append(entry)
     out = []
-    for pair_id, members in sorted(pairs.items()):
+    for (pair_id, repeat), members in sorted(pairs.items()):
         score = next(
             (s for m in members for s in m["scores"] if PAIR_RUBRIC in (s.score_category or [])),
             None,
@@ -166,14 +197,14 @@ def pair_verdicts(entries) -> list[dict]:
             verdict = "DIFFERENT TREATMENT"
         else:
             verdict = "equivalent"
-        out.append({"pair_id": pair_id, "members": members, "score": score, "verdict": verdict})
+        out.append({"pair_id": pair_id, "repeat": repeat, "members": members, "score": score, "verdict": verdict})
     return out
 
 
 def build_summary(results, memory, run_id: str) -> str:
     results = sorted(
         results,
-        key=lambda r: ((r.labels or {}).get("rt_dataset", ""), (r.labels or {}).get("rt_probe", ""), r.objective),
+        key=lambda r: ((r.labels or {}).get("rt_dataset", ""), (r.labels or {}).get("rt_probe", ""), r.objective, repeat_of(r)),
     )
     rubrics = load_rubrics()
     entries = []
@@ -197,6 +228,11 @@ def build_summary(results, memory, run_id: str) -> str:
 
     labels = results[0].labels or {}
     campaign = labels.get("rt_campaign", "unlabeled")
+    repeats = int(labels.get("rt_repeats") or 1)
+
+    def with_repeat(name: str, result) -> str:
+        return f"{name} (repeat {repeat_of(result)})" if repeats > 1 else name
+
     counts = Counter(e["verdict"] for e in entries)
     flagged = counts[FLAGGED] + counts[ACHIEVED]
     pairs_flagged = sum(p["verdict"] == "DIFFERENT TREATMENT" for p in pairs)
@@ -250,10 +286,13 @@ def build_summary(results, memory, run_id: str) -> str:
     if started:
         local = started.astimezone()
         lines.append(f"| Run started | {local:%Y-%m-%d %H:%M} {local.tzname()} ({started:%H:%M} UTC) |")
+    if repeats > 1:
+        lines.append(f"| Repeats | every probe sent {repeats} times (RT_REPEATS), each in a new conversation |")
     result_counts = ", ".join(f"{n} {v}" for v, n in counts.most_common())
     lines.append(f"| Results | {len(entries)}: {result_counts} |")
     if pairs:
-        lines.append(f"| Matched pairs | {len(pairs)}: {pairs_compared} compared, {pairs_flagged} flagged as different treatment |")
+        what = "pair comparisons (one per pair per repeat)" if repeats > 1 else "matched pairs"
+        lines.append(f"| Matched pairs | {len(pairs)} {what}: {pairs_compared} compared, {pairs_flagged} flagged as different treatment |")
     lines.append("")
 
     lines += ["## What this means", ""]
@@ -271,9 +310,18 @@ def build_summary(results, memory, run_id: str) -> str:
         "- **A flag is a lead, not a finding.** It is the judge model's reading of a rubric in "
         "`judges/state_policy_rubric.yaml`. Someone has to read the reply and the judge's reasoning below "
         "and agree before it becomes a finding.",
-        "- **A pass is one sample.** Model output varies from run to run. A probe that passed once can "
-        "fail on the next run, so re-run a probe 5-10 times before you rely on either result.",
     ]
+    if repeats > 1:
+        lines.append(
+            f"- **Each probe ran {repeats} times.** [Failure rates](#failure-rates) shows how often each one was "
+            f"flagged. A probe never flagged is not proven safe: 0 of {repeats} is still consistent with it "
+            f"failing up to {zero_flag_bound(repeats):.0%} of the time. More repeats shrink that bound."
+        )
+    else:
+        lines.append(
+            "- **A pass is one sample.** Model output varies from run to run. A probe that passed once can "
+            "fail on the next run, so re-run with RT_REPEATS=5 or more before you rely on either result."
+        )
     if leaks:
         lines.append(
             f"- **{leaks} reply(ies) leaked the system prompt.** Each contains the canary token, a random code "
@@ -333,10 +381,47 @@ def build_summary(results, memory, run_id: str) -> str:
             lines.append(f"| {PAIR_RUBRIC} (pairs) | {pairs_flagged} | {pairs_compared} | {description} |")
         lines.append("")
 
+    if repeats > 1:
+        lines += [
+            '<a id="failure-rates"></a>',
+            "## Failure rates",
+            "",
+            f"How often each probe was flagged across its {repeats} repeats. \"Without a verdict\" counts "
+            "errors, blocked or empty replies, and missing judge scores; those repeats tested nothing, "
+            "so they are left out of the rate.",
+            "",
+            "| Probe | Dataset | Flagged | Without a verdict | Reading |",
+            "|---|---|---|---|---|",
+        ]
+        for row in failure_rates(entries):
+            tested = row["flagged"] + row["passed"]
+            if not tested:
+                reading = "nothing tested"
+            elif not row["flagged"]:
+                reading = f"never flagged; could still fail up to {zero_flag_bound(tested):.0%} of the time"
+            elif row["flagged"] == tested:
+                reading = "flagged every time"
+            else:
+                reading = "flagged some of the time"
+            lines.append(
+                f"| {row['probe']} | {row['dataset']} | {row['flagged']} of {tested} | {row['no_verdict']} | {reading} |"
+            )
+        if pairs:
+            by_pair = defaultdict(lambda: [0, 0])
+            for p in pairs:
+                if p["score"] is not None:
+                    by_pair[p["pair_id"]][1] += 1
+                    by_pair[p["pair_id"]][0] += p["verdict"] == "DIFFERENT TREATMENT"
+            lines += ["", "| Pair | Different treatment | Compared |", "|---|---|---|"]
+            for pair_id in sorted({p["pair_id"] for p in pairs}):
+                different, compared = by_pair[pair_id]
+                lines.append(f"| {pair_id} | {different} of {compared} | {compared} of {repeats} |")
+        lines.append("")
+
     lines += ["## Every result", "", "| # | Verdict | Dataset | Probe | Graded by |", "|---|---|---|---|---|"]
     for e in entries:
         result_labels = e["result"].labels or {}
-        probe = result_labels.get("rt_probe") or cell(e["result"].objective, 60)
+        probe = with_repeat(result_labels.get("rt_probe") or cell(e["result"].objective, 60), e["result"])
         checks = e["graded_by"] + {True: ["canary token LEAKED"], False: ["canary token"], None: []}[e["canary"]]
         lines.append(
             f"| [{e['number']}](#result-{e['number']}) | {e['verdict']} | {result_labels.get('rt_dataset', '-')} "
@@ -356,7 +441,8 @@ def build_summary(results, memory, run_id: str) -> str:
                 f"[{m['number']}](#result-{m['number']}) ({(m['result'].labels or {}).get('rt_variant') or '?'})"
                 for m in p["members"]
             )
-            lines.append(f"### Pair {p['pair_id']}: {p['verdict']}")
+            repeat = f", repeat {p['repeat']}" if repeats > 1 else ""
+            lines.append(f"### Pair {p['pair_id']}{repeat}: {p['verdict']}")
             lines.append("")
             lines.append(f"Results {members}.")
             if p["score"] is not None and p["score"].score_rationale:
@@ -379,7 +465,7 @@ def build_summary(results, memory, run_id: str) -> str:
     for e in entries:
         result = e["result"]
         result_labels = result.labels or {}
-        name = result_labels.get("rt_probe") or cell(result.objective, 60)
+        name = with_repeat(result_labels.get("rt_probe") or cell(result.objective, 60), result)
         lines += [f'<a id="result-{e["number"]}"></a>', f"### {e['number']}. {e['verdict']}: {name}", ""]
         details = []
         if result_labels.get("rt_dataset"):
@@ -408,7 +494,12 @@ def build_summary(results, memory, run_id: str) -> str:
             "1. Read each flagged result above and decide whether you agree with the judge.",
             f"2. For the ones you agree with, write finding reports: `{command}` "
             "(or `--conversation-id` for one result).",
-            "3. Re-run those probes 5-10 times; each finding report counts how often a probe was flagged.",
+            (
+                "3. Weigh each finding by its rate in [Failure rates](#failure-rates): a probe flagged in 1 of "
+                f"{repeats} is a weaker finding than one flagged every time."
+                if repeats > 1
+                else "3. Re-run with RT_REPEATS=5 or more; each finding report counts how often a probe was flagged."
+            ),
         ]
     else:
         lines.append("Nothing was flagged. Spot-check a few passes above before you rely on that.")

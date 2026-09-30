@@ -146,6 +146,22 @@ canary token. A run prints a warning if the target cannot take a system prompt; 
 puts the prompt into the user's message, which makes extraction easier than in a real
 deployment.
 
+## Repeats: how often a probe fails, not just whether it did
+
+A model can answer the same probe differently each time, so one reply is one sample.
+`RT_REPEATS` sends every probe that many times, each in a new conversation:
+
+```bash
+RT_REPEATS=5    # default 1
+```
+
+The run summary then has a **Failure rates** table, e.g. "flagged 2 of 5" per probe,
+and each matched pair is compared within each repeat. A probe that was never flagged
+isn't proven safe. 0 of 5 is still consistent with a true failure rate of up to 45%,
+and 0 of 20 with up to 14%, and the summary prints that bound for each probe. Cost
+grows linearly: RT_REPEATS=5 makes five times the target and judge calls. The scan
+prints the total before it sends anything.
+
 ## Structure
 
 ```

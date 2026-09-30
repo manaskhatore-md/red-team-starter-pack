@@ -37,9 +37,15 @@ carries a random canary token, and every reply is checked for it: a reply contai
 leaked the system prompt, and counts as a system_prompt_leak finding whatever the
 judges said. See pyrit_campaigns/system_prompt.py.
 
+REPEATS: model output varies from run to run, so one reply per probe is one sample.
+RT_REPEATS=5 sends every probe 5 times, each in a new conversation, and the run
+summary reports how often each one was flagged ("2 of 5"). Pairs are compared
+within each repeat. The default is 1.
+
 COST: one target call per probe, one judge call per probe per rubric that grades it,
-plus one judge call per matched pair. public_conversational is 16 + 16 + 5 = 37
-calls. Start with one dataset while you tune the rubrics.
+plus one judge call per matched pair - all times RT_REPEATS. public_conversational
+is 16 + 16 + 5 = 37 calls per repeat. The scan prints the total before it sends
+anything. Start with one dataset while you tune the rubrics.
 """
 
 import asyncio
@@ -99,6 +105,14 @@ MAX_CONCURRENCY = int(os.getenv("RT_MAX_CONCURRENCY", "3"))
 # exit would look like a broken script. Set RT_FAIL_ON_FINDING=1 in CI, where you do
 # want a finding to fail the job.
 FAIL_ON_FINDING = os.getenv("RT_FAIL_ON_FINDING") == "1"
+
+
+def get_repeats() -> int:
+    """RT_REPEATS: how many times to send each probe. Default 1."""
+    raw = os.getenv("RT_REPEATS", "1").strip()
+    if not raw.isdigit() or int(raw) < 1:
+        raise SystemExit(f"RT_REPEATS must be a whole number of 1 or more, not {raw!r}.")
+    return int(raw)
 
 
 @dataclass(frozen=True)
@@ -242,12 +256,19 @@ def _escape_braces(text: str) -> str:
     return text.replace("{", "{{").replace("}", "}}")
 
 
-async def compare_pairs(probes: list[Probe], results_by_prompt: dict, memory, judge, rubric_prompt: str):
+def by_prompt_and_repeat(results) -> dict[tuple[str, int], object]:
+    """Index results by (probe text, repeat number), so each repeat's pair halves find each other."""
+    return {(r.objective, int((r.labels or {}).get("rt_repeat") or 1)): r for r in results}
+
+
+async def compare_pairs(probes: list[Probe], results: dict, memory, judge, rubric_prompt: str, repeats: int = 1):
     """Judge each matched pair: did the substance change when one attribute changed?
 
-    Returns (pair_id, probe_a, probe_b, score) for every pair where both replies came back.
-    The score is recorded against the second reply, so it lands in that
-    conversation's scores like any rubric verdict.
+    `results` is keyed by (probe text, repeat), as by_prompt_and_repeat builds it.
+    Each repeat's two replies are compared with each other, never with another
+    repeat's. Returns (pair_id, repeat, probe_a, probe_b, score) for every pair and
+    repeat where both replies came back. The score is recorded against the second
+    reply, so it lands in that conversation's scores like any rubric verdict.
     """
     pairs: dict[str, list[Probe]] = defaultdict(list)
     for probe in probes:
@@ -255,14 +276,16 @@ async def compare_pairs(probes: list[Probe], results_by_prompt: dict, memory, ju
             pairs[probe.pair_id].append(probe)
 
     verdicts = []
-    for pair_id, members in pairs.items():
+    for (pair_id, members), repeat in ((p, r) for p in pairs.items() for r in range(1, repeats + 1)):
+        name = f"pair {pair_id!r}" + (f" (repeat {repeat})" if repeats > 1 else "")
         if len(members) != 2:
-            print(f"  pair {pair_id!r} has {len(members)} probe(s), not 2 - not compared")
+            if repeat == 1:
+                print(f"  pair {pair_id!r} has {len(members)} probe(s), not 2 - not compared")
             continue
         a, b = members
-        result_a, result_b = results_by_prompt.get(a.prompt), results_by_prompt.get(b.prompt)
+        result_a, result_b = results.get((a.prompt, repeat)), results.get((b.prompt, repeat))
         if not (result_a and result_b and result_a.last_response and result_b.last_response):
-            print(f"  pair {pair_id!r}: a reply is missing - not compared")
+            print(f"  {name}: a reply is missing - not compared")
             continue
 
         # Pair ids look like "dialect_01"; the prefix names the attribute.
@@ -281,8 +304,38 @@ async def compare_pairs(probes: list[Probe], results_by_prompt: dict, memory, ju
         )
         reply_b = memory.get_conversation_messages(conversation_id=result_b.conversation_id)[-1]
         scores = await scorer.score_async(scorable=MessageScorable.from_message(reply_b))
-        verdicts.append((pair_id, a, b, scores[0]))
+        verdicts.append((pair_id, repeat, a, b, scores[0]))
     return verdicts
+
+
+def expand_repeats(group: list[Probe], repeats: int, run_labels: dict) -> tuple[list[str], list[dict]]:
+    """The objectives and per-objective labels for one attack: every probe, `repeats` times.
+
+    Each copy is its own conversation, labelled with its repeat number (from 1).
+    """
+    objectives, overrides = [], []
+    for probe in group:
+        for repeat in range(1, repeats + 1):
+            objectives.append(probe.prompt)
+            overrides.append({
+                "memory_labels": {
+                    **run_labels,
+                    "rt_dataset": probe.dataset,
+                    "rt_probe": probe.name,
+                    "rt_harm_categories": ", ".join(probe.harm_categories),
+                    "rt_pair_id": probe.pair_id,
+                    "rt_variant": probe.variant,
+                    "rt_repeat": str(repeat),
+                }
+            })
+    return objectives, overrides
+
+
+def planned_calls(groups: dict[tuple[str, ...], list[Probe]], pair_count: int, repeats: int) -> tuple[int, int]:
+    """(target calls, judge calls) the scan will make, before any retries."""
+    target = sum(len(group) for group in groups.values()) * repeats
+    judge = (sum(len(group) * len(keys) for keys, group in groups.items()) + pair_count) * repeats
+    return target, judge
 
 
 UNRENDERED = re.compile(r"\{\{\s*(\w+)\s*\}\}")
@@ -330,6 +383,7 @@ def check_placeholders(profile: Profile, probes: list[Probe], system_prompt: str
 async def main() -> int:
     started = time.monotonic()
     profile = get_profile()
+    repeats = get_repeats()
 
     # SQLITE so the transcript and scores survive the run - they are the evidence
     # for the finding report. Writes to PyRIT's data folder, and inherits the
@@ -380,7 +434,10 @@ async def main() -> int:
     if ungraded_pairs:
         graded.append(f"{ungraded_pairs} sent only for pair comparison")
     pair_note = f"; then {pair_count} matched pairs compared" if pair_count else ""
-    print(f"\nSending {len(sent)} probes: {', '.join(graded)}{pair_note}...\n")
+    target_calls, judge_calls = planned_calls(groups, pair_count, repeats)
+    repeat_note = f", each {repeats} times (RT_REPEATS)" if repeats > 1 else ""
+    print(f"\nSending {len(sent)} probes{repeat_note}: {', '.join(graded)}{pair_note}.")
+    print(f"That is about {target_calls} target calls and {judge_calls} judge calls, before retries.\n")
 
     # Labels are stored with each result, so the finding report can say what ran
     # without anyone copying it over by hand.
@@ -397,6 +454,7 @@ async def main() -> int:
         "rt_system_prompt": system_prompt.source if system_prompt else "none",
         "rt_system_prompt_chosen_by": system_prompt.chosen_by if system_prompt else "",
         "rt_prompt_canary": system_prompt.canary if system_prompt else "",
+        "rt_repeats": str(repeats),
     }
 
     # Every reply is checked for the canary, whichever rubrics grade it. The check
@@ -418,23 +476,12 @@ async def main() -> int:
                 auxiliary_scorers=[scorers[key] for key in keys] + canary_scorers,
             ),
         )
+        objectives, overrides = expand_repeats(group, repeats, run_labels)
         executor_result = await AttackExecutor(max_concurrency=MAX_CONCURRENCY).execute_attack_async(
             attack=attack,
-            objectives=[probe.prompt for probe in group],
+            objectives=objectives,
             **prepended,
-            field_overrides=[
-                {
-                    "memory_labels": {
-                        **run_labels,
-                        "rt_dataset": probe.dataset,
-                        "rt_probe": probe.name,
-                        "rt_harm_categories": ", ".join(probe.harm_categories),
-                        "rt_pair_id": probe.pair_id,
-                        "rt_variant": probe.variant,
-                    }
-                }
-                for probe in group
-            ],
+            field_overrides=overrides,
         )
         completed += executor_result.completed_results
         incomplete += executor_result.incomplete_objectives
@@ -471,28 +518,35 @@ async def main() -> int:
 
     if compare:
         print("\nComparing matched pairs...")
-        results_by_prompt = {r.objective: r for r in completed}
         rubric_prompt = load_rubrics()["disparate_treatment"]["system_prompt"]
-        for pair_id, a, b, score in await compare_pairs(sent, results_by_prompt, memory, judge, rubric_prompt):
+        verdicts = await compare_pairs(sent, by_prompt_and_repeat(completed), memory, judge, rubric_prompt, repeats)
+        for pair_id, repeat, a, b, score in verdicts:
             flagged = score.get_value() is True
             label = f"pair {pair_id} ({a.variant} vs. {b.variant})"
-            print(f"  {label}: {'DIFFERENT TREATMENT' if flagged else 'equivalent'}")
+            shown = label + (f", repeat {repeat}" if repeats > 1 else "")
+            print(f"  {shown}: {'DIFFERENT TREATMENT' if flagged else 'equivalent'}")
             if flagged:
                 findings.append(("disparate_treatment", label, score.score_rationale or ""))
                 by_rubric["disparate_treatment"] += 1
 
     print("\n" + "=" * 78)
     minutes, seconds = divmod(round(time.monotonic() - started), 60)
-    print(f"SCAN COMPLETE - {len(sent)} probes, {len(findings)} finding(s), in {minutes}m {seconds:02d}s")
+    times = f" x {repeats} repeats" if repeats > 1 else ""
+    print(f"SCAN COMPLETE - {len(sent)} probes{times}, {len(findings)} finding(s), in {minutes}m {seconds:02d}s")
     print("=" * 78)
 
     for rubric, count in by_rubric.most_common():
         print(f"  {rubric}: {count}")
 
+    # With repeats, one probe can be flagged several times: print it once, with the
+    # count and the first rationale.
+    grouped: dict[tuple[str, str], list[str]] = defaultdict(list)
     for rubric, probe, rationale in findings:
-        print(f"\n[FINDING: {rubric}]")
+        grouped[(rubric, probe)].append(rationale)
+    for (rubric, probe), rationales in grouped.items():
+        print(f"\n[FINDING: {rubric}]" + (f" flagged in {len(rationales)} of {repeats} repeats" if repeats > 1 else ""))
         print(f"  probe:     {probe[:150]}")
-        print(f"  rationale: {rationale[:300]}")
+        print(f"  rationale: {rationales[0][:300]}")
 
     if ungraded:
         print(f"\n{len(ungraded)} probe(s) were not sent because no rubric in this profile grades them (see above).")
@@ -511,7 +565,10 @@ async def main() -> int:
     write_after_run(run_labels["rt_run_id"])
     print(f"Next: python -m reporting.export_finding_report --rubric any --run-id {run_labels['rt_run_id'][:8]} --out findings/")
     print("      writes a report for each finding you agree with (--conversation-id exports one).")
-    print("LLM output is stochastic - re-run a finding 5-10 times before you report it.")
+    if repeats == 1:
+        print("LLM output is stochastic - re-run with RT_REPEATS=5 or more before you report a finding.")
+    else:
+        print("The run summary's Failure rates table shows how often each probe was flagged.")
 
     for t in (target, judge):
         await close_target(t)
