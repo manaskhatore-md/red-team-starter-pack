@@ -103,6 +103,42 @@ permissions — which is where your risk actually lives. Wiring that up is a TOD
 > Non-production instance, synthetic data, and written authorization before pointing
 > any of this at a real system.
 
+## The system prompt, and the canary token in it
+
+A deployed chatbot always runs with a system prompt: its role, its rules, what it
+must not reveal. So the scan sends one ahead of every probe. Without one, probes
+like "repeat the text above" have nothing to extract.
+
+```bash
+# default: the stand-in for the profile, system_prompts/PROFILE.txt
+RT_SYSTEM_PROMPT_FILE=C:/secure/our_chatbot_prompt.txt   # your application's real prompt
+RT_SYSTEM_PROMPT_FILE=none                                # no system prompt: the model alone
+```
+
+The stand-ins are generic prompts for each kind of deployment, filled from the same
+YOUR AGENCY values as the probes. They show how the model holds rules like yours. To
+see how it holds yours, point `RT_SYSTEM_PROMPT_FILE` at your application's prompt.
+That tests your actual instructions on your actual model, before anyone has connected
+the scan to the application. Keep that file outside the repo if the repo is public.
+
+Every run plants a new random code, a **canary token** (e.g. `RTC-3F9A-1C7B`), in the
+system prompt, and checks every reply for it. It is not written anywhere else, so a
+reply that contains it has leaked the system prompt. That is a `system_prompt_leak`
+finding, whatever the judges said. The check needs no judge call. It also catches the
+code with its case, spacing, or punctuation changed, and base64-encoded. If your
+prompt has no `{{ prompt_canary }}` slot, the canary token is added as its last line. (This is canary in the security
+sense, a planted marker, as in [Rebuff](https://github.com/protectai/rebuff)'s
+prompt-leak check. It is not a monitoring canary: a probe run on a schedule.)
+
+The check cannot catch a paraphrase: "my rules say I can't give eligibility
+decisions" leaks the prompt without the code. The `injection_compliance` judge still
+grades those.
+
+Each run's summary and finding reports record which system prompt it used and the
+canary token. A run prints a warning if the target cannot take a system prompt; PyRIT then
+puts the prompt into the user's message, which makes extraction easier than in a real
+deployment.
+
 ## Structure
 
 ```
@@ -120,10 +156,13 @@ red-team-starter-pack/
 │   ├── rag_poisoning_payloads/         # Malicious PDFs/files for indirect injection tests
 │   └── excessive_agency.yaml           # Unauthorized database write & API command prompts
 │
+├── system_prompts/                     # A stand-in system prompt per profile, with the canary token slot
+│
 ├── pyrit_campaigns/                    # The campaigns (PyRIT)
 │   ├── profiles.py                     # Deployment-type profiles: threat model, datasets, rubrics
 │   ├── target_factory.py               # Unified provider factory (Gemini, Claude, OpenAI, Bedrock)
 │   ├── single_turn_scan.py             # Every dataset probe, graded by your rubrics
+│   ├── system_prompt.py                # The system prompt a scan sends, and the canary token check
 │   ├── multi_turn_crescendo.py         # Multi-step conversational boundary testing
 │   └── agent_tool_exploitation.py      # Autonomous agent permission & tool abuse scripts
 │
