@@ -24,6 +24,8 @@ transcript, so reporting/export_finding_report.py can pick them up by conversati
 WHICH RUBRIC GRADES WHICH PROBE: each rubric in judges/state_policy_rubric.yaml lists
 the datasets it `grades`, and a probe is graded only by the profile's rubrics that
 list its dataset. A probe no rubric grades is not sent, and the scan says so.
+The judge is also shown the probe's pass_criteria from its dataset, what a safe
+reply to that probe looks like, where the rubric has a [[PASS_CRITERIA]] slot.
 
 THE SYSTEM PROMPT: each probe is sent after a system prompt, as a deployed app would
 send it - by default the stand-in in system_prompts/ for the profile, or the file
@@ -59,8 +61,9 @@ import yaml
 
 from pyrit.executor.attack import AttackExecutor, AttackScoringConfig, PromptSendingAttack
 from pyrit.memory import CentralMemory
-from pyrit.models import MessageScorable, SeedDataset
-from pyrit.score import SelfAskGeneralTrueFalseScorer
+from pyrit.models import ComponentIdentifier, MessagePiece, MessageScorable, Score, SeedDataset
+from pyrit.score import MessageTrueFalseScorer, SelfAskGeneralTrueFalseScorer
+from pyrit.score.scorer_prompt_validator import ScorerPromptValidator
 from pyrit.setup import SQLITE, initialize_pyrit_async
 
 from pyrit_campaigns.profiles import PAIR_RUBRICS, Profile, describe, env_var, get_profile
@@ -105,6 +108,8 @@ class Probe:
     pair_id: str = ""
     variant: str = ""
     compare_on: str = ""
+    # What the probe's author says a safe reply looks like. The judge is shown it.
+    pass_criteria: str = ""
 
 
 def load_probes(profile: Profile) -> list[Probe]:
@@ -129,6 +134,7 @@ def load_probes(profile: Profile) -> list[Probe]:
                     pair_id=str(metadata.get("pair_id", "")),
                     variant=str(metadata.get("variant", "")),
                     compare_on=str(metadata.get("compare_on", "")),
+                    pass_criteria=" ".join(str(metadata.get("pass_criteria", "")).split()),
                 )
             )
     return probes
@@ -138,13 +144,56 @@ def load_rubrics() -> dict:
     return yaml.safe_load(RUBRIC_FILE.read_text(encoding="utf-8"))["rubrics"]
 
 
-def build_rubric_scorers(profile: Profile, judge) -> dict[str, SelfAskGeneralTrueFalseScorer]:
+NO_PASS_CRITERIA = "None were written for this probe."
+
+
+class RubricScorer(MessageTrueFalseScorer):
+    """A rubric from judges/state_policy_rubric.yaml, with each probe's pass criteria filled in.
+
+    One scorer grades a whole group of probes, and a rubric's text is fixed when the
+    scorer is built, but [[PASS_CRITERIA]] differs per probe. So this fills it in for
+    the probe being scored and hands the result to PyRIT's own rubric scorer.
+    """
+
+    _DEFAULT_VALIDATOR: ScorerPromptValidator = ScorerPromptValidator(supported_data_types=["text"])
+
+    def __init__(self, *, rubric_prompt: str, judge, category: str, pass_criteria: dict[str, str]) -> None:
+        self._rubric_prompt = rubric_prompt
+        self._judge = judge
+        self._category = category
+        # Probe text -> its pass criteria. The objective PyRIT scores against is the probe text.
+        self._pass_criteria = pass_criteria
+        super().__init__(validator=self._DEFAULT_VALIDATOR)
+
+    def _build_identifier(self) -> ComponentIdentifier:
+        return self._create_identifier(
+            params={"system_prompt_template": self._rubric_prompt, "category": self._category},
+            prompt_target=self._judge.get_identifier(),
+        )
+
+    def rubric_for(self, objective: str | None) -> str:
+        criteria = self._pass_criteria.get(objective or "") or NO_PASS_CRITERIA
+        return self._rubric_prompt.replace("[[PASS_CRITERIA]]", _escape_braces(criteria))
+
+    async def _score_piece_async(self, message_piece: MessagePiece, *, objective: str | None = None) -> list[Score]:
+        scorer = SelfAskGeneralTrueFalseScorer(
+            system_prompt_format_string=self.rubric_for(objective),
+            chat_target=self._judge,
+            # Lands in Score.score_category so findings can be grouped by
+            # rubric in the report.
+            category=self._category,
+        )
+        return await scorer._score_piece_async(message_piece, objective=objective)
+
+
+def build_rubric_scorers(profile: Profile, judge, probes: list[Probe] = ()) -> dict[str, RubricScorer]:
     """Turn the profile's named rubrics into scorers, keyed by rubric name.
 
     Leaves out the pair rubrics: they compare two responses rather than grade one,
     and compare_pairs() runs them.
     """
     rubrics = load_rubrics()
+    pass_criteria = {probe.prompt: probe.pass_criteria for probe in probes if probe.pass_criteria}
 
     scorers = {}
     for key in profile.rubrics:
@@ -152,12 +201,11 @@ def build_rubric_scorers(profile: Profile, judge) -> dict[str, SelfAskGeneralTru
             raise SystemExit(f"Profile {profile.key!r} names rubric {key!r}, absent from {RUBRIC_FILE.name}")
         if key in PAIR_RUBRICS:
             continue
-        scorers[key] = SelfAskGeneralTrueFalseScorer(
-            system_prompt_format_string=rubrics[key]["system_prompt"],
-            chat_target=judge,
-            # Lands in Score.score_category so findings can be grouped by
-            # rubric in the report.
+        scorers[key] = RubricScorer(
+            rubric_prompt=rubrics[key]["system_prompt"],
+            judge=judge,
             category=key,
+            pass_criteria=pass_criteria,
         )
     return scorers
 
@@ -298,7 +346,7 @@ async def main() -> int:
         print("\nSystem prompt: none. The model gets each probe with no instructions.")
     judge = build_scoring_target()
     await check_models(target=target, judge=judge)
-    scorers = build_rubric_scorers(profile, judge)
+    scorers = build_rubric_scorers(profile, judge, probes)
 
     compare = "disparate_treatment" in profile.rubrics and any(p.pair_id for p in probes)
     groups = group_by_rubrics(probes, scorers, compare)

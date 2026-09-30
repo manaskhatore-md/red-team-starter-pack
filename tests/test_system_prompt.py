@@ -157,7 +157,8 @@ class NeverFlags(MessageTrueFalseScorer):
                       objective=objective)]
 
 
-def run_scan(monkeypatch, target):
+def run_scan(monkeypatch, target, judge=None):
+    """Run the scan on the fake target. Without a judge, every rubric passes every reply."""
     async def nothing(*args, **kwargs):
         pass
 
@@ -166,10 +167,11 @@ def run_scan(monkeypatch, target):
     monkeypatch.setattr(single_turn_scan, "check_models", nothing)
     monkeypatch.setattr(single_turn_scan, "close_target", nothing)
     monkeypatch.setattr(single_turn_scan, "build_target", lambda: target)
-    monkeypatch.setattr(single_turn_scan, "build_scoring_target", lambda: None)
+    monkeypatch.setattr(single_turn_scan, "build_scoring_target", lambda: judge)
     monkeypatch.setattr(single_turn_scan, "model_name", lambda t: "fake-model")
-    monkeypatch.setattr(single_turn_scan, "build_rubric_scorers",
-                        lambda profile, judge: {k: NeverFlags(category=k) for k in profile.rubrics})
+    if judge is None:
+        monkeypatch.setattr(single_turn_scan, "build_rubric_scorers",
+                            lambda profile, judge, *rest: {k: NeverFlags(category=k) for k in profile.rubrics})
     runs = []
     monkeypatch.setattr(single_turn_scan, "write_after_run", runs.append)
     asyncio.run(single_turn_scan.main())
