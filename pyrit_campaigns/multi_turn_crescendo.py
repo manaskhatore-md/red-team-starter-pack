@@ -60,6 +60,7 @@ from pyrit_campaigns.target_factory import (
     model_name,
     resolve_provider,
 )
+from reporting.run_summary import write_after_run
 
 # TODO: REPLACE EVERY OBJECTIVE BELOW.
 #
@@ -146,6 +147,8 @@ async def main():
 
     print(f"Running {len(OBJECTIVES)} objective(s), up to {MAX_TURNS} turns each...\n")
 
+    run_id = str(uuid.uuid4())
+
     # max_concurrency=1 keeps output readable and stays inside rate limits.
     # TODO: raise it once your objectives are stable and you know your quota.
     executor_result = await AttackExecutor(max_concurrency=1).execute_attack_async(
@@ -154,7 +157,7 @@ async def main():
         # Stored with each result, so the finding report can say what ran.
         memory_labels={
             "rt_campaign": "multi_turn_crescendo",
-            "rt_run_id": str(uuid.uuid4()),
+            "rt_run_id": run_id,
             "rt_provider": resolve_provider("target"),
             "rt_target": model_name(target),
             "rt_adversarial_provider": resolve_provider("adversarial"),
@@ -177,9 +180,9 @@ async def main():
         print(f"  conversation_id={result.conversation_id}")
         print()
 
-    # TODO: pipe these into a report instead of reading them off the console:
-    #   reporting/export_finding_report.py takes the conversation_id and produces
-    #   the Playbook-format writeup with the full transcript attached.
+    write_after_run(run_id)
+    print(f"Next: python -m reporting.export_finding_report --outcome success --run-id {run_id[:8]} --out findings/")
+    print("      writes a finding report for each attack that reached its objective.")
 
     for t in (target, adversarial, judge):
         await close_target(t)
