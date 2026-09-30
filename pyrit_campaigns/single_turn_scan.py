@@ -57,6 +57,7 @@ from pyrit.score import SelfAskGeneralTrueFalseScorer
 from pyrit.setup import SQLITE, initialize_pyrit_async
 
 from pyrit_campaigns.profiles import PAIR_RUBRICS, Profile, describe, env_var, get_profile
+from reporting.run_summary import write_after_run
 from pyrit_campaigns.target_factory import (
     build_scoring_target,
     build_target,
@@ -407,8 +408,9 @@ async def main() -> int:
         for item in profile.checklist:
             print(f"  [ ] {item}")
 
-    print(f"\nNext: python -m reporting.export_finding_report --rubric any --run-id {run_labels['rt_run_id'][:8]} --out findings/")
-    print("      writes a report for every finding above (--conversation-id exports one).")
+    write_after_run(run_labels["rt_run_id"])
+    print(f"Next: python -m reporting.export_finding_report --rubric any --run-id {run_labels['rt_run_id'][:8]} --out findings/")
+    print("      writes a report for each finding you agree with (--conversation-id exports one).")
     print("LLM output is stochastic - re-run a finding 5-10 times before you report it.")
 
     for t in (target, judge):

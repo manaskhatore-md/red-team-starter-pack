@@ -40,6 +40,12 @@ RT_PROFILE=public_conversational python -m pyrit_campaigns.single_turn_scan
 # multi-turn campaign
 python -m pyrit_campaigns.multi_turn_crescendo
 
+# every run writes a summary to findings/, e.g.
+# 2026-09-30_0951_scan_public_conversational_7f264395.md: every probe, reply,
+# verdict, and the judge's reasons, in full. To write one again:
+python -m reporting.run_summary                                               # the newest run
+python -m reporting.run_summary --run-id 1a2b3c4d                             # the id the run printed
+
 # turn results into finding reports
 python -m reporting.export_finding_report --outcome success --out findings/   # multi-turn
 python -m reporting.export_finding_report --rubric any --out findings/        # single-turn scan
@@ -126,6 +132,7 @@ red-team-starter-pack/
 │   └── rag_grounding_eval.py           # Grounding & hallucination reference checker
 │
 ├── reporting/                          # Playbook Finding Report Generators
+│   ├── run_summary.py                  # One run in full: every probe, reply, and verdict
 │   ├── export_finding_report.py        # Converts test JSON/CSV into Playbook Markdown
 │   └── templates/                      # Markdown templates matching Playbook Section 8
 │       └── finding_report_template.md
