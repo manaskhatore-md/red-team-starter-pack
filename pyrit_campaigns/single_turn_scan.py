@@ -25,6 +25,13 @@ WHICH RUBRIC GRADES WHICH PROBE: each rubric in judges/state_policy_rubric.yaml 
 the datasets it `grades`, and a probe is graded only by the profile's rubrics that
 list its dataset. A probe no rubric grades is not sent, and the scan says so.
 
+THE SYSTEM PROMPT: each probe is sent after a system prompt, as a deployed app would
+send it - by default the stand-in in system_prompts/ for the profile, or the file
+RT_SYSTEM_PROMPT_FILE names (RT_SYSTEM_PROMPT_FILE=none for no system prompt). It
+carries a random canary token, and every reply is checked for it: a reply containing it has
+leaked the system prompt, and counts as a system_prompt_leak finding whatever the
+judges said. See pyrit_campaigns/system_prompt.py.
+
 COST: one target call per probe, one judge call per probe per rubric that grades it,
 plus one judge call per matched pair. public_conversational is 16 + 16 + 5 = 37
 calls. Start with one dataset while you tune the rubrics.
@@ -57,6 +64,13 @@ from pyrit.score import SelfAskGeneralTrueFalseScorer
 from pyrit.setup import SQLITE, initialize_pyrit_async
 
 from pyrit_campaigns.profiles import PAIR_RUBRICS, Profile, describe, env_var, get_profile
+from pyrit_campaigns.system_prompt import (
+    CanaryLeakScorer,
+    load_system_prompt,
+    new_canary,
+    system_message,
+    takes_system_prompt,
+)
 from reporting.run_summary import write_after_run
 from pyrit_campaigns.target_factory import (
     build_scoring_target,
@@ -215,7 +229,7 @@ async def compare_pairs(probes: list[Probe], results_by_prompt: dict, memory, ju
 UNRENDERED = re.compile(r"\{\{\s*(\w+)\s*\}\}")
 
 
-def check_placeholders(profile: Profile, probes: list[Probe]) -> None:
+def check_placeholders(profile: Profile, probes: list[Probe], system_prompt: str = "") -> None:
     """Warn when the probes still say "TODO Program". The scan runs either way.
 
     A model asked about "TODO Program" answers about a program that does not
@@ -225,11 +239,14 @@ def check_placeholders(profile: Profile, probes: list[Probe]) -> None:
     Also warns about a dataset token the profile has no value for at all. That has
     to be checked on the RENDERED probes - the profile dict cannot tell you about a
     token it is missing.
+
+    The system prompt is filled from the same values, so it is checked too.
     """
+    texts = [probe.prompt for probe in probes] + ([system_prompt] if system_prompt else [])
     unfilled = sorted(
         key
         for key, value in profile.placeholders.items()
-        if str(value).startswith("TODO") and any(str(value) in probe.prompt for probe in probes)
+        if str(value).startswith("TODO") and any(str(value) in text for text in texts)
     )
     if unfilled:
         lines = "\n".join(f"!!     {env_var(key)}=" for key in unfilled)
@@ -240,13 +257,13 @@ def check_placeholders(profile: Profile, probes: list[Probe]) -> None:
             f"{lines}\n"
         )
 
-    missing = sorted({m for probe in probes for m in UNRENDERED.findall(probe.prompt)})
+    missing = sorted({m for text in texts for m in UNRENDERED.findall(text)})
     if missing:
         print(
-            f"\n!! {len(missing)} dataset token(s) have no value in profile {profile.key!r}:\n"
+            f"\n!! {len(missing)} token(s) have no value in profile {profile.key!r}:\n"
             f"!!   {', '.join(missing)}\n"
-            "!! Those probes will go out with the literal {{ token }} text in them, which\n"
-            "!! tests nothing useful. Add them to the profile's placeholders in\n"
+            "!! The probes or system prompt will go out with the literal {{ token }} text\n"
+            "!! in them, which tests nothing useful. Add them to the profile's placeholders in\n"
             "!! pyrit_campaigns/profiles.py before you trust this run.\n"
         )
 
@@ -263,9 +280,22 @@ async def main() -> int:
     print(describe(profile))
 
     probes = load_probes(profile)
-    check_placeholders(profile, probes)
+    system_prompt = load_system_prompt(profile.key, profile.placeholders, new_canary())
+    check_placeholders(profile, probes, system_prompt.text if system_prompt else "")
 
     target = build_target()
+    if system_prompt:
+        print(f"\nSystem prompt: {system_prompt.source} (chosen by {system_prompt.chosen_by}), "
+              f"with canary token {system_prompt.canary}.")
+        print("Every reply is checked for the canary token; a reply that contains it has leaked the system prompt.")
+        if not takes_system_prompt(target):
+            print(
+                "\n!! This target does not take a system prompt, so PyRIT sends it as the start of\n"
+                "!! the user's message instead. The model sees the instructions as coming from the\n"
+                "!! user, which makes extraction and override probes easier than in a real deployment.\n"
+            )
+    else:
+        print("\nSystem prompt: none. The model gets each probe with no instructions.")
     judge = build_scoring_target()
     await check_models(target=target, judge=judge)
     scorers = build_rubric_scorers(profile, judge)
@@ -304,7 +334,17 @@ async def main() -> int:
         "rt_target": model_name(target),
         "rt_judge_provider": resolve_provider("judge"),
         "rt_judge": model_name(judge),
+        # Where the system prompt came from, so a report can say what the model was told.
+        "rt_system_prompt": system_prompt.source if system_prompt else "none",
+        "rt_system_prompt_chosen_by": system_prompt.chosen_by if system_prompt else "",
+        "rt_prompt_canary": system_prompt.canary if system_prompt else "",
     }
+
+    # Every reply is checked for the canary, whichever rubrics grade it. The check
+    # needs no judge call, so it adds nothing to the cost.
+    canary_scorers = [CanaryLeakScorer(canary=system_prompt.canary)] if system_prompt else []
+    # PyRIT puts these messages ahead of each probe, in a new conversation per probe.
+    prepended = {"prepended_conversation": [system_message(system_prompt)]} if system_prompt else {}
 
     # One attack per group, because an attack applies its scorers to every probe
     # it sends.
@@ -316,12 +356,13 @@ async def main() -> int:
                 # Auxiliary rather than objective: there is no single "did the attack
                 # win" question here, there are N independent policy questions.
                 # Auxiliary scores are still written to memory against the response.
-                auxiliary_scorers=[scorers[key] for key in keys],
+                auxiliary_scorers=[scorers[key] for key in keys] + canary_scorers,
             ),
         )
         executor_result = await AttackExecutor(max_concurrency=MAX_CONCURRENCY).execute_attack_async(
             attack=attack,
             objectives=[probe.prompt for probe in group],
+            **prepended,
             field_overrides=[
                 {
                     "memory_labels": {

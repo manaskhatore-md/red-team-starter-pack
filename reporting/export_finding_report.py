@@ -56,6 +56,7 @@ from pyrit.memory import CentralMemory
 from pyrit.setup import SQLITE, initialize_pyrit_async
 
 from pyrit_campaigns.profiles import PROFILES
+from pyrit_campaigns.system_prompt import CANARY_CHECK, CANARY_CHECK_INFO
 
 TEMPLATE = Path(__file__).resolve().parent / "templates" / "finding_report_template.md"
 RUBRIC_FILE = Path(__file__).resolve().parent.parent / "judges" / "state_policy_rubric.yaml"
@@ -128,7 +129,9 @@ def format_scores(scores) -> str:
 
 @cache
 def load_rubrics() -> dict:
-    return yaml.safe_load(RUBRIC_FILE.read_text(encoding="utf-8"))["rubrics"]
+    # The canary check is not a judge rubric, but it flags findings like one, so it
+    # is listed with them: --rubric any exports its hits, and reports show its severity.
+    return {**yaml.safe_load(RUBRIC_FILE.read_text(encoding="utf-8"))["rubrics"], CANARY_CHECK: CANARY_CHECK_INFO}
 
 
 def rubric_names() -> set[str]:
@@ -180,12 +183,27 @@ def reproduction_steps(labels: dict) -> str:
         else f"`RT_JUDGE_MODEL={labels.get('rt_judge')}` on the judge provider that serves it"
     )
     if labels.get("rt_campaign") == "single_turn_scan":
+        system_prompt = labels.get("rt_system_prompt")
+        if not system_prompt:
+            # Recorded before the scan sent a system prompt.
+            prompt_setting = ", `RT_SYSTEM_PROMPT_FILE=none` (this run sent no system prompt)"
+        elif system_prompt == "none":
+            prompt_setting = ", `RT_SYSTEM_PROMPT_FILE=none`"
+        elif labels.get("rt_system_prompt_chosen_by") == "RT_SYSTEM_PROMPT_FILE":
+            prompt_setting = f", `RT_SYSTEM_PROMPT_FILE={system_prompt}`"
+        else:
+            prompt_setting = f" (the profile's system prompt, `{system_prompt}`)"
         steps = [
-            f"In `.env`, set `RT_PROFILE={labels.get('rt_profile')}`, {target}, and {judge}.",
+            f"In `.env`, set `RT_PROFILE={labels.get('rt_profile')}`{prompt_setting}, {target}, and {judge}.",
             "Run `python -m pyrit_campaigns.single_turn_scan`.",
             f"The probe is `{labels.get('rt_probe')}` in `datasets/{labels.get('rt_dataset')}.yaml`. "
             "The text it sends is the Objective above.",
         ]
+        if labels.get("rt_prompt_canary"):
+            steps.append(
+                f"This run's canary token was `{labels['rt_prompt_canary']}`. Every run plants a new one, "
+                "so look for the new run's canary token, which it prints at the start."
+            )
         if labels.get("rt_pair_id"):
             steps.append(
                 f"It is one half of matched pair `{labels['rt_pair_id']}`. The scan compares "
@@ -262,8 +280,11 @@ def build_report(result, memory, template: str, all_results) -> str:
         values["model_under_test"] = target
         values["target_description"] = f"{target} via RT_PROVIDER={labels.get('rt_provider')}" + (
             "" if labels.get("rt_provider") == "app"
-            else " - a bare model, not your deployed application (RT_PROVIDER=app tests that)"
+            else " - the model on its own, not your deployed application (RT_PROVIDER=app tests that)"
         )
+        system_prompt = labels.get("rt_system_prompt")
+        if system_prompt and system_prompt != "none":
+            values["target_description"] += f", given the system prompt in {system_prompt}"
     else:
         values["model_under_test"] = "TODO: model id and version - RT_PROVIDER/RT_MODEL used for this run"
         values["target_description"] = "TODO: endpoint or model the attack ran against"

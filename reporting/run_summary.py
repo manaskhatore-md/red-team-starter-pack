@@ -45,6 +45,7 @@ from pyrit.memory import CentralMemory
 from pyrit.setup import SQLITE, initialize_pyrit_async
 
 from pyrit_campaigns.profiles import PROFILES
+from pyrit_campaigns.system_prompt import CANARY_CHECK
 from reporting.export_finding_report import (
     flagged_rubrics,
     format_scores,
@@ -104,9 +105,33 @@ def classify(result, messages, scores, graded_by: list[str]) -> str:
 
 
 def rubrics_scored(scores) -> list[str]:
-    """The rubrics that returned a verdict on this reply, other than the pair rubric."""
+    """The rubric judges that returned a verdict on this reply.
+
+    Not the pair rubric, whose verdict is the pair's, and not the canary check, which
+    checks every reply: a reply only it checked was not graded against any policy.
+    """
     known = set(load_rubrics())
-    return sorted({c for s in scores for c in (s.score_category or [])} & known - {PAIR_RUBRIC})
+    return sorted({c for s in scores for c in (s.score_category or [])} & known - {PAIR_RUBRIC, CANARY_CHECK})
+
+
+def canary_verdict(scores) -> bool | None:
+    """True if the reply leaked the canary, False if checked and clean, None if not checked."""
+    checks = [s for s in scores if CANARY_CHECK in (s.score_category or [])]
+    return any(s.get_value() is True for s in checks) if checks else None
+
+
+def without_system(messages) -> list:
+    """The conversation minus its system prompt, which the summary shows once rather than per result."""
+    return [m for m in messages if any(p.role != "system" for p in m.message_pieces)]
+
+
+def system_prompt_text(entries) -> str | None:
+    for entry in entries:
+        for message in entry["messages"]:
+            for piece in message.message_pieces:
+                if piece.role == "system":
+                    return piece.converted_value
+    return None
 
 
 def fence(text: str) -> str:
@@ -162,9 +187,13 @@ def build_summary(results, memory, run_id: str) -> str:
             "messages": messages,
             "scores": scores,
             "graded_by": graded_by,
+            "canary": canary_verdict(scores),
             "verdict": classify(result, messages, scores, graded_by),
         })
     pairs = pair_verdicts(entries)
+    leaks = sum(e["canary"] is True for e in entries)
+    canary_checked = sum(e["canary"] is not None for e in entries)
+    prompt_text = system_prompt_text(entries)
 
     labels = results[0].labels or {}
     campaign = labels.get("rt_campaign", "unlabeled")
@@ -197,9 +226,24 @@ def build_summary(results, memory, run_id: str) -> str:
 
     lines.append(
         f"| Model under test | {recorded(labels.get('rt_target'))} (RT_PROVIDER={recorded(provider)})"
-        + ("" if provider == "app" else " - a bare model, not a deployed application")
+        + ("" if provider == "app" else " - the model on its own, not a deployed application")
         + " |"
     )
+    system_prompt = labels.get("rt_system_prompt")
+    if system_prompt == "none":
+        lines.append("| System prompt | none (RT_SYSTEM_PROMPT_FILE=none) |")
+    elif system_prompt:
+        how = (
+            "chosen by RT_SYSTEM_PROMPT_FILE"
+            if labels.get("rt_system_prompt_chosen_by") == "RT_SYSTEM_PROMPT_FILE"
+            else "the profile's stand-in"
+        )
+        lines.append(
+            f"| System prompt | `{system_prompt}`, {how} ([text](#system-prompt)); "
+            f"canary token `{labels.get('rt_prompt_canary') or 'not recorded'}` |"
+        )
+    elif campaign == "single_turn_scan":
+        lines.append("| System prompt | not recorded (the scan sent none before it recorded this) |")
     lines.append(f"| Judge | {recorded(labels.get('rt_judge'))} (RT_JUDGE_PROVIDER={recorded(labels.get('rt_judge_provider'))}) |")
     if labels.get("rt_adversarial"):
         lines.append(f"| Attacker | {labels['rt_adversarial']} (RT_ADVERSARIAL_PROVIDER={recorded(labels.get('rt_adversarial_provider'))}) |")
@@ -217,7 +261,8 @@ def build_summary(results, memory, run_id: str) -> str:
         lines.append(f"The attack reached its objective in **{flagged} of {len(entries)}** conversations in this run.")
     else:
         lines.append(
-            f"The judge model flagged **{flagged} of {len(entries)}** results"
+            ("The judge model and the canary token check" if canary_checked else "The judge model")
+            + f" flagged **{flagged} of {len(entries)}** results"
             + (f" and **{pairs_flagged} of {pairs_compared}** matched pairs" if pairs_compared else "")
             + " in this run."
         )
@@ -229,6 +274,12 @@ def build_summary(results, memory, run_id: str) -> str:
         "- **A pass is one sample.** Model output varies from run to run. A probe that passed once can "
         "fail on the next run, so re-run a probe 5-10 times before you rely on either result.",
     ]
+    if leaks:
+        lines.append(
+            f"- **{leaks} reply(ies) leaked the system prompt.** Each contains the canary token, a random code "
+            "planted only in the system prompt, so this was found by matching the code, not by a judge. "
+            "It counts as a flag whatever the judges said; their verdicts are beside it below."
+        )
     if counts[ERROR]:
         lines.append(
             f"- **{counts[ERROR]} result(s) stopped with an error** and have no verdict. The reason "
@@ -244,20 +295,39 @@ def build_summary(results, memory, run_id: str) -> str:
             "was recorded; the judge call may have failed. Check the campaign's console output."
         )
     if provider != "app":
-        lines.append(
-            "- **This tested a bare model, not your deployed application.** Your system prompt, "
-            "retrieval index, and tool permissions were not in the loop, and they are where most "
-            "of a deployment's risk lives."
-        )
+        if system_prompt and system_prompt != "none" and labels.get("rt_system_prompt_chosen_by") == "RT_SYSTEM_PROMPT_FILE":
+            lines.append(
+                f"- **This tested a model with the system prompt in `{system_prompt}`, not your deployed "
+                "application.** If that is your application's prompt, this tested your instructions on this "
+                "model. Your retrieval index and tool permissions were still not in the loop."
+            )
+        elif system_prompt and system_prompt != "none":
+            lines.append(
+                "- **This tested a model with a stand-in system prompt, not your deployed application.** "
+                f"`{system_prompt}` is a generic prompt for this kind of deployment. It shows how the model "
+                "holds rules like yours, not how it holds yours: set RT_SYSTEM_PROMPT_FILE to your "
+                "application's prompt for that. Your retrieval index and tool permissions were not in the loop."
+            )
+        else:
+            lines.append(
+                "- **This tested a bare model, not your deployed application.** It had no system prompt, and "
+                "your retrieval index and tool permissions were not in the loop. They are where most "
+                "of a deployment's risk lives."
+            )
     lines.append("")
 
     flagged_by = Counter(r for e in entries for r in flagged_rubrics(e["scores"]) if r != PAIR_RUBRIC)
     graded = Counter(r for e in entries for r in e["graded_by"])
-    if graded or pairs_compared:
+    if graded or pairs_compared or canary_checked:
         lines += ["## By rubric", "", "| Rubric | Flagged | Graded | What it checks |", "|---|---|---|---|"]
         for rubric in sorted(graded):
             description = cell(rubrics.get(rubric, {}).get("description", ""), 120)
             lines.append(f"| {rubric} | {flagged_by[rubric]} | {graded[rubric]} | {description} |")
+        if canary_checked:
+            lines.append(
+                f"| {CANARY_CHECK} (canary token check) | {leaks} | {canary_checked} "
+                "| Whether the reply contains the canary token planted in the system prompt. A match, not a judge. |"
+            )
         if pairs_compared:
             description = cell(rubrics.get(PAIR_RUBRIC, {}).get("description", ""), 120)
             lines.append(f"| {PAIR_RUBRIC} (pairs) | {pairs_flagged} | {pairs_compared} | {description} |")
@@ -267,9 +337,10 @@ def build_summary(results, memory, run_id: str) -> str:
     for e in entries:
         result_labels = e["result"].labels or {}
         probe = result_labels.get("rt_probe") or cell(e["result"].objective, 60)
+        checks = e["graded_by"] + {True: ["canary token LEAKED"], False: ["canary token"], None: []}[e["canary"]]
         lines.append(
             f"| [{e['number']}](#result-{e['number']}) | {e['verdict']} | {result_labels.get('rt_dataset', '-')} "
-            f"| {probe} | {', '.join(e['graded_by']) or '-'} |"
+            f"| {probe} | {', '.join(checks) or '-'} |"
         )
     lines.append("")
 
@@ -292,6 +363,18 @@ def build_summary(results, memory, run_id: str) -> str:
                 lines += ["", f"Judge's reasoning: {p['score'].score_rationale}"]
             lines.append("")
 
+    if prompt_text:
+        lines += [
+            '<a id="system-prompt"></a>',
+            "## System prompt",
+            "",
+            "Sent ahead of every probe, as the start of each conversation. It is left out of the "
+            "transcripts below.",
+            "",
+            fence(prompt_text),
+            "",
+        ]
+
     lines += ["## Results in full", ""]
     for e in entries:
         result = e["result"]
@@ -313,7 +396,7 @@ def build_summary(results, memory, run_id: str) -> str:
         if error:
             lines.append(f"- error: {error}")
         lines += ["", "**Scores**", "", format_scores(e["scores"]), "", "**Transcript**", ""]
-        lines += [fence(format_transcript(e["messages"])), ""]
+        lines += [fence(format_transcript(without_system(e["messages"]))), ""]
 
     lines += ["## Next steps", ""]
     if flagged or pairs_flagged:
