@@ -37,8 +37,9 @@ connectivity, not safety — nothing scores the responses. Once it passes:
 # single-turn scan (pick the profile matching your deployment)
 RT_PROFILE=public_conversational python -m pyrit_campaigns.single_turn_scan
 
-# multi-turn campaign
-python -m pyrit_campaigns.multi_turn_crescendo
+# multi-turn campaign: the profile's objectives, each one a Crescendo attack
+# (edit them in pyrit_campaigns/profiles.py; RT_MAX_TURNS=3 keeps a first run short)
+RT_PROFILE=public_conversational python -m pyrit_campaigns.multi_turn_crescendo
 
 # every run writes a summary to findings/, e.g.
 # 2026-09-30_0951_scan_public_conversational_7f264395.md: every probe, reply,
