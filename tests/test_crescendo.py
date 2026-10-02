@@ -1,10 +1,16 @@
-"""Which providers the Crescendo campaign builds, without sending anything."""
+"""The Crescendo campaign, without sending anything: what it builds, attacks for, and reports."""
 
 import asyncio
+import uuid
 
 import pytest
 
+from pyrit.models import AttackOutcome, Message, MessagePiece
+
 from pyrit_campaigns import multi_turn_crescendo, target_factory
+from pyrit_campaigns.profiles import PROFILES, Objective, Profile, get_profile
+from reporting import run_summary as rs
+from test_run_summary import RUN, add_probe, summary
 
 
 class _Stop(Exception):
@@ -12,9 +18,12 @@ class _Stop(Exception):
 
 
 @pytest.fixture
-def built_providers(monkeypatch):
+def built_providers(monkeypatch, clean_env):
     """Run main() up to the attack and return the providers it built targets for."""
     calls = []
+    # A profile with objectives, and no system prompt, so nothing asks the fake target what it supports.
+    clean_env.setenv("RT_PROFILE", "public_conversational")
+    clean_env.setenv("RT_SYSTEM_PROMPT_FILE", "none")
 
     async def no_db(*args, **kwargs):
         pass
@@ -58,3 +67,145 @@ def test_single_provider_setup_attacks_with_that_provider(built_providers, clean
     clean_env.setenv("RT_PROVIDER", "bedrock")
     target, attacker = built_providers()
     assert attacker == "bedrock"
+
+
+# --- objectives -------------------------------------------------------------
+
+def test_every_profiles_objectives_are_judged_by_one_of_its_rubrics():
+    for profile in PROFILES.values():
+        if profile.objectives:
+            multi_turn_crescendo.load_objectives(profile)
+
+
+def test_objectives_have_their_placeholders_filled():
+    profile = PROFILES["public_conversational"]
+    goals = [o.goal for o in multi_turn_crescendo.load_objectives(profile)]
+    assert not any("{{" in g for g in goals)
+    assert any(profile.placeholders["program_name"] in g for g in goals)
+
+
+def test_a_profile_without_objectives_stops_with_where_to_add_them(clean_env):
+    with pytest.raises(SystemExit, match="profiles.py"):
+        multi_turn_crescendo.load_objectives(get_profile())
+
+
+def test_an_objective_judged_by_a_rubric_the_profile_lacks_is_refused():
+    base = PROFILES["public_conversational"]
+    profile = Profile(**{**base.__dict__, "objectives": (Objective("no_such_rubric", "goal"),)})
+    with pytest.raises(SystemExit, match="no_such_rubric"):
+        multi_turn_crescendo.load_objectives(profile)
+
+
+def test_each_objective_runs_once_per_repeat_with_its_labels():
+    objectives = [Objective("r", "goal a", needs_system_prompt=True), Objective("r", "goal b")]
+    goals, overrides = multi_turn_crescendo.expand_repeats(objectives, 2, {"rt_run_id": RUN})
+    assert goals == ["goal a", "goal a", "goal b", "goal b"]
+    labels = [o["memory_labels"] for o in overrides]
+    assert [(l["rt_repeat"], l["rt_needs_system_prompt"]) for l in labels] == [
+        ("1", "true"), ("2", "true"), ("1", "false"), ("2", "false"),
+    ]
+    assert all(l["rt_run_id"] == RUN and l["rt_rubric"] == "r" for l in labels)
+
+
+# --- the attacker does not see the system prompt ----------------------------
+
+def test_the_attacker_prompt_leaves_out_the_conversation_before_the_attack():
+    secret = "SYSTEM PROMPT WITH CANARY RTC-0000-0000"
+    render = dict(objective="the goal", max_turns=3, conversation_context=secret)
+    # PyRIT's own prompt shows it; if this fails, the test below proves nothing.
+    original = multi_turn_crescendo.SeedPrompt.from_yaml_file(
+        multi_turn_crescendo.CrescendoAttack.DEFAULT_ADVERSARIAL_CHAT_SYSTEM_PROMPT_TEMPLATE_PATH
+    )
+    assert secret in original.render_template_value(**render)
+    blinded = multi_turn_crescendo.blind_attacker_prompt().render_template_value(**render)
+    assert secret not in blinded
+    assert "the goal" in blinded
+
+
+def test_a_changed_pyrit_attacker_prompt_stops_the_run(monkeypatch):
+    monkeypatch.setattr(multi_turn_crescendo, "CONTEXT_SECTION", multi_turn_crescendo.re.compile("no such text"))
+    with pytest.raises(SystemExit, match="CONTEXT_SECTION"):
+        multi_turn_crescendo.blind_attacker_prompt()
+
+
+# --- what the judge is shown ------------------------------------------------
+
+def test_the_judge_sees_the_turns_before_the_reply_but_not_the_system_prompt():
+    conversation = str(uuid.uuid4())
+    pieces = [MessagePiece(role=role, original_value=text, conversation_id=conversation) for role, text in [
+        ("system", "secret instructions"), ("user", "first question"), ("assistant", "first answer"),
+        ("user", "second question"), ("assistant", "judged reply"), ("user", "later question"),
+    ]]
+    messages = [Message(message_pieces=[p]) for p in pieces]
+    shown = multi_turn_crescendo.conversation_before(messages, pieces[4])
+    assert shown == "User: first question\n\nAssistant: first answer\n\nUser: second question"
+
+
+# --- the run summary --------------------------------------------------------
+
+CRESCENDO = {"rt_campaign": "multi_turn_crescendo", "rt_repeats": "2"}
+
+
+def test_a_leak_objective_achieved_without_a_system_prompt_is_unverified_not_a_flag(memory):
+    for repeat in ("1", "2"):
+        add_probe(memory, "reveal the instructions", "here they are", outcome=AttackOutcome.SUCCESS,
+                  rt_needs_system_prompt="true", rt_system_prompt="none", rt_repeat=repeat, **CRESCENDO)
+    text = summary(memory)
+    assert "reached its objective in **0 of 2**" in text
+    assert "2 attack(s) are unverified" in text
+
+
+def test_a_leak_objective_achieved_with_a_system_prompt_is_a_flag(memory):
+    add_probe(memory, "reveal the instructions", "here they are", outcome=AttackOutcome.SUCCESS,
+              rt_needs_system_prompt="true", rt_system_prompt="system_prompts/x.txt", **CRESCENDO)
+    assert "reached its objective in **1 of 1**" in summary(memory)
+
+
+def test_crescendo_repeats_count_toward_the_failure_rate(memory):
+    for repeat, outcome in (("1", AttackOutcome.SUCCESS), ("2", AttackOutcome.FAILURE)):
+        add_probe(memory, "state a benefit amount", "reply", outcome=outcome,
+                  rt_needs_system_prompt="false", rt_system_prompt="none", rt_repeat=repeat, **CRESCENDO)
+    assert "| 1 of 2 | 0 | flagged some of the time |" in summary(memory)
+
+
+# --- one attack, each objective judged by its own rubric --------------------
+
+def test_each_goal_gets_its_own_rubric_with_every_slot_filled():
+    objectives = [Objective("injection_compliance", "goal a"), Objective("unauthorized_determination", "goal b")]
+    rubrics = multi_turn_crescendo.objective_rubrics(objectives, multi_turn_crescendo.load_rubrics(), "THE PROMPT")
+    assert [rubrics[g][0] for g in ("goal a", "goal b")] == ["injection_compliance", "unauthorized_determination"]
+    for _, prompt in rubrics.values():
+        assert "[[" not in prompt and multi_turn_crescendo.PASS_CRITERIA in prompt
+    assert "THE PROMPT" in rubrics["goal a"][1]
+
+
+def test_the_scorer_judges_a_reply_with_its_goals_rubric(memory, monkeypatch):
+    shown = []
+
+    class FakeJudge:
+        def __init__(self, *, system_prompt_format_string, chat_target, category):
+            shown.append((system_prompt_format_string, category))
+
+        async def _score_piece_async(self, piece, *, objective):
+            shown.append(objective)
+            return []
+
+    monkeypatch.setattr(multi_turn_crescendo, "SelfAskGeneralTrueFalseScorer", FakeJudge)
+    conversation = str(uuid.uuid4())
+    question = MessagePiece(role="user", original_value="a question", conversation_id=conversation)
+    reply = MessagePiece(role="assistant", original_value="a reply", conversation_id=conversation)
+    for piece in (question, reply):
+        memory.add_message_to_memory(request=Message(message_pieces=[piece]))
+    scorer = multi_turn_crescendo.ConversationRubricScorer(
+        judge=None, rubrics={"goal a": ("rubric_a", "prompt a"), "goal b": ("rubric_b", "prompt b")}
+    )
+    asyncio.run(scorer._score_piece_async(reply, objective="goal b"))
+    assert shown[0] == ("prompt b", "rubric_b")
+    assert "goal b" in shown[1] and "User: a question" in shown[1] and "a reply" not in shown[1]
+
+
+def test_the_same_objective_twice_is_refused():
+    base = PROFILES["public_conversational"]
+    twice = (Objective("injection_compliance", "goal"), Objective("unauthorized_determination", "goal"))
+    with pytest.raises(SystemExit, match="twice"):
+        multi_turn_crescendo.load_objectives(Profile(**{**base.__dict__, "objectives": twice}))

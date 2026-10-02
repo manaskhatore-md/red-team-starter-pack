@@ -182,17 +182,21 @@ def reproduction_steps(labels: dict) -> str:
         if labels.get("rt_judge_provider")
         else f"`RT_JUDGE_MODEL={labels.get('rt_judge')}` on the judge provider that serves it"
     )
+    system_prompt = labels.get("rt_system_prompt")
+    if not system_prompt:
+        # Recorded before the campaign sent a system prompt.
+        prompt_setting = ", `RT_SYSTEM_PROMPT_FILE=none` (this run sent no system prompt)"
+    elif system_prompt == "none":
+        prompt_setting = ", `RT_SYSTEM_PROMPT_FILE=none`"
+    elif labels.get("rt_system_prompt_chosen_by") == "RT_SYSTEM_PROMPT_FILE":
+        prompt_setting = f", `RT_SYSTEM_PROMPT_FILE={system_prompt}`"
+    else:
+        prompt_setting = f" (the profile's system prompt, `{system_prompt}`)"
+    canary_step = (
+        f"This run's canary token was `{labels.get('rt_prompt_canary')}`. Every run plants a new one, "
+        "so look for the new run's canary token, which it prints at the start."
+    )
     if labels.get("rt_campaign") == "single_turn_scan":
-        system_prompt = labels.get("rt_system_prompt")
-        if not system_prompt:
-            # Recorded before the scan sent a system prompt.
-            prompt_setting = ", `RT_SYSTEM_PROMPT_FILE=none` (this run sent no system prompt)"
-        elif system_prompt == "none":
-            prompt_setting = ", `RT_SYSTEM_PROMPT_FILE=none`"
-        elif labels.get("rt_system_prompt_chosen_by") == "RT_SYSTEM_PROMPT_FILE":
-            prompt_setting = f", `RT_SYSTEM_PROMPT_FILE={system_prompt}`"
-        else:
-            prompt_setting = f" (the profile's system prompt, `{system_prompt}`)"
         steps = [
             f"In `.env`, set `RT_PROFILE={labels.get('rt_profile')}`{prompt_setting}, {target}, and {judge}.",
             "Run `python -m pyrit_campaigns.single_turn_scan`.",
@@ -200,10 +204,7 @@ def reproduction_steps(labels: dict) -> str:
             "The text it sends is the Objective above.",
         ]
         if labels.get("rt_prompt_canary"):
-            steps.append(
-                f"This run's canary token was `{labels['rt_prompt_canary']}`. Every run plants a new one, "
-                "so look for the new run's canary token, which it prints at the start."
-            )
+            steps.append(canary_step)
         if labels.get("rt_pair_id"):
             steps.append(
                 f"It is one half of matched pair `{labels['rt_pair_id']}`. The scan compares "
@@ -211,15 +212,18 @@ def reproduction_steps(labels: dict) -> str:
             )
     elif labels.get("rt_campaign") == "multi_turn_crescendo":
         steps = [
-            f"In `.env`, set {target}, {judge}, `RT_ADVERSARIAL_PROVIDER="
+            f"In `.env`, set `RT_PROFILE={labels.get('rt_profile')}`{prompt_setting}, {target}, {judge}, `RT_ADVERSARIAL_PROVIDER="
             f"{labels.get('rt_adversarial_provider')}` and `RT_ADVERSARIAL_MODEL={labels.get('rt_adversarial')}`, "
             f"`RT_MAX_TURNS={labels.get('rt_max_turns')}`, and "
             f"`RT_MAX_BACKTRACKS={labels.get('rt_max_backtracks')}`.",
-            "Put the Objective above in `OBJECTIVES` in `pyrit_campaigns/multi_turn_crescendo.py`, "
-            "then run `python -m pyrit_campaigns.multi_turn_crescendo`.",
+            "Run `python -m pyrit_campaigns.multi_turn_crescendo`. It runs every objective in the "
+            "profile's `objectives` (`pyrit_campaigns/profiles.py`); the Objective above is one of them. "
+            "To run only this one, comment out the others.",
             "The attacker writes new turns on every run, so the transcript will not repeat word "
             "for word. What should reproduce is the outcome.",
         ]
+        if labels.get("rt_prompt_canary"):
+            steps.append(canary_step)
     else:
         # Recorded before the campaigns labeled their results.
         return (

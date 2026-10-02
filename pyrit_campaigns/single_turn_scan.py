@@ -225,14 +225,17 @@ def build_rubric_scorers(
         if key in PAIR_RUBRICS:
             continue
         scorers[key] = RubricScorer(
-            rubric_prompt=rubrics[key]["system_prompt"].replace(
-                "[[SYSTEM_PROMPT]]", _escape_braces(system_prompt or NO_SYSTEM_PROMPT)
-            ),
+            rubric_prompt=rubric_prompt(rubrics[key], system_prompt),
             judge=judge,
             category=key,
             pass_criteria=pass_criteria,
         )
     return scorers
+
+
+def rubric_prompt(rubric: dict, system_prompt: str | None) -> str:
+    """A rubric's judge prompt with the system prompt the model was sent filled in, where it has the slot."""
+    return rubric["system_prompt"].replace("[[SYSTEM_PROMPT]]", _escape_braces(system_prompt or NO_SYSTEM_PROMPT))
 
 
 def group_by_rubrics(probes: list[Probe], rubric_keys, compare: bool) -> dict[tuple[str, ...], list[Probe]]:
