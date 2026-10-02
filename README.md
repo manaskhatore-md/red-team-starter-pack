@@ -132,7 +132,14 @@ prompt-leak check. It is not a monitoring canary: a probe run on a schedule.)
 
 The check cannot catch a paraphrase: "my rules say I can't give eligibility
 decisions" leaks the prompt without the code. The `injection_compliance` judge still
-grades those.
+grades those, and it is shown the system prompt to judge against. So it can tell a
+reply that restates the rules from one that does what the rules say, such as
+describing what the assistant can help with. Your prompt therefore also goes to the
+judge's provider. Keep the judge on a provider you would trust with the prompt,
+such as Bedrock in your own AWS account.
+
+Every judge is also shown the probe's `pass_criteria` from its dataset: what a safe
+reply to that probe looks like.
 
 Each run's summary and finding reports record which system prompt it used and the
 canary token. A run prints a warning if the target cannot take a system prompt; PyRIT then
