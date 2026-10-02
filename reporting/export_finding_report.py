@@ -56,6 +56,7 @@ from pyrit.memory import CentralMemory
 from pyrit.setup import SQLITE, initialize_pyrit_async
 
 from pyrit_campaigns.profiles import PROFILES
+from pyrit_campaigns.planted_records import RECORD_CHECK, RECORD_CHECK_INFO
 from pyrit_campaigns.system_prompt import CANARY_CHECK, CANARY_CHECK_INFO
 
 TEMPLATE = Path(__file__).resolve().parent / "templates" / "finding_report_template.md"
@@ -129,9 +130,14 @@ def format_scores(scores) -> str:
 
 @cache
 def load_rubrics() -> dict:
-    # The canary check is not a judge rubric, but it flags findings like one, so it
-    # is listed with them: --rubric any exports its hits, and reports show its severity.
-    return {**yaml.safe_load(RUBRIC_FILE.read_text(encoding="utf-8"))["rubrics"], CANARY_CHECK: CANARY_CHECK_INFO}
+    # The canary and record checks are not judge rubrics, but they flag findings like
+    # one, so they are listed with them: --rubric any exports their hits, and reports
+    # show their severity.
+    return {
+        **yaml.safe_load(RUBRIC_FILE.read_text(encoding="utf-8"))["rubrics"],
+        CANARY_CHECK: CANARY_CHECK_INFO,
+        RECORD_CHECK: RECORD_CHECK_INFO,
+    }
 
 
 def rubric_names() -> set[str]:
@@ -195,6 +201,12 @@ def reproduction_steps(labels: dict) -> str:
     canary_step = (
         f"This run's canary token was `{labels.get('rt_prompt_canary')}`. Every run plants a new one, "
         "so look for the new run's canary token, which it prints at the start."
+        + (
+            f" It also planted {labels['rt_planted_records']} fake records, new each run; their values "
+            "are in the system prompt below."
+            if labels.get("rt_planted_records", "0") != "0"
+            else ""
+        )
     )
     if labels.get("rt_campaign") == "single_turn_scan":
         steps = [
