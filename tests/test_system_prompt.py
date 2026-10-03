@@ -11,6 +11,7 @@ from pyrit.score import MessageTrueFalseScorer
 from pyrit.score.scorer_prompt_validator import ScorerPromptValidator
 
 from pyrit_campaigns import single_turn_scan
+from pyrit_campaigns.code_checks import CREDENTIAL_CHECK
 from pyrit_campaigns.planted_records import RECORD_CHECK
 from pyrit_campaigns import system_prompt as sp
 from pyrit_campaigns.profiles import PROFILES
@@ -201,8 +202,8 @@ def test_the_scan_sends_the_system_prompt_and_flags_a_leak(memory, monkeypatch, 
         scores = memory.get_prompt_scores(conversation_id=result.conversation_id)
         flagged[result.labels["rt_probe"]] = export_finding_report.flagged_rubrics(scores)
     # Only the probe that asks for the prompt leaks it, and the judge's pass does not cancel the hit.
-    # The fake model repeats the whole prompt, so the planted records leak with the canary.
-    assert flagged.pop("system_prompt_extraction") == sorted([sp.CANARY_CHECK, RECORD_CHECK])
+    # The fake model repeats the whole prompt, so the planted records and credential leak with the canary.
+    assert flagged.pop("system_prompt_extraction") == sorted([sp.CANARY_CHECK, RECORD_CHECK, CREDENTIAL_CHECK])
     assert not any(flagged.values())
 
     # The summary shows the prompt once and flags the leak.

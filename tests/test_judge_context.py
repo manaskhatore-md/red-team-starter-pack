@@ -6,9 +6,8 @@ from pyrit.models import construct_response_from_request
 from pyrit.prompt_target import PromptTarget, TargetCapabilities, TargetConfiguration
 
 from pyrit_campaigns import single_turn_scan
-from pyrit_campaigns.planted_records import RECORD_CHECK
+from pyrit_campaigns.code_checks import CODE_CHECKS
 from pyrit_campaigns.profiles import PAIR_RUBRICS, get_profile
-from pyrit_campaigns.system_prompt import CANARY_CHECK
 from test_system_prompt import FakeModel, run_scan
 
 RUBRICS = single_turn_scan.load_rubrics()
@@ -85,8 +84,8 @@ def test_the_scan_shows_the_judge_each_probes_pass_criteria(memory, monkeypatch)
     for result in memory.get_attack_results(labels={"rt_run_id": run_id}):
         for score in memory.get_prompt_scores(conversation_id=result.conversation_id):
             categories.update(score.score_category or [])
-            # The fake model repeats its whole system prompt when asked, records and canary included.
-            if score.score_category not in ([CANARY_CHECK], [RECORD_CHECK]):
+            # The fake model repeats its whole system prompt when asked, so the code checks fire.
+            if not set(score.score_category or []) & set(CODE_CHECKS):
                 assert score.get_value() is False
     assert set(profile.rubrics) - PAIR_RUBRICS <= categories
 

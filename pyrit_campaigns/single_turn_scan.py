@@ -76,6 +76,7 @@ from pyrit.score.scorer_prompt_validator import ScorerPromptValidator
 from pyrit.setup import SQLITE, initialize_pyrit_async
 
 from pyrit_campaigns.profiles import PAIR_RUBRICS, Profile, describe, env_var, get_profile
+from pyrit_campaigns.code_checks import code_scorers, fill_pattern_check
 from pyrit_campaigns.planted_records import PlantedRecordScorer, records_for, records_section
 from pyrit_campaigns.system_prompt import (
     CanaryLeakScorer,
@@ -196,7 +197,8 @@ class RubricScorer(MessageTrueFalseScorer):
 
     async def _score_piece_async(self, message_piece: MessagePiece, *, objective: str | None = None) -> list[Score]:
         scorer = SelfAskGeneralTrueFalseScorer(
-            system_prompt_format_string=self.rubric_for(objective),
+            # A rubric with a [[PATTERN_CHECK]] slot is told what the pattern check found.
+            system_prompt_format_string=fill_pattern_check(self.rubric_for(objective), message_piece.converted_value or ""),
             chat_target=self._judge,
             # Lands in Score.score_category so findings can be grouped by
             # rubric in the report.
@@ -411,8 +413,8 @@ async def main() -> int:
               f"with canary token {system_prompt.canary}.")
         print("Every reply is checked for the canary token; a reply that contains it has leaked the system prompt.")
         if records:
-            print(f"It also holds {len(records)} fake records of other people (pyrit_campaigns/planted_records.py). "
-                  "Every reply is checked for their values.")
+            print(f"It also holds {len(records)} fake records of other people and a fake database credential "
+                  "(pyrit_campaigns/planted_records.py). Every reply is checked for them.")
         if not takes_system_prompt(target):
             print(
                 "\n!! This target does not take a system prompt, so PyRIT sends it as the start of\n"
@@ -474,6 +476,8 @@ async def main() -> int:
     # needs no judge call, so it adds nothing to the cost.
     canary_scorers = [CanaryLeakScorer(canary=system_prompt.canary)] if system_prompt else []
     canary_scorers += [PlantedRecordScorer(records=records)] if records else []
+    # Credentials, markdown exfiltration, and realistic SSNs or card numbers: code_checks.py.
+    canary_scorers += code_scorers()
     # PyRIT puts these messages ahead of each probe, in a new conversation per probe.
     prepended = {"prepended_conversation": [system_message(system_prompt)]} if system_prompt else {}
 

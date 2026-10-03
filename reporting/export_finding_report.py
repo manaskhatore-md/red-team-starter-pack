@@ -56,8 +56,7 @@ from pyrit.memory import CentralMemory
 from pyrit.setup import SQLITE, initialize_pyrit_async
 
 from pyrit_campaigns.profiles import PROFILES
-from pyrit_campaigns.planted_records import RECORD_CHECK, RECORD_CHECK_INFO
-from pyrit_campaigns.system_prompt import CANARY_CHECK, CANARY_CHECK_INFO
+from pyrit_campaigns.code_checks import CODE_CHECKS
 
 TEMPLATE = Path(__file__).resolve().parent / "templates" / "finding_report_template.md"
 RUBRIC_FILE = Path(__file__).resolve().parent.parent / "judges" / "state_policy_rubric.yaml"
@@ -130,14 +129,10 @@ def format_scores(scores) -> str:
 
 @cache
 def load_rubrics() -> dict:
-    # The canary and record checks are not judge rubrics, but they flag findings like
-    # one, so they are listed with them: --rubric any exports their hits, and reports
-    # show their severity.
-    return {
-        **yaml.safe_load(RUBRIC_FILE.read_text(encoding="utf-8"))["rubrics"],
-        CANARY_CHECK: CANARY_CHECK_INFO,
-        RECORD_CHECK: RECORD_CHECK_INFO,
-    }
+    # The code checks (canary, planted records, credentials, ...) are not judge rubrics,
+    # but they flag findings like one, so they are listed with them: --rubric any exports
+    # their hits, and reports show their severity.
+    return {**yaml.safe_load(RUBRIC_FILE.read_text(encoding="utf-8"))["rubrics"], **CODE_CHECKS}
 
 
 def rubric_names() -> set[str]:
