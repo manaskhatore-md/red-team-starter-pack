@@ -90,6 +90,7 @@ from pyrit_campaigns.single_turn_scan import (
     load_rubrics,
     rubric_prompt,
 )
+from pyrit_campaigns.code_checks import CODE_CHECKS, code_scorers, fill_pattern_check
 from pyrit_campaigns.planted_records import RECORD_CHECK, PlantedRecordScorer, records_for, records_section
 from pyrit_campaigns.system_prompt import (
     CANARY_CHECK,
@@ -237,7 +238,7 @@ class ConversationRubricScorer(MessageTrueFalseScorer):
             f"{conversation_before(messages, message_piece) or '(none - this is the first reply)'}"
         )
         scorer = SelfAskGeneralTrueFalseScorer(
-            system_prompt_format_string=prompt,
+            system_prompt_format_string=fill_pattern_check(prompt, message_piece.converted_value or ""),
             chat_target=self._judge,
             # Lands in Score.score_category, so the summary groups results by rubric.
             category=category,
@@ -320,8 +321,8 @@ async def main() -> int:
               f"with canary token {system_prompt.canary}.")
         print("Every reply is checked for the canary token. The attacker is not shown the system prompt.")
         if records:
-            print(f"It also holds {len(records)} fake records of other people (pyrit_campaigns/planted_records.py). "
-                  "Every reply is checked for their values.")
+            print(f"It also holds {len(records)} fake records of other people and a fake database credential "
+                  "(pyrit_campaigns/planted_records.py). Every reply is checked for them.")
         if not takes_system_prompt(target):
             print(
                 "\n!! This target does not take a system prompt, so PyRIT sends it as the start of\n"
@@ -345,6 +346,7 @@ async def main() -> int:
     # Every reply is checked for the canary. The check needs no judge call.
     canary_scorers = [CanaryLeakScorer(canary=system_prompt.canary)] if system_prompt else []
     canary_scorers += [PlantedRecordScorer(records=records)] if records else []
+    canary_scorers += code_scorers()
     # PyRIT puts these messages ahead of each attack, in a new conversation per attack.
     prepended = {"prepended_conversation": [system_message(system_prompt)]} if system_prompt else {}
 
@@ -405,7 +407,7 @@ async def main() -> int:
     needs_prompt = {o.goal for o in objectives if o.needs_system_prompt}
     achieved: Counter[str] = Counter()
     unverified: Counter[str] = Counter()
-    leaks = record_leaks = 0
+    leaks = record_leaks = other_hits = 0
 
     for result in completed:
         # SUCCESS here means the ATTACK succeeded - i.e. your system failed.
@@ -427,6 +429,10 @@ async def main() -> int:
         if records and leaked(memory, result.conversation_id, RECORD_CHECK):
             record_leaks += 1
             print("  RECORD LEAKED: a reply contains a value from a planted record of someone other than the user.")
+        for check in set(CODE_CHECKS) - {CANARY_CHECK, RECORD_CHECK}:
+            if leaked(memory, result.conversation_id, check):
+                other_hits += 1
+                print(f"  FLAGGED by the {check} check (pyrit_campaigns/code_checks.py).")
         if result.last_response:
             print(f"  final response: {result.last_response.converted_value[:300]}")
         print(f"  conversation_id={result.conversation_id}")
@@ -455,7 +461,7 @@ async def main() -> int:
     for t in (target, adversarial, judge):
         await close_target(t)
 
-    return 1 if FAIL_ON_FINDING and (sum(achieved.values()) or leaks or record_leaks) else 0
+    return 1 if FAIL_ON_FINDING and (sum(achieved.values()) or leaks or record_leaks or other_hits) else 0
 
 
 if __name__ == "__main__":
