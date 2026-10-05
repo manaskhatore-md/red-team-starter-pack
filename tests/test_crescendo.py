@@ -8,7 +8,7 @@ import pytest
 from pyrit.models import AttackOutcome, Message, MessagePiece
 
 from pyrit_campaigns import multi_turn_crescendo, target_factory
-from pyrit_campaigns.profiles import PROFILES, Objective, Profile, get_profile
+from pyrit_campaigns.profiles import PROFILES, Objective, Profile
 from reporting import run_summary as rs
 from test_run_summary import RUN, add_probe, summary
 
@@ -84,9 +84,10 @@ def test_objectives_have_their_placeholders_filled():
     assert any(profile.placeholders["program_name"] in g for g in goals)
 
 
-def test_a_profile_without_objectives_stops_with_where_to_add_them(clean_env):
+def test_a_profile_without_objectives_stops_with_where_to_add_them():
+    profile = Profile(**{**PROFILES["internal_productivity"].__dict__, "objectives": ()})
     with pytest.raises(SystemExit, match="profiles.py"):
-        multi_turn_crescendo.load_objectives(get_profile())
+        multi_turn_crescendo.load_objectives(profile)
 
 
 def test_an_objective_judged_by_a_rubric_the_profile_lacks_is_refused():

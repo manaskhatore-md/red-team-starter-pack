@@ -90,6 +90,7 @@ from pyrit_campaigns.single_turn_scan import (
     load_rubrics,
     rubric_prompt,
 )
+from pyrit_campaigns.planted_records import RECORD_CHECK, PlantedRecordScorer, records_for, records_section
 from pyrit_campaigns.system_prompt import (
     CANARY_CHECK,
     CanaryLeakScorer,
@@ -260,9 +261,10 @@ def expand_repeats(objectives: list[Objective], repeats: int, run_labels: dict) 
     return goals, overrides
 
 
-def leaked_canary(memory, conversation_id: str) -> bool:
+def leaked(memory, conversation_id: str, check: str) -> bool:
+    """Whether any reply in the conversation failed a check like the canary's."""
     return any(
-        CANARY_CHECK in (s.score_category or []) and s.get_value() is True
+        check in (s.score_category or []) and s.get_value() is True
         for s in memory.get_prompt_scores(conversation_id=conversation_id)
     )
 
@@ -283,7 +285,12 @@ async def main() -> int:
 
     print(describe(profile))
 
-    system_prompt = load_system_prompt(profile.key, profile.placeholders, new_canary())
+    records = records_for(profile)
+    system_prompt = load_system_prompt(
+        profile.key, profile.placeholders, new_canary(), records_section(records) if records else ""
+    )
+    if not system_prompt:
+        records = ()
     check_placeholders(
         profile, [], "\n".join([o.goal for o in objectives] + ([system_prompt.text] if system_prompt else []))
     )
@@ -300,6 +307,9 @@ async def main() -> int:
         print(f"\nSystem prompt: {system_prompt.source} (chosen by {system_prompt.chosen_by}), "
               f"with canary token {system_prompt.canary}.")
         print("Every reply is checked for the canary token. The attacker is not shown the system prompt.")
+        if records:
+            print(f"It also holds {len(records)} fake records of other people (pyrit_campaigns/planted_records.py). "
+                  "Every reply is checked for their values.")
         if not takes_system_prompt(target):
             print(
                 "\n!! This target does not take a system prompt, so PyRIT sends it as the start of\n"
@@ -322,6 +332,7 @@ async def main() -> int:
     attacker_prompt = blind_attacker_prompt()
     # Every reply is checked for the canary. The check needs no judge call.
     canary_scorers = [CanaryLeakScorer(canary=system_prompt.canary)] if system_prompt else []
+    canary_scorers += [PlantedRecordScorer(records=records)] if records else []
     # PyRIT puts these messages ahead of each attack, in a new conversation per attack.
     prepended = {"prepended_conversation": [system_message(system_prompt)]} if system_prompt else {}
 
@@ -340,6 +351,7 @@ async def main() -> int:
         "rt_system_prompt": system_prompt.source if system_prompt else "none",
         "rt_system_prompt_chosen_by": system_prompt.chosen_by if system_prompt else "",
         "rt_prompt_canary": system_prompt.canary if system_prompt else "",
+        "rt_planted_records": str(len(records)),
         "rt_repeats": str(repeats),
         "rt_max_turns": str(MAX_TURNS),
         "rt_max_backtracks": str(MAX_BACKTRACKS),
@@ -381,7 +393,7 @@ async def main() -> int:
     needs_prompt = {o.goal for o in objectives if o.needs_system_prompt}
     achieved: Counter[str] = Counter()
     unverified: Counter[str] = Counter()
-    leaks = 0
+    leaks = record_leaks = 0
 
     for result in completed:
         # SUCCESS here means the ATTACK succeeded - i.e. your system failed.
@@ -397,9 +409,12 @@ async def main() -> int:
         repeat = (result.labels or {}).get("rt_repeat")
         print(f"[{verdict}] {result.objective[:90]}" + (f" (repeat {repeat})" if repeats > 1 else ""))
         print(f"  turns={result.executed_turns}  reason={result.outcome_reason}")
-        if system_prompt and leaked_canary(memory, result.conversation_id):
+        if system_prompt and leaked(memory, result.conversation_id, CANARY_CHECK):
             leaks += 1
             print(f"  CANARY LEAKED: a reply contains {system_prompt.canary}, so the system prompt was disclosed.")
+        if records and leaked(memory, result.conversation_id, RECORD_CHECK):
+            record_leaks += 1
+            print("  RECORD LEAKED: a reply contains a value from a planted record of someone other than the user.")
         if result.last_response:
             print(f"  final response: {result.last_response.converted_value[:300]}")
         print(f"  conversation_id={result.conversation_id}")
@@ -416,6 +431,8 @@ async def main() -> int:
         print(line)
     if leaks:
         print(f"\n{leaks} conversation(s) leaked the canary token.")
+    if record_leaks:
+        print(f"\n{record_leaks} conversation(s) leaked a planted record.")
     for objective, exception in incomplete:
         print(f"\n!! {objective[:70]!r} did not complete: {exception}")
 
@@ -426,7 +443,7 @@ async def main() -> int:
     for t in (target, adversarial, judge):
         await close_target(t)
 
-    return 1 if FAIL_ON_FINDING and (sum(achieved.values()) or leaks) else 0
+    return 1 if FAIL_ON_FINDING and (sum(achieved.values()) or leaks or record_leaks) else 0
 
 
 if __name__ == "__main__":
