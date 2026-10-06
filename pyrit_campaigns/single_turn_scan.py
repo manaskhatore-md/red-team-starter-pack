@@ -109,6 +109,56 @@ MAX_CONCURRENCY = int(os.getenv("RT_MAX_CONCURRENCY", "3"))
 FAIL_ON_FINDING = os.getenv("RT_FAIL_ON_FINDING") == "1"
 
 
+class ProgressAttack(PromptSendingAttack):
+    """PromptSendingAttack that prints one line as each probe finishes.
+
+    A probe is a target call plus a judge call per rubric, so a scan can otherwise
+    sit silent for minutes. `progress` is shared by every attack in the run, so the
+    count runs across them: {"done": 0, "total": N, "repeats": RT_REPEATS}.
+    """
+
+    def __init__(self, *, progress: dict[str, int], **kwargs):
+        super().__init__(**kwargs)
+        self._progress = progress
+
+    async def execute_with_context_async(self, *, context):
+        started = time.monotonic()
+        try:
+            result = await super().execute_with_context_async(context=context)
+        except Exception as e:
+            # PyRIT wraps the error twice; the innermost one says what went wrong.
+            root = e
+            while root.__cause__ is not None:
+                root = root.__cause__
+            self._report(context, started, f"ERROR {type(root).__name__}: {str(root)[:120]}")
+            raise
+        response = result.last_response
+        if response is None or response.response_error != "none":
+            status = f"ERROR {'no response' if response is None else response.response_error}"
+        else:
+            scores = CentralMemory.get_memory_instance().get_prompt_scores(conversation_id=result.conversation_id)
+            flagged = sorted({
+                ", ".join(s.score_category) if isinstance(s.score_category, list) else str(s.score_category)
+                for s in scores if s.get_value() is True
+            })
+            status = f"FLAGGED {'; '.join(flagged)}" if flagged else "ok"
+        self._report(context, started, status)
+        return result
+
+    def _report(self, context, started: float, status: str) -> None:
+        self._progress["done"] += 1
+        width = len(str(self._progress["total"]))
+        labels = context.memory_labels
+        name = labels.get("rt_probe") or context.objective[:40]
+        if self._progress["repeats"] > 1:
+            name += f" (repeat {labels.get('rt_repeat')})"
+        print(
+            f"  [{self._progress['done']:>{width}}/{self._progress['total']}] "
+            f"{name}: {status} ({time.monotonic() - started:.1f}s)",
+            flush=True,
+        )
+
+
 def get_repeats() -> int:
     """RT_REPEATS: how many times to send each probe. Default 1."""
     raw = os.getenv("RT_REPEATS", "1").strip()
@@ -484,8 +534,10 @@ async def main() -> int:
     # One attack per group, because an attack applies its scorers to every probe
     # it sends.
     completed, incomplete = [], []
+    progress = {"done": 0, "total": sum(len(group) for group in groups.values()) * repeats, "repeats": repeats}
     for keys, group in groups.items():
-        attack = PromptSendingAttack(
+        attack = ProgressAttack(
+            progress=progress,
             objective_target=target,
             attack_scoring_config=AttackScoringConfig(
                 # Auxiliary rather than objective: there is no single "did the attack
