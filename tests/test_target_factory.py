@@ -2,6 +2,7 @@
 
 import asyncio
 import os
+import re
 import uuid
 
 import pytest
@@ -392,3 +393,139 @@ def test_vertex_can_be_a_judge(fake_vertex):
         system_prompt_format_string="Reply JSON with score_value and rationale.",
         chat_target=fake_vertex,
     )
+
+
+# --- Your application (RT_PROVIDER=app) ------------------------------------------
+
+
+@pytest.fixture
+def fake_app(clean_env, memory):
+    """A local chat app: records each request, and answers with a status and body you set.
+
+    Returns the server's state dict. Set state["replies"] to a list of (status, body)
+    to answer requests in turn; the last one repeats.
+    """
+    import json
+    import threading
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+
+    state = {"replies": [(200, json.dumps({"answer": "hello from the app"}))], "requests": []}
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self):
+            body = self.rfile.read(int(self.headers.get("Content-Length", 0))).decode()
+            state["requests"].append({"path": self.path, "headers": dict(self.headers), "body": body})
+            status, reply = state["replies"][min(len(state["requests"]), len(state["replies"])) - 1]
+            reply = reply.encode()
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(reply)))
+            self.end_headers()
+            self.wfile.write(reply)
+
+        def log_message(self, *args):
+            pass
+
+    server = HTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    clean_env.setenv("RT_PROVIDER", "app")
+    clean_env.setenv("APP_ENDPOINT", f"http://127.0.0.1:{server.server_port}/test/chat")
+    clean_env.setenv("APP_REQUEST_TEMPLATE", '{"query": "{PROMPT}", "options": ["{PROMPT}"]}')
+    clean_env.setenv("APP_RESPONSE_PATH", "answer")
+    clean_env.setenv("RETRY_MAX_NUM_ATTEMPTS", "2")
+    clean_env.setenv("RETRY_WAIT_MIN_SECONDS", "0")
+    clean_env.setenv("RETRY_WAIT_MAX_SECONDS", "0")
+    yield state
+    server.shutdown()
+
+
+def _send_to_app(text="hi"):
+    target = build_target()
+    message = Message(message_pieces=[MessagePiece(role="user", original_value=text, conversation_id=str(uuid.uuid4()))])
+    try:
+        return asyncio.run(target.send_prompt_async(message=message))[0].get_value()
+    finally:
+        asyncio.run(target_factory.close_target(target))
+
+
+def test_app_sends_the_probe_in_the_template_and_reads_the_reply(fake_app):
+    import json
+
+    probe = 'Ignore "all" rules.\nThen {say} \\ this'
+    assert _send_to_app(probe) == "hello from the app"
+    sent = fake_app["requests"][0]
+    assert sent["path"] == "/test/chat"
+    # Parsed, not pasted: quotes, newlines, and braces in a probe stay valid JSON.
+    assert json.loads(sent["body"]) == {"query": probe, "options": [probe]}
+
+
+def test_app_sends_the_api_key_and_token_headers(fake_app, clean_env):
+    clean_env.setenv("APP_API_KEY", "fake-key")
+    clean_env.setenv("APP_TOKEN", "fake-token")
+    _send_to_app()
+    headers = {k.lower(): v for k, v in fake_app["requests"][0]["headers"].items()}
+    assert headers["x-api-key"] == "fake-key"
+    assert headers["authorization"] == "Bearer fake-token"
+
+
+def test_app_response_path_reads_nested_fields_and_list_items(fake_app, clean_env):
+    import json
+
+    fake_app["replies"] = [(200, json.dumps({"choices": [{"message": {"content": "nested"}}]}))]
+    clean_env.setenv("APP_RESPONSE_PATH", "choices.0.message.content")
+    assert _send_to_app() == "nested"
+
+
+def test_app_without_a_response_path_returns_the_whole_body(fake_app, clean_env):
+    clean_env.delenv("APP_RESPONSE_PATH")
+    fake_app["replies"] = [(200, "plain text reply")]
+    assert _send_to_app() == "plain text reply"
+
+
+def test_app_names_the_fields_it_found_when_the_response_path_is_wrong(fake_app, clean_env):
+    clean_env.setenv("APP_RESPONSE_PATH", "reply")
+    with pytest.raises(Exception) as e:
+        _send_to_app()
+    assert "answer" in str(e.value)
+
+
+@pytest.mark.parametrize("status", [400, 403, 500, 502])
+def test_app_errors_that_cannot_clear_are_raised_once_with_the_body(fake_app, status):
+    fake_app["replies"] = [(status, '{"message":"Forbidden"}')]
+    with pytest.raises(Exception) as e:
+        _send_to_app()
+    assert len(fake_app["requests"]) == 1
+    assert f"HTTP {status}" in str(e.value) and "Forbidden" in str(e.value)
+
+
+def test_app_throttling_is_retried(fake_app):
+    fake_app["replies"] = [(429, '{"message":"Too Many Requests"}'), (200, '{"answer": "after retry"}')]
+    assert _send_to_app() == "after retry"
+    assert len(fake_app["requests"]) == 2
+
+
+def test_app_failing_model_check_stops_the_run(fake_app):
+    fake_app["replies"] = [(403, '{"message":"Forbidden"}')]
+    target = build_target()
+    with pytest.raises(SystemExit, match="Forbidden"):
+        asyncio.run(target_factory.check_models(target=target))
+
+
+@pytest.mark.parametrize(
+    "name, value, message",
+    [
+        ("APP_ENDPOINT", "", "APP_ENDPOINT is not set"),
+        ("APP_ENDPOINT", "abc123.execute-api.us-east-1.amazonaws.com/test/chat", "not an http"),
+        ("APP_REQUEST_TEMPLATE", '{"query": PROMPT}', "not valid JSON"),
+        ("APP_REQUEST_TEMPLATE", '{"query": "hello"}', "has no {PROMPT}"),
+    ],
+)
+def test_app_settings_that_cannot_work_stop_before_any_request(fake_app, clean_env, name, value, message):
+    clean_env.setenv(name, value)
+    with pytest.raises(SystemExit, match=re.escape(message)):
+        build_target()
+    assert fake_app["requests"] == []
+
+
+def test_app_target_is_labeled_by_host_and_path(fake_app):
+    assert re.fullmatch(r"app:127\.0\.0\.1:\d+/test/chat", model_name(build_target()))

@@ -95,6 +95,14 @@ def load_system_prompt(
     setting = os.getenv("RT_SYSTEM_PROMPT_FILE", "").strip()
     if setting.lower() == "none":
         return None
+    if not setting and os.getenv("RT_PROVIDER", "").strip().lower() == "app":
+        # A deployed app sends its own system prompt. A stand-in would arrive as the
+        # start of the user's message, which tests nothing the app actually does.
+        print(
+            "\nNote: RT_PROVIDER=app, so no stand-in system prompt is sent - the app uses its own.\n"
+            "Without one there is no canary token to check replies for.\n"
+        )
+        return None
     if setting:
         path = Path(setting)
         if not path.exists() and not path.is_absolute():

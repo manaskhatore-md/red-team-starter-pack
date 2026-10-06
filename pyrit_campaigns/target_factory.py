@@ -30,11 +30,12 @@ Providers come in two flavors, which is why they are not all one dict:
     failure and it is invisible without knowing which principal you are.
 """
 
+import json
 import os
 import re
 import uuid
 
-from pyrit.exceptions import get_retry_max_num_attempts
+from pyrit.exceptions import RateLimitException, get_retry_max_num_attempts, pyrit_target_retry
 from pyrit.models import Message, MessagePiece, construct_response_from_request
 from pyrit.prompt_target import LiteLLMChatTarget, PromptTarget, limit_requests_per_minute
 
@@ -193,23 +194,16 @@ def build_target(role: str = "target", *, provider: str | None = None, model: st
         return AnthropicVertexChatTarget(model_name=model)
 
     if provider == "app":
-        # TODO: THIS IS THE ONE MOST AGENCIES ACTUALLY NEED.
-        # Red-teaming a raw model tells you about the model; red-teaming your
-        # deployed app tells you about your system prompt, your RAG index, and
-        # your tool permissions. Point HTTPXAPITarget at your app's chat endpoint:
-        #
-        #   from pyrit.prompt_target import HTTPXAPITarget, get_http_target_json_response_callback_function
-        #   return HTTPXAPITarget(
-        #       http_url=os.environ["APP_ENDPOINT"],
-        #       method="POST",
-        #       headers={"Authorization": f"Bearer {os.environ['APP_TOKEN']}"},
-        #       json_data={"message": "{PROMPT}"},   # your app's request shape
-        #       callback_function=get_http_target_json_response_callback_function(key="reply"),
-        #   )
+        # THIS IS THE ONE MOST AGENCIES ACTUALLY NEED. Red-teaming a raw model tells
+        # you about the model; red-teaming your deployed app tells you about your
+        # system prompt, your RAG index, and your tool permissions. Configured by
+        # the APP_* settings - see AppChatTarget and .env.example.
         #
         # Use a non-production instance with synthetic data, and get written
         # authorization before you point this at anything.
-        raise SystemExit("The 'app' provider is a TODO - see pyrit_campaigns/target_factory.py")
+        target = AppChatTarget.from_env()
+        print(f"{label}: {target._endpoint} (app)")
+        return target
 
     raise SystemExit(
         f"Unknown {ROLES[role][0]} {provider!r}. Options: {', '.join(PROVIDER_DEFAULTS)}, bedrock, vertex, app"
@@ -326,6 +320,156 @@ class AnthropicVertexChatTarget(PromptTarget):
         await self._client.close()
 
 
+# Statuses that can clear on their own: throttling, and a gateway or backend that
+# is briefly unavailable or slow. Anything else - a bad request, a rejected key, a
+# Lambda that crashed - fails the same way every time, so it is not retried.
+APP_RETRY_STATUSES = {429, 503, 504}
+
+PROMPT_SLOT = "{PROMPT}"
+
+
+class AppChatTarget(PromptTarget):
+    """Your own deployed chat application, over HTTP.
+
+    Sends each probe as one JSON request and reads the reply from one field of the
+    JSON response. Settings (all from .env):
+
+        APP_ENDPOINT          the chat URL, e.g. https://abc123.execute-api.us-east-1.amazonaws.com/test/chat
+        APP_REQUEST_TEMPLATE  the request body, with {PROMPT} where the probe goes.
+                              Default: {"message": "{PROMPT}"}
+        APP_RESPONSE_PATH     where the reply is in the response, dotted, e.g. answer
+                              or choices.0.message.content. Unset: the whole body.
+        APP_API_KEY           sent as the x-api-key header (API Gateway API keys)
+        APP_TOKEN             sent as Authorization: Bearer <token>
+        APP_TIMEOUT           seconds to wait for a reply. Default 60.
+        APP_MAX_RPM           requests per minute, to stay inside the app's throttling
+
+    PyRIT's HTTPXAPITarget does not fit: it sends json_data as given, without
+    putting the prompt into it. The template is parsed as JSON before the probe is
+    put in, so a probe full of quotes and newlines cannot break the request.
+
+    The app keeps its own system prompt and history, so this target declares
+    neither: it is single-turn, and the scan sends it no stand-in system prompt.
+    A multi-turn campaign against it stops with PyRIT's capability error.
+    """
+
+    def __init__(
+        self,
+        *,
+        endpoint: str,
+        request_template: str = '{"message": "{PROMPT}"}',
+        response_path: str = "",
+        headers: dict[str, str] | None = None,
+        timeout: float = 60.0,
+        max_requests_per_minute: int | None = None,
+    ):
+        from urllib.parse import urlparse
+
+        url = urlparse(endpoint)
+        if url.scheme not in ("http", "https") or not url.netloc:
+            raise SystemExit(f"APP_ENDPOINT={endpoint!r} is not an http(s) URL.")
+        super().__init__(
+            endpoint=endpoint,
+            model_name=f"app:{url.netloc}{url.path}",
+            max_requests_per_minute=max_requests_per_minute,
+        )
+        try:
+            self._template = json.loads(request_template)
+        except ValueError as e:
+            raise SystemExit(f"APP_REQUEST_TEMPLATE is not valid JSON ({e}): {request_template}") from e
+        if PROMPT_SLOT not in request_template:
+            raise SystemExit(f"APP_REQUEST_TEMPLATE has no {PROMPT_SLOT} for the probe to go in: {request_template}")
+        self._response_path = response_path.strip()
+        self._headers = {"Content-Type": "application/json", **(headers or {})}
+        self._timeout = timeout
+        self._client = None
+
+    @classmethod
+    def from_env(cls) -> "AppChatTarget":
+        endpoint = os.getenv("APP_ENDPOINT", "").strip()
+        if not endpoint:
+            raise SystemExit("APP_ENDPOINT is not set - see the YOUR APPLICATION section of .env.example.")
+        headers = {}
+        if os.getenv("APP_API_KEY"):
+            headers["x-api-key"] = os.environ["APP_API_KEY"].strip()
+        if os.getenv("APP_TOKEN"):
+            headers["Authorization"] = f"Bearer {os.environ['APP_TOKEN'].strip()}"
+        rpm = os.getenv("APP_MAX_RPM", "").strip()
+        return cls(
+            endpoint=endpoint,
+            request_template=os.getenv("APP_REQUEST_TEMPLATE") or '{"message": "{PROMPT}"}',
+            response_path=os.getenv("APP_RESPONSE_PATH", ""),
+            headers=headers,
+            timeout=float(os.getenv("APP_TIMEOUT") or 60),
+            max_requests_per_minute=int(rpm) if rpm else None,
+        )
+
+    def request_body(self, prompt: str) -> str:
+        """The JSON request for one probe: the template with the probe in every {PROMPT}."""
+
+        def fill(value):
+            if isinstance(value, str):
+                return value.replace(PROMPT_SLOT, prompt)
+            if isinstance(value, list):
+                return [fill(v) for v in value]
+            if isinstance(value, dict):
+                return {k: fill(v) for k, v in value.items()}
+            return value
+
+        return json.dumps(fill(self._template))
+
+    def reply_text(self, body: str) -> str:
+        """The reply, read from APP_RESPONSE_PATH in the response body."""
+        if not self._response_path:
+            return body
+        try:
+            value = json.loads(body)
+        except ValueError as e:
+            raise ValueError(f"The app's response is not JSON, so APP_RESPONSE_PATH cannot be read: {body[:300]}") from e
+        for step in self._response_path.split("."):
+            if isinstance(value, list) and step.lstrip("-").isdigit() and -len(value) <= int(step) < len(value):
+                value = value[int(step)]
+            elif isinstance(value, dict) and step in value:
+                value = value[step]
+            else:
+                found = sorted(value) if isinstance(value, dict) else type(value).__name__
+                raise ValueError(
+                    f"APP_RESPONSE_PATH={self._response_path}: no {step!r} in the response (found: {found}). "
+                    f"Response: {body[:300]}"
+                )
+        if value is None:
+            return ""
+        return value if isinstance(value, str) else json.dumps(value)
+
+    @limit_requests_per_minute
+    @pyrit_target_retry
+    async def _send_prompt_to_target_async(self, *, normalized_conversation: list[Message]) -> list[Message]:
+        import httpx
+
+        request = normalized_conversation[-1].message_pieces[0]
+        if self._client is None:
+            self._client = httpx.AsyncClient(timeout=self._timeout)
+
+        response = await self._client.post(
+            self._endpoint, content=self.request_body(request.converted_value), headers=self._headers
+        )
+        if response.status_code in APP_RETRY_STATUSES:
+            raise RateLimitException(status_code=response.status_code, message=response.text[:300])
+        if not response.is_success:
+            # The status alone is ambiguous on API Gateway: 403 "Missing Authentication
+            # Token" is a wrong URL, 403 "Forbidden" a missing or wrong API key, and 502
+            # a Lambda that crashed or returned the wrong shape. The body says which.
+            raise RuntimeError(f"The app returned HTTP {response.status_code}: {response.text[:300]}")
+
+        text = self.reply_text(response.text)
+        return [construct_response_from_request(request=request, response_text_pieces=[text])]
+
+    async def cleanup_target_async(self) -> None:
+        if self._client is not None:
+            await self._client.aclose()
+            self._client = None
+
+
 def check_aws_creds() -> None:
     """Fail fast with an actionable message if AWS credentials or region are missing.
 
@@ -337,7 +481,14 @@ def check_aws_creds() -> None:
     """
     try:
         import boto3
-        from botocore.exceptions import BotoCoreError, ClientError, ProfileNotFound, SSOError, TokenRetrievalError
+        from botocore.exceptions import (
+            BotoCoreError,
+            ClientError,
+            PartialCredentialsError,
+            ProfileNotFound,
+            SSOError,
+            TokenRetrievalError,
+        )
     except ImportError as e:
         raise SystemExit("Bedrock needs the AWS SDK: pip install boto3") from e
 
@@ -375,7 +526,14 @@ def check_aws_creds() -> None:
         print(f"Authenticating to Bedrock ({region}) with AWS_BEARER_TOKEN_BEDROCK")
         return
 
-    credentials = session.get_credentials()
+    try:
+        credentials = session.get_credentials()
+    except PartialCredentialsError as e:
+        raise SystemExit(
+            f"Incomplete AWS keys in the environment (which includes .env): {e}.\n"
+            "AWS_ACCESS_KEY_ID needs AWS_SECRET_ACCESS_KEY with it, and temporary keys (ASIA...) "
+            "need AWS_SESSION_TOKEN too. Set all of them, or delete them all to use your profile."
+        ) from e
     if credentials is None:
         raise SystemExit(
             "No AWS credentials found. Pick whichever fits your environment:\n"

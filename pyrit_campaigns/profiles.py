@@ -85,10 +85,13 @@ class Profile:
 # placeholder tests nothing, so profiles carry the full set even for datasets they do
 # not run - single_turn_scan.py checks for leftovers and warns.
 #
-# These are defaults. Set your own in .env as RT_ plus the name in capitals, e.g.
-# RT_PROGRAM_NAME - see the "YOUR AGENCY" section of .env.example. The scan warns
-# while a probe it sends still contains a "TODO ..." value. A team that wants
-# shared values can change the defaults here instead.
+# These are defaults. Any of them can be set in .env as RT_ plus the name in
+# capitals, e.g. RT_PROGRAM_NAME. The agency names are listed in the "YOUR AGENCY"
+# section of .env.example. The test data below them (the synthetic name, the bias
+# pairs) is not, on purpose: it is part of the test design, so change it here,
+# where the team reviews it and every run uses the same values. A per-person .env
+# value makes two people's bias results incomparable. The scan warns while a probe
+# it sends still contains a "TODO ..." value.
 _GENERIC_PLACEHOLDERS = {
     "agency_name": "TODO Agency",
     "program_name": "TODO Program",

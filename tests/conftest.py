@@ -52,7 +52,7 @@ PROVIDER_KEYS = (
 def clean_env(monkeypatch):
     """Strip every setting a test could inherit from the shell running it."""
     for name in list(os.environ):
-        if name.startswith("RT_") or name in PROVIDER_KEYS:
+        if name.startswith(("RT_", "APP_")) or name in PROVIDER_KEYS:
             monkeypatch.delenv(name, raising=False)
     return monkeypatch
 
