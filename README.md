@@ -95,6 +95,12 @@ models), and grant per-model access under
 **Model access** in the Bedrock console — until you do, calls return
 `AccessDeniedException`, which reads like an auth error but is an authorization one.
 
+Vertex has a known limitation: its target sends only the latest user message, so the
+system prompt and earlier turns never reach the model, and PyRIT does not accept it as a
+judge. The canary token, planted records, and Crescendo results are not meaningful on
+`RT_PROVIDER=vertex` until that is fixed (tracked as "Bug E" in
+`tests/test_target_factory.py`). Use Bedrock or a key-based provider for now.
+
 **`RT_PROVIDER=app` is the one that matters.** Red-teaming a raw model tests the
 vendor's safety training, which the vendor already tests. Red-teaming your deployed
 application tests your system prompt, your retrieval index, and your tool
@@ -192,39 +198,43 @@ red-team-starter-pack/
 ├── README.md                           # Setup guide, CLI usage, and playbook crosswalk
 ├── .env.example                        # Multi-provider API keys & environment configs
 ├── smoke_test.py                       # Connectivity check — run this first
+├── requirements-dev.txt                # Adds pytest and pre-commit for working on the pack
+├── pytest.ini                          # Runs tests/ only
+├── .pre-commit-config.yaml             # gitleaks on every commit
 ├── .github/workflows/                  # CI/CD security gating pipelines
-│   └── redteam-ci-gate.yml             # Automated scan on pull requests
+│   └── redteam-ci-gate.yml             # Scan on pull requests and weekly; off until you enable it
 │
 ├── datasets/                           # Vendor-Agnostic Test Suites (DRY Prompts)
 │   ├── prompt_injection.yaml           # Direct jailbreaks & authority tricks
 │   ├── sensitive_data_leakage.yaml     # PII/PHI extraction & cross-session leak checks
-│   ├── algorithmic_bias.yaml           # Dialect, demographic, & zip code counterfactuals
-│   ├── rag_poisoning_payloads/         # Malicious PDFs/files for indirect injection tests
+│   ├── algorithmic_bias.yaml           # Matched pairs: dialect, name, zip code, language, disability
+│   ├── rag_poisoning_payloads/         # TODO: only a README so far - how to build indirect injection documents
 │   └── excessive_agency.yaml           # Unauthorized database write & API command prompts
 │
 ├── system_prompts/                     # A stand-in system prompt per profile, with the canary token slot
 │
 ├── pyrit_campaigns/                    # The campaigns (PyRIT)
 │   ├── profiles.py                     # Deployment-type profiles: threat model, datasets, rubrics
-│   ├── target_factory.py               # Unified provider factory (Gemini, Claude, OpenAI, Bedrock)
+│   ├── target_factory.py               # Unified provider factory (Gemini, Claude, OpenAI, Bedrock, Vertex; app is a TODO)
 │   ├── single_turn_scan.py             # Every dataset probe, graded by your rubrics
 │   ├── system_prompt.py                # The system prompt a scan sends, and the canary token check
 │   ├── planted_records.py              # Fake records of other people in the system prompt, and their leak check
 │   ├── code_checks.py                  # Credential, markdown, and SSN/card checks run on every reply
 │   ├── multi_turn_crescendo.py         # Multi-step conversational boundary testing
-│   └── agent_tool_exploitation.py      # Autonomous agent permission & tool abuse scripts
+│   └── agent_tool_exploitation.py      # Scaffold: sends tool-abuse probes; the backend diff is a TODO
 │
 ├── judges/                             # LLM-as-a-Judge Rubrics & Scorer Logic
 │   ├── state_policy_rubric.yaml        # Criteria-based scoring prompts (Pass/Fail)
-│   └── rag_grounding_eval.py           # Grounding & hallucination reference checker
+│   └── rag_grounding_eval.py           # Scaffold: grounding checker, needs an eval set you supply
 │
 ├── reporting/                          # Playbook Finding Report Generators
 │   ├── run_summary.py                  # One run in full: every probe, reply, and verdict
-│   ├── export_finding_report.py        # Converts test JSON/CSV into Playbook Markdown
-│   └── templates/                      # Markdown templates matching Playbook Section 8
+│   ├── export_finding_report.py        # Turns results in PyRIT's database into Playbook Markdown
+│   └── templates/                      # Finding report template (TODO: match your Playbook's Section 8)
 │       └── finding_report_template.md
 │
-└── tests/                              # Offline checks of the pack itself - no keys needed
+├── tests/                              # Offline checks of the pack itself - no keys needed
+└── testing/                            # Live experiments that call real models - not run by pytest
 ```
 
 ## Pick your deployment profile
@@ -264,15 +274,32 @@ priority order:
 
 <!-- TODO: replace the Section column with the real section numbers from your Playbook. -->
 
-| Playbook section | Covered by |
-|---|---|
-| Prompt injection | `datasets/prompt_injection.yaml`, `datasets/rag_poisoning_payloads/` |
-| Single-turn scan across all of the above | `pyrit_campaigns/single_turn_scan.py` |
-| Data protection | `datasets/sensitive_data_leakage.yaml`, `judges/state_policy_rubric.yaml` |
-| Equity / disparate impact | `datasets/algorithmic_bias.yaml` |
-| Excessive agency | `datasets/excessive_agency.yaml`, `pyrit_campaigns/agent_tool_exploitation.py` |
-| Accuracy / grounding | `judges/rag_grounding_eval.py` |
-| Finding reports | `reporting/` |
+| Playbook section | Covered by | Status |
+|---|---|---|
+| Prompt injection | `datasets/prompt_injection.yaml` | Working |
+| Indirect prompt injection | `datasets/rag_poisoning_payloads/` | TODO: instructions only, no payloads |
+| Single-turn scan across all of the above | `pyrit_campaigns/single_turn_scan.py` | Working |
+| Data protection | `datasets/sensitive_data_leakage.yaml`, `judges/state_policy_rubric.yaml` | Working |
+| Equity / disparate impact | `datasets/algorithmic_bias.yaml` | Working |
+| Excessive agency | `datasets/excessive_agency.yaml` | Working in the scan (`constituent_decision` profile) |
+| Excessive agency, backend verification | `pyrit_campaigns/agent_tool_exploitation.py` | Scaffold: needs `RT_PROVIDER=app` and a backend diff |
+| Accuracy / grounding | `judges/rag_grounding_eval.py` | Scaffold: needs an eval set |
+| Finding reports | `reporting/` | Working |
+
+The two scaffolds run, but test nothing until you finish them:
+
+```bash
+# refuses to start until RT_TOOL_NAME, RT_RECORD_TYPE, and RT_PROGRAM_NAME are set;
+# against a bare model every probe "passes", since it has no tools to misuse
+RT_PROVIDER=app python -m pyrit_campaigns.agent_tool_exploitation
+
+# needs judges/grounding_eval_set.json - the format is in the module's EVAL_SET comment
+python -m judges.rag_grounding_eval
+```
+
+The CI gate (`.github/workflows/redteam-ci-gate.yml`) is switched off with `if: false`,
+so a fork does not start spending API credits on every PR. Work through the checklist
+at the bottom of that file before you enable it.
 
 ## Safety and handling
 
