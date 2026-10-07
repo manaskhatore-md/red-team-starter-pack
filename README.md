@@ -89,26 +89,96 @@ on EC2/ECS/Lambda with an attached role there's nothing to configure at all. Bot
 a preflight that prints the resolved identity before the first call, because the usual
 cloud failure is a principal that authenticates fine but lacks model access.
 
-For Bedrock specifically: set `AWS_REGION_NAME`, put the model id in `RT_MODEL`
-(or `RT_JUDGE_MODEL` for a Bedrock judge; `bedrock/converse/...` for Anthropic
-models), and grant per-model access under
-**Model access** in the Bedrock console — until you do, calls return
-`AccessDeniedException`, which reads like an auth error but is an authorization one.
+For Bedrock, see [Running on Bedrock](#running-on-bedrock) below.
 
 Vertex has a known limitation: its target sends only the latest user message, so the
 system prompt and earlier turns never reach the model, and PyRIT does not accept it as a
 judge. The canary token, planted records, and Crescendo results are not meaningful on
 `RT_PROVIDER=vertex` until that is fixed (tracked as "Bug E" in
-`tests/test_target_factory.py`). Use Bedrock or a key-based provider for now.
+`tests/test_target_factory.py`). Use Bedrock or a key-based provider for now. If you
+use it anyway, set `PROJECT_ID` to your Google Cloud project.
 
 **`RT_PROVIDER=app` is the one that matters.** Red-teaming a raw model tests the
 vendor's safety training, which the vendor already tests. Red-teaming your deployed
 application tests your system prompt, your retrieval index, and your tool
-permissions — which is where your risk actually lives. Wiring that up is a TODO in
-`target_factory.py`.
+permissions — which is where your risk actually lives. Each probe goes to your app's
+chat endpoint as one JSON request, and the reply is read from one field of the
+response:
+
+```bash
+RT_PROVIDER=app
+APP_ENDPOINT=https://abc123.execute-api.us-east-1.amazonaws.com/test/chat
+APP_REQUEST_TEMPLATE={"query": "{PROMPT}"}    # your app's request body; the probe goes in {PROMPT}
+APP_RESPONSE_PATH=answer                      # where the reply is, dotted: e.g. choices.0.message.content
+APP_API_KEY=...                               # sent as x-api-key; or APP_TOKEN, sent as a Bearer token
+```
+
+The app keeps its own system prompt, so the scan sends none, and with no canary token
+a system-prompt leak is caught only by the judge. The target is single-turn: run
+`single_turn_scan`, not `multi_turn_crescendo`.
 
 > Non-production instance, synthetic data, and written authorization before pointing
 > any of this at a real system.
+
+## Running on Bedrock
+
+Bedrock can be the model under test, the judge, or both. A common setup is your own
+app as the target with a Bedrock judge in your AWS account, so your prompts and
+replies stay in the account.
+
+**1. Grant model access.** In the Bedrock console, under **Model access**, request
+the models you will call, in the region you will call them from. Until then every
+call returns `AccessDeniedException`, which reads like an auth error but is an
+authorization one. The principal also needs `bedrock:InvokeModel`.
+
+**2. Sign in to AWS.** There is no API key to paste. Any standard AWS credential
+source works; use one:
+
+| You have | Put in `.env` |
+|---|---|
+| The AWS CLI or SSO, already signed in | nothing (`AWS_PROFILE_NAME=<profile>` to pick one; run `aws sso login --profile <profile>` when it expires) |
+| Access keys | `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`, plus `AWS_SESSION_TOKEN` for temporary (`ASIA...`) keys |
+| A Bedrock API key | `AWS_BEARER_TOKEN_BEDROCK` |
+| An EC2, ECS, or Lambda role | nothing |
+
+Keys in `.env` take priority over your profile. If you switch back to a profile,
+delete them: an incomplete or expired set breaks Bedrock calls even when your CLI
+login works.
+
+**3. Set the region and the model.** Model ids start `bedrock/converse/` for
+Anthropic models. The `us.` prefix is a cross-region inference profile; list the ones
+your account has with `aws bedrock list-inference-profiles --region us-east-1`.
+
+```bash
+AWS_REGION_NAME=us-east-1     # set this one: LiteLLM reads it, and without it falls back to us-west-2
+
+# Bedrock as the judge
+RT_JUDGE_PROVIDER=bedrock
+RT_JUDGE_MODEL=bedrock/converse/us.anthropic.claude-sonnet-4-5-20250929-v1:0   # the default; pin it anyway
+
+# Bedrock as the model under test (RT_MODEL also defaults to Claude Sonnet 4.5)
+RT_PROVIDER=bedrock
+RT_MODEL=bedrock/converse/us.anthropic.claude-sonnet-4-5-20250929-v1:0
+```
+
+**4. Check it, then run.** Every run prints the AWS identity it signed in as before
+the first call, e.g. `Authenticating to Bedrock (us-east-1) as
+arn:aws:sts::123456789012:assumed-role/...`. Check that it is the account with model
+access. Then each model gets one test prompt, so a wrong model id or missing access
+stops the run in seconds:
+
+```bash
+python smoke_test.py                              # checks the model under test only
+python -m pyrit_campaigns.single_turn_scan        # checks the target and the judge, then scans
+```
+
+| Error | Cause |
+|---|---|
+| `AccessDeniedException` | No model access for this model in this region, or no `bedrock:InvokeModel` |
+| `ExpiredToken`, or the SSO login has expired | Run `aws sso login --profile <profile>`, or get fresh keys |
+| `Incomplete AWS keys in the environment` | `.env` has some AWS keys but not all; set them all or delete them |
+| `ThrottlingException` | Bedrock quotas are per model and per region; set `RT_MAX_CONCURRENCY=1` |
+| Fails oddly with a valid login | A leftover `LITELLM_API_KEY` in the environment is sent with Bedrock calls; unset it |
 
 ## The system prompt, and the canary token in it
 
@@ -215,7 +285,7 @@ red-team-starter-pack/
 │
 ├── pyrit_campaigns/                    # The campaigns (PyRIT)
 │   ├── profiles.py                     # Deployment-type profiles: threat model, datasets, rubrics
-│   ├── target_factory.py               # Unified provider factory (Gemini, Claude, OpenAI, Bedrock, Vertex; app is a TODO)
+│   ├── target_factory.py               # Unified provider factory (Gemini, Claude, OpenAI, Bedrock, Vertex, your app)
 │   ├── single_turn_scan.py             # Every dataset probe, graded by your rubrics
 │   ├── system_prompt.py                # The system prompt a scan sends, and the canary token check
 │   ├── planted_records.py              # Fake records of other people in the system prompt, and their leak check
@@ -268,7 +338,7 @@ priority order:
 3. **`pyrit_campaigns/profiles.py`** — add a profile for your own system rather than
    stretching one of the four generic ones to fit.
 4. **`datasets/*.yaml`** — add probes in your system's own language and policy terms.
-5. **`RT_PROVIDER=app`** in `target_factory.py`, so you're testing your deployment.
+5. **`RT_PROVIDER=app`**, pointed at a test instance of your deployment, so you test it rather than a bare model.
 
 ## Playbook crosswalk
 

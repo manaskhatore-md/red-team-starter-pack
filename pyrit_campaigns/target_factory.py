@@ -35,7 +35,7 @@ import os
 import re
 import uuid
 
-from pyrit.exceptions import RateLimitException, get_retry_max_num_attempts, pyrit_target_retry
+from pyrit.exceptions import RateLimitException, pyrit_target_retry
 from pyrit.models import Message, MessagePiece, construct_response_from_request
 from pyrit.prompt_target import LiteLLMChatTarget, PromptTarget, limit_requests_per_minute
 
@@ -70,24 +70,27 @@ DEFAULT_MAX_TOKENS = 8192
 DEFAULT_VERTEX_MODEL = "claude-haiku-4-5"
 
 
-def retry_policy() -> dict[str, int]:
-    """Which LiteLLM errors are worth retrying, and how many times.
+class RetryingLiteLLMChatTarget(LiteLLMChatTarget):
+    """LiteLLMChatTarget that retries only the errors that can clear on their own.
 
     PyRIT hands LiteLLM a flat retry count (RETRY_MAX_NUM_ATTEMPTS - 1, so 9), and
     LiteLLM applies it to every error. A wrong model id, a model the account has no
-    access to, or a rejected key then fails ten times per call - for every probe
-    and every judge call - before the real message reaches the end-of-run summary,
-    which looks like a hang. Only errors that can clear on their own keep the count.
+    access to (Bedrock's AccessDeniedException), or a rejected key then fails ten
+    times per call - for every probe and every judge call - which looks like a hang.
+    LiteLLM's retry_policy cannot fix that: it has no setting for 403 or 404, and
+    falls back to the flat count for any error it has no setting for.
+
+    So LiteLLM does not retry, and this does. PyRIT already raises RateLimitException
+    for rate limits, timeouts, connection errors, and 5xx, and a plain PyritException
+    for the rest; pyrit_target_retry retries only the first.
     """
-    retries = max(get_retry_max_num_attempts() - 1, 0)
-    return {
-        "RateLimitErrorRetries": retries,
-        "TimeoutErrorRetries": retries,
-        "InternalServerErrorRetries": retries,
-        "ServiceUnavailableErrorRetries": retries,
-        # Bad request, auth, permission, not found, content policy: fail on the first try.
-        "DefaultRetries": 0,
-    }
+
+    def _construct_request_body(self, **kwargs):
+        return {**super()._construct_request_body(**kwargs), "num_retries": 0}
+
+    @pyrit_target_retry
+    async def _send_prompt_to_target_async(self, *, normalized_conversation: list[Message]) -> list[Message]:
+        return await super()._send_prompt_to_target_async(normalized_conversation=normalized_conversation)
 
 # role -> (provider setting, model setting, role whose provider it falls back to)
 ROLES: dict[str, tuple[str, str, str | None]] = {
@@ -154,11 +157,10 @@ def build_target(role: str = "target", *, provider: str | None = None, model: st
         _require_litellm()
         model_name = model
         print(f"{label}: {model_name} ({provider})")
-        return LiteLLMChatTarget(
+        return RetryingLiteLLMChatTarget(
             model_name=model_name,
             api_key=api_key,
             max_tokens=DEFAULT_MAX_TOKENS,
-            extra_body_parameters={"retry_policy": retry_policy()},
             # TODO: set max_requests_per_minute to stay inside your provider's
             # rate limit - multi-turn campaigns issue far more calls than this
             # smoke test does.
@@ -178,10 +180,9 @@ def build_target(role: str = "target", *, provider: str | None = None, model: st
 
         model_name = model
         print(f"{label}: {model_name} (bedrock)")
-        return LiteLLMChatTarget(
+        return RetryingLiteLLMChatTarget(
             model_name=model_name,
             max_tokens=DEFAULT_MAX_TOKENS,
-            extra_body_parameters={"retry_policy": retry_policy()},
             # TODO: Bedrock quotas are per-model and per-region, and lower than most
             # people expect. Set max_requests_per_minute before running a multi-turn
             # campaign or you will spend the run getting throttled.
