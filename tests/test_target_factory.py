@@ -529,3 +529,11 @@ def test_app_settings_that_cannot_work_stop_before_any_request(fake_app, clean_e
 
 def test_app_target_is_labeled_by_host_and_path(fake_app):
     assert re.fullmatch(r"app:127\.0\.0\.1:\d+/test/chat", model_name(build_target()))
+
+
+def test_a_model_setting_is_ignored_for_an_app(fake_app, clean_env, capsys):
+    # The app picks its own model. A leftover RT_MODEL from a model run used to stop
+    # the run as a provider mismatch.
+    clean_env.setenv("RT_MODEL", "gemini/gemini-3.8-flash")
+    assert _send_to_app() == "hello from the app"
+    assert "RT_MODEL=gemini/gemini-3.8-flash is ignored" in capsys.readouterr().out

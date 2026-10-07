@@ -143,6 +143,11 @@ def build_target(role: str = "target", *, provider: str | None = None, model: st
     """
     provider = (provider or resolve_provider(role)).lower()
     model = model or resolve_model(role, provider)
+    if provider == "app" and model:
+        # The app picks its own model, so a model setting does nothing - say so rather
+        # than let the run look like it tests that model.
+        print(f"Note: {ROLES[role][1]}={model} is ignored - with provider app, the app picks its own model.")
+        model = None
     _check_model_matches_provider(role, provider, model)
     label = {"target": "Target", "judge": "Judge", "adversarial": "Attacker"}[role]
     if role != "target" and model and model == resolve_model("target"):

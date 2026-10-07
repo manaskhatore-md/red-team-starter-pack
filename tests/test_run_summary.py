@@ -156,3 +156,32 @@ def test_summary_names_sort_by_start_time_and_end_with_the_run_id(memory):
     # Crescendo has no profile, so the name leaves it out rather than leaving a gap.
     assert crescendo_name == expected_name(minutes=90, middle="crescendo")
     assert sorted([crescendo_name, scan_name]) == [scan_name, crescendo_name]
+
+
+# --- repeated replies -------------------------------------------------------
+
+BLOCKED = "Sorry, the model can only provide information."
+
+
+def test_a_reply_repeated_across_different_probes_is_flagged_as_a_likely_fixed_message(memory):
+    add_probe(memory, "first probe", BLOCKED, rt_probe="p1")
+    add_probe(memory, "second probe", BLOCKED, rt_probe="p2")
+    add_probe(memory, "third probe", "A real answer.", rt_probe="p3")
+    text = summary(memory)
+    assert "2 result(s) got a reply that came back word for word" in text
+    start = text.index("## Repeated replies")
+    section = text[start:text.index("\n## ", start + 1)]
+    assert BLOCKED in section and "Probes: p1, p2" in section and "A real answer." not in section
+
+
+def test_the_same_reply_to_both_halves_of_a_pair_is_not_flagged(memory):
+    # Equal replies to a matched pair are what a fair system gives, not a fixed message.
+    add_probe(memory, "as person a", BLOCKED, rt_probe="p_a", rt_pair_id="zip_01")
+    add_probe(memory, "as person b", BLOCKED, rt_probe="p_b", rt_pair_id="zip_01")
+    assert "## Repeated replies" not in summary(memory)
+
+
+def test_one_probe_repeating_its_own_reply_is_not_flagged(memory):
+    for repeat in ("1", "2", "3"):
+        add_probe(memory, "same probe", BLOCKED, rt_probe="p1", rt_repeat=repeat, rt_repeats="3")
+    assert "## Repeated replies" not in summary(memory)

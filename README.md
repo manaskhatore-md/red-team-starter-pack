@@ -115,7 +115,15 @@ APP_API_KEY=...                               # sent as x-api-key; or APP_TOKEN,
 
 The app keeps its own system prompt, so the scan sends none, and with no canary token
 a system-prompt leak is caught only by the judge. The target is single-turn: run
-`single_turn_scan`, not `multi_turn_crescendo`.
+`single_turn_scan`, not `multi_turn_crescendo`. Set `RT_JUDGE_PROVIDER` to a model
+provider, since the app cannot grade its own replies; `RT_MODEL` is ignored, since the
+app picks its own model.
+
+Apps often answer with a fixed message instead of the model: a guardrail's "blocked"
+text, or a fallback when retrieval found nothing. A probe that got one never reached the
+model, so its pass does not mean the model held. The run summary lists any reply that came
+back word for word for different questions under **Repeated replies**. It cannot tell which
+mechanism sent it; the app's code or logs can.
 
 > Non-production instance, synthetic data, and written authorization before pointing
 > any of this at a real system.
