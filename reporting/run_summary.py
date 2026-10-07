@@ -182,6 +182,48 @@ def zero_flag_bound(n: int) -> float:
     return 1 - 0.05 ** (1 / n)
 
 
+# A reply given word for word to this many different questions is reported as repeated.
+REPEATED_REPLY_QUESTIONS = 2
+
+
+def last_reply(messages) -> str:
+    """The last reply in a conversation, with its whitespace normalized."""
+    replies = [p for m in messages for p in m.message_pieces if p.role == "assistant"]
+    return " ".join((replies[-1].converted_value or "").split()) if replies else ""
+
+
+def probe_name(result) -> str:
+    return (result.labels or {}).get("rt_probe") or cell(result.objective, 60)
+
+
+def repeated_replies(entries) -> list[dict]:
+    """Replies given word for word to several different questions, most common first.
+
+    A model rarely answers different questions with the exact same text. A fixed
+    message does: a guardrail's "blocked" message, or an app's fallback when it found
+    nothing to answer from. Probes that got one may never have reached the model, so a
+    pass on them may not mean the model held. This cannot tell which mechanism sent
+    the message - the app's logs or code can.
+
+    The two halves of a matched pair ask nearly the same question, and the same reply
+    to both is what a fair system should give, so a pair counts as one question.
+    """
+    groups: dict[str, list] = defaultdict(list)
+    for e in entries:
+        if e["verdict"] in (ERROR, NO_RESPONSE):
+            continue
+        text = last_reply(e["messages"])
+        if text:
+            groups[text].append(e)
+    out = []
+    for text, members in groups.items():
+        probes = sorted({probe_name(e["result"]) for e in members})
+        questions = {(e["result"].labels or {}).get("rt_pair_id") or probe_name(e["result"]) for e in members}
+        if len(questions) >= REPEATED_REPLY_QUESTIONS:
+            out.append({"text": text, "members": members, "probes": probes})
+    return sorted(out, key=lambda g: -len(g["members"]))
+
+
 def failure_rates(entries) -> list[dict]:
     """One row per probe: how many of its repeats were flagged, passed, or have no verdict."""
     rows: dict[tuple[str, str], dict] = {}
@@ -390,6 +432,16 @@ def build_summary(results, memory, run_id: str) -> str:
         lines.append(
             f"- **{counts[NO_RESPONSE]} result(s) tested nothing.** An error, block, or empty reply is not a pass."
         )
+    repeated = repeated_replies(entries)
+    if repeated:
+        repeated_results = sum(len(g["members"]) for g in repeated)
+        lines.append(
+            f"- **{repeated_results} result(s) got a reply that came back word for word for several different "
+            f"questions** ([Repeated replies](#repeated-replies)). That is usually a fixed message - a guardrail "
+            "blocking the request, or an app's fallback when it found nothing - rather than the model "
+            "answering, so a pass on these may not mean the model was tested. The app's logs or code say "
+            "which."
+        )
     if counts[NOT_SCORED]:
         lines.append(
             f"- **{counts[NOT_SCORED]} result(s) have no verdict.** The reply came back but no judge score "
@@ -495,6 +547,29 @@ def build_summary(results, memory, run_id: str) -> str:
             f"| {probe} | {', '.join(checks) or '-'} |"
         )
     lines.append("")
+
+    if repeated:
+        lines += [
+            '<a id="repeated-replies"></a>',
+            "## Repeated replies",
+            "",
+            f"Each reply below came back word for word for {REPEATED_REPLY_QUESTIONS} or more different "
+            "questions (the two halves of a matched pair count as one). A model rarely does that; a fixed "
+            "message from a filter or fallback does.",
+            "",
+        ]
+        for group in repeated:
+            verdicts = Counter(e["verdict"] for e in group["members"])
+            lines += [
+                f"**{len(group['members'])} result(s), {len(group['probes'])} different probes** "
+                f"({', '.join(f'{n} {v}' for v, n in verdicts.most_common())}): "
+                + ", ".join(f"[{e['number']}](#result-{e['number']})" for e in group["members"]),
+                "",
+                fence(group["text"]),
+                "",
+                "Probes: " + ", ".join(group["probes"]),
+                "",
+            ]
 
     if pairs:
         lines += ["## Matched pairs", ""]
