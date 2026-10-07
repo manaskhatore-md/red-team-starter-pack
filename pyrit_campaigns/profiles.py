@@ -334,7 +334,7 @@ def describe(profile: Profile) -> str:
     """
     lines = [
         "=" * 78,
-        f"PROFILE: {profile.key}  (Data Level {profile.data_levels})",
+        f"PROFILE: {profile.key}",
         profile.description,
         "=" * 78,
         f"datasets: {', '.join(profile.datasets)}",
