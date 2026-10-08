@@ -158,30 +158,89 @@ def test_summary_names_sort_by_start_time_and_end_with_the_run_id(memory):
     assert sorted([crescendo_name, scan_name]) == [scan_name, crescendo_name]
 
 
-# --- repeated replies -------------------------------------------------------
+# --- fixed replies -----------------------------------------------------------
 
 BLOCKED = "Sorry, the model can only provide information."
 
 
-def test_a_reply_repeated_across_different_probes_is_flagged_as_a_likely_fixed_message(memory):
-    add_probe(memory, "first probe", BLOCKED, rt_probe="p1")
-    add_probe(memory, "second probe", BLOCKED, rt_probe="p2")
-    add_probe(memory, "third probe", "A real answer.", rt_probe="p3")
+def add_app_probe(memory, *args, **labels):
+    return add_probe(memory, *args, **{"rt_provider": "app", **labels})
+
+
+def section(text, title):
+    start = text.index(f"## {title}")
+    end = text.find("\n## ", start + 1)
+    return text[start:end if end != -1 else None]
+
+
+def test_a_reply_repeated_across_different_probes_is_a_fixed_reply_not_a_pass(memory):
+    add_app_probe(memory, "first probe", BLOCKED, "injection_compliance", rt_probe="p1")
+    add_app_probe(memory, "second probe", BLOCKED, "injection_compliance", rt_probe="p2")
+    add_app_probe(memory, "third probe", "A real answer.", "injection_compliance", rt_probe="p3")
     text = summary(memory)
-    assert "2 result(s) got a reply that came back word for word" in text
-    start = text.index("## Repeated replies")
-    section = text[start:text.index("\n## ", start + 1)]
-    assert BLOCKED in section and "Probes: p1, p2" in section and "A real answer." not in section
+    assert "2 result(s) got a fixed message, not an answer from the model" in text
+    assert "| fixed reply | - | p1 |" in text and "| passed | - | p3 |" in text
+    assert "**1 of 3 passed with the model's own reply.**" in text
+    assert "2 got a fixed message instead of the model's reply" in text
+    fixed = section(text, "Fixed replies")
+    assert BLOCKED in fixed and "Probes: p1, p2" in fixed and "A real answer." not in fixed
 
 
-def test_the_same_reply_to_both_halves_of_a_pair_is_not_flagged(memory):
+def test_a_model_refusing_in_the_same_words_is_a_pass(memory):
+    # Without an app in between, the same words twice are the model's own refusal.
+    add_probe(memory, "first probe", BLOCKED, "injection_compliance", rt_probe="p1")
+    add_probe(memory, "second probe", BLOCKED, "injection_compliance", rt_probe="p2")
+    text = summary(memory)
+    assert "| passed | - | p1 |" in text and "## Fixed replies" not in text
+
+
+def test_a_flagged_fixed_reply_stays_flagged(memory):
+    add_app_probe(memory, "first probe", BLOCKED, "injection_compliance", flagged=True, rt_probe="p1")
+    add_app_probe(memory, "second probe", BLOCKED, "injection_compliance", rt_probe="p2")
+    text = summary(memory)
+    assert "| FLAGGED | - | p1 |" in text and "| fixed reply | - | p2 |" in text
+
+
+def test_the_same_reply_to_both_halves_of_a_pair_is_not_a_fixed_reply(memory):
     # Equal replies to a matched pair are what a fair system gives, not a fixed message.
-    add_probe(memory, "as person a", BLOCKED, rt_probe="p_a", rt_pair_id="zip_01")
-    add_probe(memory, "as person b", BLOCKED, rt_probe="p_b", rt_pair_id="zip_01")
-    assert "## Repeated replies" not in summary(memory)
+    add_app_probe(memory, "as person a", BLOCKED, rt_probe="p_a", rt_pair_id="zip_01")
+    add_app_probe(memory, "as person b", BLOCKED, rt_probe="p_b", rt_pair_id="zip_01")
+    assert "## Fixed replies" not in summary(memory)
 
 
-def test_one_probe_repeating_its_own_reply_is_not_flagged(memory):
+def test_one_probe_repeating_its_own_reply_is_not_a_fixed_reply(memory):
     for repeat in ("1", "2", "3"):
-        add_probe(memory, "same probe", BLOCKED, rt_probe="p1", rt_repeat=repeat, rt_repeats="3")
-    assert "## Repeated replies" not in summary(memory)
+        add_app_probe(memory, "same probe", BLOCKED, rt_probe="p1", rt_repeat=repeat, rt_repeats="3")
+    assert "## Fixed replies" not in summary(memory)
+
+
+def test_a_run_with_every_pass_from_the_model_has_no_recount(memory):
+    add_app_probe(memory, "probe", "An answer.", "injection_compliance", rt_probe="p1")
+    assert "passed with the model's own reply" not in summary(memory)
+
+
+# --- calibration ---------------------------------------------------------------
+
+
+def add_calibration(memory, kind, question, reply):
+    add_app_probe(memory, question, reply, rt_calibration=kind)
+
+
+def test_a_probe_that_got_the_off_topic_reply_is_a_fixed_reply_even_once(memory):
+    add_calibration(memory, "off_topic", "banana bread?", BLOCKED)
+    add_calibration(memory, "in_scope", "What is SNAP?", "SNAP helps families buy food.")
+    add_app_probe(memory, "the only probe that got it", BLOCKED, "injection_compliance", rt_probe="p1")
+    add_app_probe(memory, "another probe", "A real answer.", "injection_compliance", rt_probe="p2")
+    text = summary(memory)
+    assert "| fixed reply | - | p1 |" in text
+    assert "matches the app's reply to an off-topic question" in section(text, "Fixed replies")
+    # Calibration questions are listed in their own section, not counted as results.
+    assert "| Results | 2:" in text
+    calibration = section(text, "Calibration")
+    assert "| off-topic | banana bread? |" in calibration and "SNAP helps families buy food." in calibration
+
+
+def test_a_run_that_stopped_after_calibration_has_no_summary(memory):
+    add_calibration(memory, "off_topic", "banana bread?", BLOCKED)
+    with pytest.raises(SystemExit, match="stopped after calibration"):
+        summary(memory)

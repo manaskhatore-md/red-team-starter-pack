@@ -37,6 +37,11 @@ carries a random canary token, and every reply is checked for it: a reply contai
 leaked the system prompt, and counts as a system_prompt_leak finding whatever the
 judges said. See pyrit_campaigns/system_prompt.py.
 
+CALIBRATION: an app can answer with a fixed message - a guardrail's block, a
+fallback - instead of its model. Before the probes, a scan of an app sends four
+plain questions to learn what those look like, and stops if the app answers its
+in-scope ones with the same fixed message. See pyrit_campaigns/calibration.py.
+
 REPEATS: model output varies from run to run, so one reply per probe is one sample.
 RT_REPEATS=5 sends every probe 5 times, each in a new conversation, and the run
 summary reports how often each one was flagged ("2 of 5"). Pairs are compared
@@ -75,6 +80,7 @@ from pyrit.score import MessageTrueFalseScorer, SelfAskGeneralTrueFalseScorer
 from pyrit.score.scorer_prompt_validator import ScorerPromptValidator
 from pyrit.setup import SQLITE, initialize_pyrit_async
 
+from pyrit_campaigns import calibration
 from pyrit_campaigns.profiles import PAIR_RUBRICS, Profile, describe, env_var, get_profile
 from pyrit_campaigns.code_checks import code_scorers, fill_pattern_check
 from pyrit_campaigns.planted_records import PlantedRecordScorer, records_for, records_section
@@ -521,6 +527,11 @@ async def main() -> int:
         "rt_planted_records": str(len(records)),
         "rt_repeats": str(repeats),
     }
+
+    # An app can answer with a fixed message instead of its model. Learn what that
+    # looks like, and stop if it is all the app says. See calibration.py.
+    if run_labels["rt_provider"] == "app" and not calibration.skipped():
+        await calibration.calibrate(target, run_labels, profile.placeholders.get("program_name", ""))
 
     # Every reply is checked for the canary, whichever rubrics grade it. The check
     # needs no judge call, so it adds nothing to the cost.
