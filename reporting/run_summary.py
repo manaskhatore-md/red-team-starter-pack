@@ -53,6 +53,8 @@ from reporting.export_finding_report import (
     flagged_rubrics,
     format_scores,
     format_transcript,
+    full_conversation_messages,
+    full_conversation_scores,
     load_rubrics,
     select_run,
 )
@@ -86,14 +88,24 @@ def response_error(messages) -> str | None:
     return None if error in (None, "none") else str(error)
 
 
+MULTI_TURN_CAMPAIGNS = {"multi_turn_crescendo", "multi_turn_red_team"}
+
+
 def classify(result, messages, scores, graded_by: list[str]) -> str:
     """One verdict per result, in the words the summary uses."""
-    if (result.labels or {}).get("rt_campaign") == "multi_turn_crescendo":
+    if (result.labels or {}).get("rt_campaign") in MULTI_TURN_CAMPAIGNS:
         # Crescendo's outcome is the verdict: success means the attack worked.
         if result.outcome.value == "success":
             labels = result.labels or {}
-            # Revealing the instructions cannot be confirmed when there were none.
-            if labels.get("rt_needs_system_prompt") == "true" and labels.get("rt_system_prompt") == "none":
+            # Revealing the instructions cannot be confirmed with no known prompt to
+            # compare against. rt_system_prompt is always "none" for app runs (the app
+            # sends its own, unseen, prompt), so an app run with APP_SYSTEM_PROMPT_FILE
+            # set (rt_app_prompt_file) is still verified - the judge was shown that text.
+            if (
+                labels.get("rt_needs_system_prompt") == "true"
+                and labels.get("rt_system_prompt") == "none"
+                and not labels.get("rt_app_prompt_file")
+            ):
                 return UNVERIFIED
             return ACHIEVED
         if result.outcome.value == "failure":
@@ -106,7 +118,7 @@ def classify(result, messages, scores, graded_by: list[str]) -> str:
         return ERROR
     if response_error(messages):
         return NO_RESPONSE
-    if (result.labels or {}).get("rt_campaign") == "multi_turn_crescendo":
+    if (result.labels or {}).get("rt_campaign") in MULTI_TURN_CAMPAIGNS:
         return result.outcome.value
     if [r for r in flagged_rubrics(scores) if r != PAIR_RUBRIC]:
         return FLAGGED
@@ -365,8 +377,8 @@ def build_summary(results, memory, run_id: str) -> str:
     rubrics = load_rubrics()
     entries = []
     for number, result in enumerate(results, 1):
-        messages = memory.get_conversation_messages(conversation_id=result.conversation_id)
-        scores = memory.get_prompt_scores(conversation_id=result.conversation_id)
+        messages = full_conversation_messages(memory, result)
+        scores = full_conversation_scores(memory, result)
         graded_by = rubrics_scored(scores)
         entries.append({
             "number": number,
@@ -483,7 +495,7 @@ def build_summary(results, memory, run_id: str) -> str:
     lines.append("")
 
     lines += ["## What this means", ""]
-    if campaign == "multi_turn_crescendo":
+    if campaign in MULTI_TURN_CAMPAIGNS:
         lines.append(
             f"The attack reached its objective in **{counts[ACHIEVED]} of {len(entries)}** conversations in this run"
             + (
@@ -806,9 +818,9 @@ def build_summary(results, memory, run_id: str) -> str:
             details.append(f"dataset `{result_labels['rt_dataset']}`")
         if result_labels.get("rt_pair_id"):
             details.append(f"pair `{result_labels['rt_pair_id']}`, variant `{result_labels.get('rt_variant')}`")
-        if campaign == "multi_turn_crescendo":
+        if campaign in MULTI_TURN_CAMPAIGNS:
             details.append(f"{result.executed_turns} turn(s), outcome `{result.outcome.value}`")
-        if result.outcome_reason and (campaign == "multi_turn_crescendo" or result.outcome.value == "error"):
+        if result.outcome_reason and (campaign in MULTI_TURN_CAMPAIGNS or result.outcome.value == "error"):
             details.append(f"reason: {result.outcome_reason}")
         details.append(f"conversation `{result.conversation_id}`")
         lines += ["- " + d for d in details]
@@ -834,6 +846,12 @@ def build_summary(results, memory, run_id: str) -> str:
         lines += [fence(format_transcript(without_system(e["messages"]))), ""]
 
     # No next steps: what to do about a run is for the people reading it to decide.
+    # The checklist is not advice about this run, though - it is what this profile's
+    # probes do not cover at all, same every run, so it still gets a section of its own.
+    if profile and profile.checklist:
+        lines += [f"## Not covered by `{profile.key}`'s probes", ""]
+        lines += [f"- [ ] {item}" for item in profile.checklist]
+        lines.append("")
     return "\n".join(lines)
 
 
@@ -847,7 +865,7 @@ def write_summary(memory, run_id: str, out: Path | None = None) -> Path:
     return path
 
 
-CAMPAIGN_SHORT = {"single_turn_scan": "scan", "multi_turn_crescendo": "crescendo"}
+CAMPAIGN_SHORT = {"single_turn_scan": "scan", "multi_turn_crescendo": "crescendo", "multi_turn_red_team": "red_team"}
 
 
 def summary_filename(results, run_id: str) -> str:

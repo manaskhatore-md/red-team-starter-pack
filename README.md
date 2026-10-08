@@ -13,7 +13,7 @@ Built on [PyRIT](https://github.com/Azure/PyRIT), with two passes over the syste
 | Pass | What it does | Where |
 |---|---|---|
 | **Single-turn scan** | Every probe in the profile's datasets, graded by your rubrics | `pyrit_campaigns/single_turn_scan.py` |
-| **Multi-turn campaign** | Attacks that escalate over a conversation | `pyrit_campaigns/multi_turn_crescendo.py` |
+| **Multi-turn campaigns** | Attacks that escalate over a conversation | `pyrit_campaigns/multi_turn_crescendo.py`, `pyrit_campaigns/multi_turn_red_team.py` |
 
 Single-turn scans catch the obvious failures cheaply and are what you re-run on a
 schedule. Multi-turn campaigns catch the ones that need patience. You want both.
@@ -37,9 +37,11 @@ connectivity, not safety — nothing scores the responses. Once it passes:
 # single-turn scan (pick the profile matching your deployment)
 RT_PROFILE=public_conversational python -m pyrit_campaigns.single_turn_scan
 
-# multi-turn campaign: the profile's objectives, each one a Crescendo attack
-# (edit them in pyrit_campaigns/profiles.py; RT_MAX_TURNS=3 keeps a first run short)
+# multi-turn campaign: Crescendo (gradual escalation; requires a chat target with memory)
 RT_PROFILE=public_conversational python -m pyrit_campaigns.multi_turn_crescendo
+
+# adaptive multi-turn: RedTeamingAttack (free-form; works against stateless apps too)
+RT_PROFILE=public_conversational python -m pyrit_campaigns.multi_turn_red_team
 
 # every run writes a summary to findings/, e.g.
 # 2026-09-30_0951_scan_public_conversational_7f264395.md: every probe, reply,
@@ -67,7 +69,7 @@ RT_PROVIDER=gemini            # the model under test: or openai | anthropic | be
 RT_MODEL=...                  # optional; each provider has a default
 RT_JUDGE_PROVIDER=...         # the model that scores results — use a different one
 RT_JUDGE_MODEL=...            # pin it: a judge that changes between runs changes the finding rate
-RT_ADVERSARIAL_PROVIDER=...   # Crescendo's attacker
+RT_ADVERSARIAL_PROVIDER=...   # attacker model for Crescendo and the adaptive red-team campaign
 RT_ADVERSARIAL_MODEL=...
 ```
 
@@ -313,7 +315,8 @@ red-team-starter-pack/
 │   ├── system_prompt.py                # The system prompt a scan sends, and the canary token check
 │   ├── planted_records.py              # Fake records of other people in the system prompt, and their leak check
 │   ├── code_checks.py                  # Credential, markdown, and SSN/card checks run on every reply
-│   ├── multi_turn_crescendo.py         # Multi-step conversational boundary testing
+│   ├── multi_turn_crescendo.py         # Crescendo: gradual escalation (requires target memory)
+│   ├── multi_turn_red_team.py          # Adaptive red team: free-form, works against stateless apps
 │   └── agent_tool_exploitation.py      # Scaffold: sends tool-abuse probes; the backend diff is a TODO
 │
 ├── judges/                             # LLM-as-a-Judge Rubrics & Scorer Logic
