@@ -269,3 +269,45 @@ def test_heartbeat_is_cancelled_cleanly_even_if_the_block_raises(capsys):
                 raise ValueError("boom")
 
     asyncio.run(run())  # must not raise CancelledError or hang
+
+
+# --- counting real calls for the heartbeat -----------------------------------
+
+class _FakeCallTarget:
+    """Stands in for a built target: records what it was sent."""
+
+    def __init__(self):
+        self.sent = []
+
+    async def _send_prompt_to_target_async(self, *, normalized_conversation):
+        self.sent.append(normalized_conversation)
+        return "reply"
+
+
+def test_count_calls_increments_a_shared_counter_across_several_targets():
+    calls = [0]
+    a = multi_turn_crescendo.count_calls(_FakeCallTarget(), calls)
+    b = multi_turn_crescendo.count_calls(_FakeCallTarget(), calls)
+
+    asyncio.run(a._send_prompt_to_target_async(normalized_conversation=[]))
+    asyncio.run(b._send_prompt_to_target_async(normalized_conversation=[]))
+    asyncio.run(a._send_prompt_to_target_async(normalized_conversation=[]))
+
+    assert calls == [3]
+    # The wrapped target still does its real job, not just counting.
+    assert len(a.sent) == 2 and len(b.sent) == 1
+
+
+def test_heartbeat_with_calls_shows_the_count_not_just_elapsed_time(capsys):
+    calls = [0]
+
+    async def run():
+        async with multi_turn_crescendo.heartbeat(interval=0.03, calls=calls, estimate=9):
+            calls[0] = 4
+            await asyncio.sleep(0.05)
+        await asyncio.sleep(0.05)
+
+    asyncio.run(run())
+    out = capsys.readouterr().out
+    assert "call 4 of ~9" in out
+    assert "still running" not in out
