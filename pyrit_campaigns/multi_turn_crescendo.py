@@ -53,6 +53,7 @@ RT_MAX_CONCURRENCY (default 3) attacks run at once; each turn takes about 30 sec
 """
 
 import asyncio
+import contextlib
 import os
 import re
 import sys
@@ -274,6 +275,33 @@ def expand_repeats(objectives: list[Objective], repeats: int, run_labels: dict) 
     return goals, overrides
 
 
+@contextlib.asynccontextmanager
+async def heartbeat(interval: float = 25.0):
+    """Print a line every `interval` seconds while the wrapped block runs.
+
+    A multi-turn campaign waits for every objective's whole attack before printing
+    anything, which for several turns per objective can be minutes of silence that
+    looks identical to a hang. Wrap the long await in this to show it is still going:
+
+        async with heartbeat():
+            result = await something_that_takes_a_while()
+    """
+    started = time.monotonic()
+
+    async def beat():
+        while True:
+            await asyncio.sleep(interval)
+            print(f"  ...still running, {time.monotonic() - started:.0f}s elapsed", flush=True)
+
+    task = asyncio.create_task(beat())
+    try:
+        yield
+    finally:
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
+
 def leaked(memory, conversation_id: str, check: str) -> bool:
     """Whether any reply in the conversation failed a check like the canary's."""
     return any(
@@ -397,12 +425,13 @@ async def main() -> int:
         max_backtracks=MAX_BACKTRACKS,
     )
     goals, overrides = expand_repeats(objectives, repeats, run_labels)
-    executor_result = await AttackExecutor(max_concurrency=MAX_CONCURRENCY).execute_attack_async(
-        attack=attack,
-        objectives=goals,
-        **prepended,
-        field_overrides=overrides,
-    )
+    async with heartbeat():
+        executor_result = await AttackExecutor(max_concurrency=MAX_CONCURRENCY).execute_attack_async(
+            attack=attack,
+            objectives=goals,
+            **prepended,
+            field_overrides=overrides,
+        )
     completed, incomplete = executor_result.completed_results, executor_result.incomplete_objectives
 
     memory = CentralMemory.get_memory_instance()

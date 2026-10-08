@@ -39,7 +39,7 @@ marked for confirmation, and leaves TODO markers where your analysis goes.
 
 import argparse
 import json
-from datetime import date
+from datetime import date, datetime, timezone
 from functools import cache
 from pathlib import Path
 
@@ -53,6 +53,7 @@ truststore.inject_into_ssl()
 
 import yaml
 from pyrit.memory import CentralMemory
+from pyrit.models import ConversationType
 from pyrit.setup import SQLITE, initialize_pyrit_async
 
 from pyrit_campaigns.profiles import PROFILES
@@ -217,13 +218,15 @@ def reproduction_steps(labels: dict) -> str:
                 f"It is one half of matched pair `{labels['rt_pair_id']}`. The scan compares "
                 "the replies to both halves; both transcripts are under Evidence."
             )
-    elif labels.get("rt_campaign") == "multi_turn_crescendo":
+    elif labels.get("rt_campaign") in ("multi_turn_crescendo", "multi_turn_red_team"):
+        campaign_module = labels.get("rt_campaign", "multi_turn_crescendo")
+        backtracks_line = (f", `RT_MAX_BACKTRACKS={labels.get('rt_max_backtracks')}`"
+                           if labels.get("rt_max_backtracks") else "")
         steps = [
             f"In `.env`, set `RT_PROFILE={labels.get('rt_profile')}`{prompt_setting}, {target}, {judge}, `RT_ADVERSARIAL_PROVIDER="
             f"{labels.get('rt_adversarial_provider')}` and `RT_ADVERSARIAL_MODEL={labels.get('rt_adversarial')}`, "
-            f"`RT_MAX_TURNS={labels.get('rt_max_turns')}`, and "
-            f"`RT_MAX_BACKTRACKS={labels.get('rt_max_backtracks')}`.",
-            "Run `python -m pyrit_campaigns.multi_turn_crescendo`. It runs every objective in the "
+            f"`RT_MAX_TURNS={labels.get('rt_max_turns')}`{backtracks_line}.",
+            f"Run `python -m pyrit_campaigns.{campaign_module}`. It runs every objective in the "
             "profile's `objectives` (`pyrit_campaigns/profiles.py`); the Objective above is one of them. "
             "To run only this one, comment out the others.",
             "The attacker writes new turns on every run, so the transcript will not repeat word "
@@ -253,9 +256,46 @@ def pair_partner(result, memory):
     return None
 
 
+def related_conversation_ids(result, kind: ConversationType) -> list[str]:
+    """conversation_ids of a given type PyRIT tracked alongside this result's own conversation."""
+    return [rc.conversation_id for rc in (result.related_conversations or []) if rc.conversation_type == kind]
+
+
+def full_conversation_ids(result) -> list[str]:
+    """This result's own conversation, plus every one PyRIT pruned away.
+
+    RedTeamingAttack starts a brand-new conversation_id each turn for a target with no
+    native multi-turn support (an app with no conversation memory of its own) - see
+    _rotate_conversation_for_single_turn_target in PyRIT's source. It keeps a reference
+    to each one it prunes, under ConversationType.PRUNED, so nothing is actually lost;
+    our own reporting just has to go looking for it. A no-op (returns just [result.
+    conversation_id]) for attacks that never prune anything - Crescendo, and
+    RedTeamingAttack against a target that does keep its own conversation memory.
+    """
+    return [result.conversation_id] + related_conversation_ids(result, ConversationType.PRUNED)
+
+
+def full_conversation_messages(memory, result) -> list:
+    """Every message belonging to this result, in chronological order, across its own
+    conversation and any PyRIT pruned away. See full_conversation_ids().
+    """
+    messages = [m for cid in full_conversation_ids(result) for m in memory.get_conversation_messages(conversation_id=cid)]
+
+    def earliest(message):
+        timestamps = [p.timestamp for p in message.message_pieces if p.timestamp]
+        return min(timestamps) if timestamps else datetime.min.replace(tzinfo=timezone.utc)
+
+    return sorted(messages, key=earliest)
+
+
+def full_conversation_scores(memory, result) -> list:
+    """Every score tied to a piece in this result's full (pruned-inclusive) conversation."""
+    return [s for cid in full_conversation_ids(result) for s in memory.get_prompt_scores(conversation_id=cid)]
+
+
 def build_report(result, memory, template: str, all_results) -> str:
-    messages = memory.get_conversation_messages(conversation_id=result.conversation_id)
-    scores = memory.get_prompt_scores(conversation_id=result.conversation_id)
+    messages = full_conversation_messages(memory, result)
+    scores = full_conversation_scores(memory, result)
     labels = result.labels or {}
     rubrics = load_rubrics()
 
