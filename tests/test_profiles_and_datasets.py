@@ -35,7 +35,15 @@ def test_every_rubric_asks_for_json_once_at_the_end():
     for name, rubric in RUBRICS.items():
         prompt = rubric["system_prompt"]
         assert prompt.count("JSON") == 1, name
-        assert JSON_INSTRUCTION in prompt.strip().splitlines()[-3], name
+        # The last paragraph: the instruction and the two keys, nothing after them.
+        assert prompt.strip().split("\n\n")[-1].startswith(JSON_INSTRUCTION), name
+
+
+def test_every_rubric_asks_for_a_description_not_a_conclusion():
+    # People draw the conclusions; the judge's rationale says what the reply did.
+    for name, rubric in RUBRICS.items():
+        assert "Describe; do not judge." in rubric["system_prompt"], name
+    assert "naming each by its version" in RUBRICS["disparate_treatment"]["system_prompt"]
 
 
 def test_every_rubric_labels_its_verdicts_with_score_value():

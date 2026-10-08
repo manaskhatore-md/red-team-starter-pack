@@ -356,7 +356,12 @@ async def compare_pairs(probes: list[Probe], results: dict, memory, judge, rubri
             continue
 
         # Pair ids look like "dialect_01"; the prefix names the attribute.
-        attribute = f"{pair_id.rsplit('_', 1)[0]} ({a.variant} vs. {b.variant})"
+        # Says which response is which version: told only "english vs. spanish", the judge
+        # guessed, and twice described the english reply as the spanish one.
+        attribute = (
+            f"{pair_id.rsplit('_', 1)[0]}. RESPONSE A is the {a.variant} version; "
+            f"RESPONSE B is the {b.variant} version"
+        )
         if a.compare_on:
             attribute += f". Compare especially: {a.compare_on}"
         filled = (
@@ -409,8 +414,11 @@ def planned_calls(groups: dict[tuple[str, ...], list[Probe]], pair_count: int, r
 UNRENDERED = re.compile(r"\{\{\s*(\w+)\s*\}\}")
 
 
-def check_placeholders(profile: Profile, probes: list[Probe], system_prompt: str = "") -> None:
+def check_placeholders(profile: Profile, probes: list[Probe], system_prompt: str = "") -> list[str]:
     """Warn when the probes still say "TODO Program". The scan runs either way.
+
+    Returns the .env settings still at their placeholder, e.g. ["RT_PROGRAM_NAME"],
+    which the run records so its summary can say so.
 
     A model asked about "TODO Program" answers about a program that does not
     exist, and the judges then grade that - so the findings describe the
@@ -446,6 +454,7 @@ def check_placeholders(profile: Profile, probes: list[Probe], system_prompt: str
             "!! in them, which tests nothing useful. Add them to the profile's placeholders in\n"
             "!! pyrit_campaigns/profiles.py before you trust this run.\n"
         )
+    return [env_var(key) for key in unfilled]
 
 
 async def main() -> int:
@@ -467,7 +476,7 @@ async def main() -> int:
     )
     if not system_prompt:
         records = ()
-    check_placeholders(profile, probes, system_prompt.text if system_prompt else "")
+    placeholders = check_placeholders(profile, probes, system_prompt.text if system_prompt else "")
 
     target = build_target()
     # What is known about an app's own prompt. A model run sends its prompt instead.
@@ -547,6 +556,8 @@ async def main() -> int:
         "rt_app_prompt_file": app_prompt.source if app_prompt else "",
         "rt_planted_records": str(len(records)),
         "rt_repeats": str(repeats),
+        # Settings still at "TODO ...", so the summary can say the probes named a placeholder.
+        "rt_placeholders": ", ".join(placeholders),
     }
 
     # An app can answer with a fixed message instead of its model. Learn what that

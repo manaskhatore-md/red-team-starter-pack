@@ -304,7 +304,7 @@ async def main() -> int:
     )
     if not system_prompt:
         records = ()
-    check_placeholders(
+    placeholders = check_placeholders(
         profile, [], "\n".join([o.goal for o in objectives] + ([system_prompt.text] if system_prompt else []))
     )
 
@@ -369,6 +369,8 @@ async def main() -> int:
         "rt_repeats": str(repeats),
         "rt_max_turns": str(MAX_TURNS),
         "rt_max_backtracks": str(MAX_BACKTRACKS),
+        # Settings still at "TODO ...", so the summary can say the objectives named a placeholder.
+        "rt_placeholders": ", ".join(placeholders),
     }
 
     attacks = len(objectives) * repeats

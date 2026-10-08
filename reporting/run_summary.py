@@ -207,6 +207,12 @@ def last_reply(messages) -> str:
     return normalized(replies[-1].converted_value) if replies else ""
 
 
+def reply_as_sent(messages) -> str:
+    """The last reply as it came back, line breaks and all, for showing. last_reply() is for comparing."""
+    replies = [p for m in messages for p in m.message_pieces if p.role == "assistant"]
+    return (replies[-1].converted_value or "").strip() if replies else ""
+
+
 def probe_name(result) -> str:
     return (result.labels or {}).get("rt_probe") or cell(result.objective, 60)
 
@@ -259,7 +265,8 @@ def instruction_requests(entries, labels) -> list:
     when the prompt was known (a canary or APP_SYSTEM_PROMPT_FILE), since the checks
     cover it then.
     """
-    if labels.get("rt_prompt_canary") or labels.get("rt_app_prompt_file"):
+    # A model run sends the kit's own prompt, or none, so there is nothing unknown to leak.
+    if labels.get("rt_provider") != "app" or labels.get("rt_prompt_canary") or labels.get("rt_app_prompt_file"):
         return []
     return [
         e for e in entries
@@ -268,6 +275,34 @@ def instruction_requests(entries, labels) -> list:
         and e["verdict"] not in (ERROR, NO_RESPONSE, FIXED_REPLY)
         and last_reply(e["messages"])
     ]
+
+
+def fixed_pattern(entries) -> str:
+    """Which datasets the fixed replies fell in, e.g. ": 7 of 7 prompt_injection probes, 6 of 10 algorithmic_bias".
+
+    The cause of a fixed reply cannot be known from outside the app, but where they
+    fell can: all of the injection probes and none of the ordinary questions points
+    somewhere different from some of each. Empty with only one dataset, where it
+    would repeat the count.
+    """
+    totals = Counter((e["result"].labels or {}).get("rt_dataset", "-") for e in entries)
+    if len(totals) < 2:
+        return ""
+    fixed = Counter((e["result"].labels or {}).get("rt_dataset", "-") for e in entries if e["verdict"] == FIXED_REPLY)
+    parts = [f"{fixed[d]} of {totals[d]} {d}" for d in sorted(totals, key=lambda d: -fixed[d])]
+    return ": " + ", ".join(parts) + " probes"
+
+
+def no_reply_reasons(no_reply) -> str:
+    """The reasons PyRIT recorded for the results with no usable reply, most common first."""
+    reasons = Counter(
+        cell(e["result"].outcome_reason or "none recorded", 80) if e["verdict"] == ERROR
+        else cell(response_error(e["messages"]) or "none recorded", 80)
+        for e in no_reply
+    )
+    shown = [f"{reason} ({n})" if len(reasons) > 1 or n > 1 else reason for reason, n in reasons.most_common(3)]
+    rest = len(reasons) - len(shown)
+    return "; ".join(shown) + (f"; {rest} other reason(s), with each result below" if rest else "")
 
 
 def failure_rates(entries) -> list[dict]:
@@ -287,8 +322,12 @@ def failure_rates(entries) -> list[dict]:
     return [r for r in rows.values() if r["flagged"] or r["passed"] or r["no_verdict"]]
 
 
-def pair_verdicts(entries) -> list[dict]:
-    """Each matched pair in the run, per repeat, with the judge's comparison if one was recorded."""
+def pair_verdicts(entries, fixed_texts: set[str] = frozenset()) -> list[dict]:
+    """Each matched pair in the run, per repeat, with the judge's comparison if one was recorded.
+
+    A pair whose halves both got the same fixed message has no comparison: the model saw
+    neither, so the judge's "equivalent" says nothing about it.
+    """
     pairs = defaultdict(list)
     for entry in entries:
         pair_id = (entry["result"].labels or {}).get("rt_pair_id")
@@ -300,7 +339,11 @@ def pair_verdicts(entries) -> list[dict]:
             (s for m in members for s in m["scores"] if PAIR_RUBRIC in (s.score_category or [])),
             None,
         )
-        if score is None:
+        replies = {last_reply(m["messages"]) for m in members}
+        if score is not None and len(replies) == 1 and replies <= fixed_texts:
+            score = None
+            verdict = "not tested (both halves got the same fixed message)"
+        elif score is None:
             verdict = "not compared (a reply was missing, or the profile does not compare pairs)"
         elif score.get_value() is True:
             verdict = "DIFFERENT TREATMENT"
@@ -346,7 +389,8 @@ def build_summary(results, memory, run_id: str) -> str:
         # A flag stays a flag: a fixed message that breaks a rule is still worth reading.
         if e["verdict"] == PASSED and last_reply(e["messages"]) in fixed_texts:
             e["verdict"] = FIXED_REPLY
-    pairs = pair_verdicts(entries)
+    pairs = pair_verdicts(entries, fixed_texts)
+    pair_of = {m["number"]: p for p in pairs for m in p["members"]}
     leaks = sum(e["canary"] is True for e in entries)
     canary_checked = sum(e["canary"] is not None for e in entries)
     record_leaks = sum(e["records"] is True for e in entries)
@@ -361,6 +405,13 @@ def build_summary(results, memory, run_id: str) -> str:
 
     def with_repeat(name: str, result) -> str:
         return f"{name} (repeat {repeat_of(result)})" if repeats > 1 else name
+
+    def pair_shown(p) -> bool:
+        # With repeats, one entry per pair per repeat buries the flags; the failure rates count the rest.
+        return repeats == 1 or p["verdict"] == "DIFFERENT TREATMENT"
+
+    def pair_anchor(p) -> str:
+        return f"pair-{p['pair_id']}-{p['repeat']}"
 
     counts = Counter(e["verdict"] for e in entries)
     flagged = counts[FLAGGED] + counts[ACHIEVED]
@@ -390,9 +441,7 @@ def build_summary(results, memory, run_id: str) -> str:
         return value or "not recorded"
 
     lines.append(
-        f"| Model under test | {recorded(labels.get('rt_target'))} (RT_PROVIDER={recorded(provider)})"
-        + ("" if provider == "app" else " - the model on its own, not a deployed application")
-        + " |"
+        f"| Model under test | {recorded(labels.get('rt_target'))} (RT_PROVIDER={recorded(provider)}) |"
     )
     system_prompt = labels.get("rt_system_prompt")
     if provider == "app":
@@ -445,45 +494,68 @@ def build_summary(results, memory, run_id: str) -> str:
         )
     else:
         lines.append(
-            ("The judge model and the canary token check" if canary_checked else "The judge model")
+            ("The judge model and the code checks" if canary_checked or any(other_checked.values()) else "The judge model")
             + f" flagged **{flagged} of {len(entries)}** results"
             + (f" and **{pairs_flagged} of {pairs_compared}** matched pairs" if pairs_compared else "")
             + " in this run."
         )
-        # Only a pass in which the model answered is evidence the model held, so say
-        # how many of those there were before anyone reads the flag count as the rest.
-        untested = [
-            (counts[FIXED_REPLY], "got a fixed message instead of the model's reply"),
-            (counts[ERROR] + counts[NO_RESPONSE], "got no usable reply"),
-            (counts[NOT_SCORED], "have no judge verdict"),
-        ]
-        untested = [f"{n} {what}" for n, what in untested if n]
-        if untested:
-            lines += [
-                "",
-                f"**{counts[PASSED]} of {len(entries)} passed with the model's own reply.** The rest that were "
-                f"not flagged tested nothing: {'; '.join(untested)}. Those are not passes.",
-            ]
-    lines += [
-        "",
-        "- **A flag is a lead, not a finding.** It is the judge model's reading of a rubric in "
-        "`judges/state_policy_rubric.yaml`. Someone has to read the reply and the judge's reasoning below "
-        "and agree before it becomes a finding.",
-    ]
-    if repeats > 1:
+    # Only a pass in which the model answered is evidence the model held, so say how
+    # many did not test it before anyone reads the flag count as the rest. Each group
+    # gets only what the run recorded about it, never a guess at the cause.
+    lines.append("")
+    placeholders = labels.get("rt_placeholders", "")
+    with_todo = sum("TODO" in (e["result"].objective or "") for e in entries)
+    if placeholders or with_todo:
+        lines.append(
+            "- **Placeholders were left unset"
+            + (f" ({placeholders})" if placeholders else "")
+            + ".** "
+            + (f"{with_todo} of {len(entries)} probes asked about \"TODO ...\" text" if with_todo
+               else "The system prompt held \"TODO ...\" text")
+            + " instead of your program's details, so these results describe the placeholders, not your system. "
+            "Set them in `.env` and re-run."
+        )
+    no_reply = [e for e in entries if e["verdict"] in (ERROR, NO_RESPONSE)]
+    untested = counts[FIXED_REPLY] + len(no_reply) + counts[NOT_SCORED]
+    if untested:
+        lines.append(
+            (f"- **{counts[PASSED]} passed with the model's own reply. " if campaign != "multi_turn_crescendo" else "- **")
+            + f"{untested} of {len(entries)} did not test the model**, so they are neither passes nor flags:"
+        )
+        if counts[FIXED_REPLY]:
+            lines.append(
+                f"  - {counts[FIXED_REPLY]} got a fixed message instead of the model's reply ([Fixed replies](#fixed-replies))"
+                + fixed_pattern(entries)
+                + ". Only the app's operator can tell a guardrail's block from a fallback, from its logs."
+            )
+        if no_reply:
+            lines.append(f"  - {len(no_reply)} got no usable reply. Recorded reason: {no_reply_reasons(no_reply)}.")
+        if counts[NOT_SCORED]:
+            lines.append(
+                f"  - {counts[NOT_SCORED]} have no judge verdict: the reply came back, but no judge score was "
+                "recorded. The campaign's console output shows why."
+            )
+    if flagged or pairs_flagged:
+        lines.append(
+            "- **A flag is a lead, not a finding.** It is the judge model's reading of a rubric in "
+            "`judges/state_policy_rubric.yaml`. Someone has to read the reply and the judge's summary below "
+            "and agree before it becomes a finding."
+        )
+    tested = flagged + counts[PASSED] + counts[HELD]
+    if tested and repeats > 1:
         lines.append(
             f"- **Each probe ran {repeats} times.** [Failure rates](#failure-rates) shows how often each one was "
             f"flagged. A probe never flagged is not proven safe: 0 of {repeats} is still consistent with it "
             f"failing up to {zero_flag_bound(repeats):.0%} of the time. More repeats shrink that bound."
         )
-    else:
+    elif tested:
         lines.append(
             "- **A pass is one sample.** Model output varies from run to run. A probe that passed once can "
             "fail on the next run, so re-run with RT_REPEATS=5 or more before you rely on either result."
         )
     if leaks:
         lines.append(
-            f"- **{leaks} reply(ies) leaked the system prompt.** Each contains the canary token, a random code "
+            f"- **{leaks} reply(ies) leaked the system prompt.** Each contains the canary token, a code "
             "planted only in the system prompt, so this was found by matching the code, not by a judge. "
             "It counts as a flag whatever the judges said; their verdicts are beside it below."
         )
@@ -505,30 +577,6 @@ def build_summary(results, memory, run_id: str) -> str:
             f"- **{counts[UNVERIFIED]} attack(s) are unverified.** The judge said the attack reached an objective "
             "that needs the system prompt to confirm, such as revealing it, and this run sent none. They are "
             "not counted as flags. Re-run with a system prompt to test them."
-        )
-    if counts[ERROR]:
-        lines.append(
-            f"- **{counts[ERROR]} result(s) stopped with an error** and have no verdict. The reason "
-            "PyRIT recorded is with each one below; a failed judge call is the usual cause."
-        )
-    if counts[NO_RESPONSE]:
-        lines.append(
-            f"- **{counts[NO_RESPONSE]} result(s) tested nothing.** An error, block, or empty reply is not a pass."
-        )
-    if fixed:
-        fixed_results = sum(len(g["members"]) for g in fixed)
-        lines.append(
-            f"- **{fixed_results} result(s) got a fixed message, not an answer from the model** "
-            "([Fixed replies](#fixed-replies)). Each got exactly the same text as other, different questions, "
-            "or as the app's reply to an off-topic question. That is almost always a guardrail's block or "
-            "the app's fallback, so the model never saw the probe. A pass on one is counted as a fixed reply, not a "
-            "pass; a flag on one stays a flag. The scan cannot tell which sent it; "
-            "the app's operator can, from its logs."
-        )
-    if counts[NOT_SCORED]:
-        lines.append(
-            f"- **{counts[NOT_SCORED]} result(s) have no verdict.** The reply came back but no judge score "
-            "was recorded; the judge call may have failed. Check the campaign's console output."
         )
     if provider != "app":
         if system_prompt and system_prompt != "none" and labels.get("rt_system_prompt_chosen_by") == "RT_SYSTEM_PROMPT_FILE":
@@ -553,10 +601,12 @@ def build_summary(results, memory, run_id: str) -> str:
     lines.append("")
 
     flagged_by = Counter(r for e in entries for r in flagged_rubrics(e["scores"]) if r != PAIR_RUBRIC)
-    graded = Counter(r for e in entries for r in e["graded_by"])
-    if graded or pairs_compared or canary_checked or records_checked or any(other_checked.values()):
+    # A pass on a fixed message is not a grading of the model, so it is not counted as one.
+    graded = Counter(r for e in entries if e["verdict"] != FIXED_REPLY for r in e["graded_by"])
+    rubrics_run = {r for e in entries for r in e["graded_by"]}
+    if rubrics_run or pairs_compared or canary_checked or records_checked or any(other_checked.values()):
         lines += ["## By rubric", "", "| Rubric | Flagged | Graded | What it checks |", "|---|---|---|---|"]
-        for rubric in sorted(graded):
+        for rubric in sorted(rubrics_run):
             description = cell(rubrics.get(rubric, {}).get("description", ""), 120)
             lines.append(f"| {rubric} | {flagged_by[rubric]} | {graded[rubric]} | {description} |")
         if canary_checked:
@@ -579,6 +629,14 @@ def build_summary(results, memory, run_id: str) -> str:
         if pairs_compared:
             description = cell(rubrics.get(PAIR_RUBRIC, {}).get("description", ""), 120)
             lines.append(f"| {PAIR_RUBRIC} (pairs) | {pairs_flagged} | {pairs_compared} | {description} |")
+        untested_pairs = sum(p["verdict"].startswith("not tested") for p in pairs)
+        if counts[FIXED_REPLY]:
+            lines += [
+                "",
+                f"Graded leaves out the {counts[FIXED_REPLY]} result(s) that got a fixed message"
+                + (f" and the {untested_pairs} pair(s) whose halves both got the same one" if untested_pairs else "")
+                + ", since the model saw none of them.",
+            ]
         lines.append("")
 
     if repeats > 1:
@@ -687,7 +745,7 @@ def build_summary(results, memory, run_id: str) -> str:
         ]
         for e in asked:
             name = with_repeat(probe_name(e["result"]), e["result"])
-            lines += [f"**[{e['number']}](#result-{e['number']}) {name}** ({e['verdict']})", "", fence(last_reply(e["messages"])), ""]
+            lines += [f"**[{e['number']}](#result-{e['number']}) {name}** ({e['verdict']})", "", fence(reply_as_sent(e["messages"])), ""]
 
     if pairs:
         lines += ["## Matched pairs", ""]
@@ -695,21 +753,35 @@ def build_summary(results, memory, run_id: str) -> str:
             "Each pair asks the same question twice, changing one attribute (dialect, name, zip code, "
             "language, or a disclosed disability). The judge compares the two replies."
         )
+        if repeats > 1:
+            lines += [
+                "",
+                "Only the comparisons flagged as different treatment are shown. [Failure rates](#failure-rates) "
+                "has every pair's count.",
+            ]
         lines.append("")
         for p in pairs:
-            members = ", ".join(
-                f"[{m['number']}](#result-{m['number']}) ({(m['result'].labels or {}).get('rt_variant') or '?'})"
-                for m in p["members"]
-            )
+            if not pair_shown(p):
+                continue
             repeat = f", repeat {p['repeat']}" if repeats > 1 else ""
-            lines.append(f"### Pair {p['pair_id']}{repeat}: {p['verdict']}")
-            lines.append("")
-            lines.append(f"Results {members}.")
-            if all(last_reply(m["messages"]) in fixed_texts for m in p["members"]):
-                lines += ["", "Both replies were fixed messages, so this comparison did not test the model."]
+            lines += [f'<a id="{pair_anchor(p)}"></a>', f"### Pair {p['pair_id']}{repeat}: {p['verdict']}", ""]
+            # Different fixed messages are still compared: the app treating the halves differently is a finding.
+            if p["score"] is not None and all(last_reply(m["messages"]) in fixed_texts for m in p["members"]):
+                lines += ["Both replies were fixed messages, so this comparison did not test the model.", ""]
             if p["score"] is not None and p["score"].score_rationale:
-                lines += ["", f"Judge's reasoning: {p['score'].score_rationale}"]
-            lines.append("")
+                lines += [f"Judge's summary: {p['score'].score_rationale}", ""]
+            # The two replies, one after the other, so the difference can be read here. A pair
+            # whose halves got the same fixed message has nothing to compare.
+            if not p["verdict"].startswith("not tested"):
+                for m in p["members"]:
+                    variant = (m["result"].labels or {}).get("rt_variant") or "?"
+                    lines += [
+                        f"**{variant}** ([{m['number']}](#result-{m['number']})): "
+                        + cell(m["result"].objective, 160),
+                        "",
+                        fence(reply_as_sent(m["messages"]) or "(no usable reply)"),
+                        "",
+                    ]
 
     if prompt_text:
         lines += [
@@ -743,39 +815,25 @@ def build_summary(results, memory, run_id: str) -> str:
         error = response_error(e["messages"])
         if error:
             lines.append(f"- error: {error}")
-        lines += ["", "**Scores**", "", format_scores(e["scores"]), "", "**Transcript**", ""]
+        # A clean code check is one line for all of them; their per-check "false" lines are noise.
+        clean = [s for s in e["scores"] if s.get_value() is False and set(s.score_category or []) & set(CODE_CHECKS)]
+        # The pair's verdict is the pair's, and is in its section: this links to it rather than repeating it.
+        rest = [s for s in e["scores"] if not any(s is c for c in clean) and PAIR_RUBRIC not in (s.score_category or [])]
+        pair = pair_of.get(e["number"])
+        lines += ["", "**Scores**", ""]
+        if rest or not (clean or pair):
+            lines.append(format_scores(rest))
+        if clean:
+            names = sorted({c for s in clean for c in s.score_category if c in CODE_CHECKS})
+            lines.append(f"- Code checks, all clean: {', '.join(names)}")
+        if pair:
+            name = f"pair {pair['pair_id']}" + (f", repeat {pair['repeat']}" if repeats > 1 else "")
+            where = f"[{name}](#{pair_anchor(pair)})" if pair_shown(pair) else f"{name} ([Failure rates](#failure-rates))"
+            lines.append(f"- Matched pair: {where}, {pair['verdict']}")
+        lines += ["", "**Transcript**", ""]
         lines += [fence(format_transcript(without_system(e["messages"]))), ""]
 
-    lines += ["## Next steps", ""]
-    if flagged or pairs_flagged:
-        if campaign == "multi_turn_crescendo":
-            command = f"python -m reporting.export_finding_report --outcome success --run-id {run_id[:8]} --out findings/"
-        else:
-            command = f"python -m reporting.export_finding_report --rubric any --run-id {run_id[:8]} --out findings/"
-        lines += [
-            "1. Read each flagged result above and decide whether you agree with the judge.",
-            f"2. For the ones you agree with, write finding reports: `{command}` "
-            "(or `--conversation-id` for one result).",
-            (
-                "3. Weigh each finding by its rate in [Failure rates](#failure-rates): a probe flagged in 1 of "
-                f"{repeats} is a weaker finding than one flagged every time."
-                if repeats > 1
-                else "3. Re-run with RT_REPEATS=5 or more; each finding report counts how often a probe was flagged."
-            ),
-        ]
-    else:
-        lines.append("Nothing was flagged. Spot-check a few passes above before you rely on that.")
-    if counts[FIXED_REPLY]:
-        lines += [
-            "",
-            f"{counts[FIXED_REPLY]} probe(s) got a fixed message, so the model was not tested on them. To reach it, "
-            "word the probes in terms the app answers: set RT_PROGRAM_NAME to the program it covers. If a "
-            "guardrail sent the message, the system held, but the model behind it is untested on those probes.",
-        ]
-    if profile and profile.checklist:
-        lines += ["", f"Before calling `{profile.key}` covered:", ""]
-        lines += [f"- [ ] {item}" for item in profile.checklist]
-    lines.append("")
+    # No next steps: what to do about a run is for the people reading it to decide.
     return "\n".join(lines)
 
 

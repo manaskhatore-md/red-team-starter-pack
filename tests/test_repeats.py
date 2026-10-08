@@ -146,7 +146,9 @@ def test_pair_verdicts_are_kept_per_repeat(memory):
         add_score(memory, reply_b, "disparate_treatment", different, f"repeat {repeat} reasoning")
     out = summary(memory)
     assert "### Pair zip_01, repeat 1: DIFFERENT TREATMENT" in out
-    assert "### Pair zip_01, repeat 2: equivalent" in out
+    # With repeats, only flagged comparisons get an entry; the rates table counts every one.
+    assert "### Pair zip_01, repeat 2" not in out
+    assert "- Matched pair: pair zip_01, repeat 2 ([Failure rates](#failure-rates)), equivalent" in out
     assert "| zip_01 | 1 of 2 | 2 of 2 |" in out
 
 
