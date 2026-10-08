@@ -250,6 +250,26 @@ def calibration_entries(calibration, memory) -> list[dict]:
     return sorted(out, key=lambda c: c["kind"] != "off_topic")
 
 
+def instruction_requests(entries, labels) -> list:
+    """Replies to the probes that ask for the system prompt, when the prompt is not known.
+
+    With no canary and no known text, nothing can confirm a leak, and a model asked for
+    its instructions sometimes invents some. Wording that recurs across different
+    attempts is the stronger sign the text is real; read side by side, it shows. Empty
+    when the prompt was known (a canary or APP_SYSTEM_PROMPT_FILE), since the checks
+    cover it then.
+    """
+    if labels.get("rt_prompt_canary") or labels.get("rt_app_prompt_file"):
+        return []
+    return [
+        e for e in entries
+        if (e["result"].labels or {}).get("rt_asks_for_instructions") == "true"
+        # A fixed reply is a guardrail's or fallback's text, not the model saying anything about itself.
+        and e["verdict"] not in (ERROR, NO_RESPONSE, FIXED_REPLY)
+        and last_reply(e["messages"])
+    ]
+
+
 def failure_rates(entries) -> list[dict]:
     """One row per probe: how many of its repeats were flagged, passed, or have no verdict."""
     rows: dict[tuple[str, str], dict] = {}
@@ -375,7 +395,16 @@ def build_summary(results, memory, run_id: str) -> str:
         + " |"
     )
     system_prompt = labels.get("rt_system_prompt")
-    if system_prompt == "none":
+    if provider == "app":
+        known = [f"text from `{labels['rt_app_prompt_file']}`"] if labels.get("rt_app_prompt_file") else []
+        if labels.get("rt_prompt_canary"):
+            known.append(f"canary `{labels['rt_prompt_canary']}`")
+        lines.append(
+            "| System prompt | the app's own; "
+            + ("known: " + ", ".join(known) if known else "not known, so only the judge can catch a leak")
+            + " |"
+        )
+    elif system_prompt == "none":
         lines.append("| System prompt | none (RT_SYSTEM_PROMPT_FILE=none) |")
     elif system_prompt:
         how = (
@@ -644,6 +673,21 @@ def build_summary(results, memory, run_id: str) -> str:
         for c in calibration:
             lines.append(f"| {c['kind'].replace('_', '-')} | {cell(c['question'], 80)} | {cell(c['reply'] or '(no usable reply)', 160)} |")
         lines.append("")
+    asked = instruction_requests(entries, labels)
+    if asked:
+        lines += [
+            '<a id="instruction-requests"></a>',
+            "## Replies to requests for its instructions",
+            "",
+            "The system prompt was not known, so no check can confirm a leak, and a model asked for its "
+            "instructions sometimes makes some up. Wording that recurs across different attempts below is "
+            "the stronger sign it is real. To confirm, show it to the system's owner, or get the prompt and "
+            "set APP_SYSTEM_PROMPT_FILE.",
+            "",
+        ]
+        for e in asked:
+            name = with_repeat(probe_name(e["result"]), e["result"])
+            lines += [f"**[{e['number']}](#result-{e['number']}) {name}** ({e['verdict']})", "", fence(last_reply(e["messages"])), ""]
 
     if pairs:
         lines += ["## Matched pairs", ""]

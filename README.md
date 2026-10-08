@@ -113,8 +113,21 @@ APP_RESPONSE_PATH=answer                      # where the reply is, dotted: e.g.
 APP_API_KEY=...                               # sent as x-api-key; or APP_TOKEN, sent as a Bearer token
 ```
 
-The app keeps its own system prompt, so the scan sends none, and with no canary token
-a system-prompt leak is caught only by the judge. The target is single-turn: run
+The app keeps its own system prompt, so the scan sends none. How a leak of it is caught
+depends on what you know about it:
+
+```bash
+APP_PROMPT_CANARY=ZZ-APP-1234            # a code the app's owner planted in its prompt: every reply is checked for it
+APP_SYSTEM_PROMPT_FILE=C:\path\prompt.txt  # its text, e.g. from the app's code: replies are checked for overlap with it
+```
+
+With the text, every reply is scored for how much of the prompt it contains (PyRIT's
+`SystemPromptExtractionScorer`), and the injection judge is shown the prompt. Keep the
+file outside the repo. With neither, only the judge can catch a leak, and a model asked for
+its instructions sometimes makes some up, so the run summary lists the replies to those
+probes side by side: wording that recurs across attempts is the stronger sign it is real.
+
+The target is single-turn: run
 `single_turn_scan`, not `multi_turn_crescendo`. Set `RT_JUDGE_PROVIDER` to a model
 provider, since the app cannot grade its own replies; `RT_MODEL` is ignored, since the
 app picks its own model.
