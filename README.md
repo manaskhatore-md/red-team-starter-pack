@@ -99,16 +99,16 @@ judge. The canary token, planted records, and Crescendo results are not meaningf
 use it anyway, set `PROJECT_ID` to your Google Cloud project.
 
 **`RT_PROVIDER=app` is the one that matters.** Red-teaming a raw model tests the
-vendor's safety training, which the vendor already tests. Red-teaming your deployed
-application tests your system prompt, your retrieval index, and your tool
-permissions — which is where your risk actually lives. Each probe goes to your app's
+vendor's safety training, which the vendor already tests. Red-teaming the deployed
+application tests its system prompt, its retrieval index, and its tool
+permissions — which is where the risk actually lives. Each probe goes to the app's
 chat endpoint as one JSON request, and the reply is read from one field of the
 response:
 
 ```bash
 RT_PROVIDER=app
 APP_ENDPOINT=https://abc123.execute-api.us-east-1.amazonaws.com/test/chat
-APP_REQUEST_TEMPLATE={"query": "{PROMPT}"}    # your app's request body; the probe goes in {PROMPT}
+APP_REQUEST_TEMPLATE={"query": "{PROMPT}"}    # the app's request body; the probe goes in {PROMPT}
 APP_RESPONSE_PATH=answer                      # where the reply is, dotted: e.g. choices.0.message.content
 APP_API_KEY=...                               # sent as x-api-key; or APP_TOKEN, sent as a Bearer token
 ```
@@ -119,11 +119,13 @@ a system-prompt leak is caught only by the judge. The target is single-turn: run
 provider, since the app cannot grade its own replies; `RT_MODEL` is ignored, since the
 app picks its own model.
 
-Apps often answer with a fixed message instead of the model: a guardrail's "blocked"
-text, or a fallback when retrieval found nothing. A probe that got one never reached the
-model, so its pass does not mean the model held. The run summary lists any reply that came
-back word for word for different questions under **Repeated replies**. It cannot tell which
-mechanism sent it; the app's code or logs can.
+Some replies come from the app, not its model: a guardrail's "blocked" message, or a
+fallback like "Sorry, I can only help with...". A probe that gets one never reached the
+model, so the run summary lists it under **Fixed replies** instead of counting it as a pass.
+To learn what the fallback looks like, the scan first asks the app two off-topic questions
+and two about `RT_PROGRAM_NAME`. If the app gives both kinds the same reply, the scan stops,
+since every probe would get that reply too; set `RT_PROGRAM_NAME` to the program the app
+covers. `RT_SKIP_CALIBRATION=1` skips this check.
 
 > Non-production instance, synthetic data, and written authorization before pointing
 > any of this at a real system.
@@ -293,7 +295,7 @@ red-team-starter-pack/
 │
 ├── pyrit_campaigns/                    # The campaigns (PyRIT)
 │   ├── profiles.py                     # Deployment-type profiles: threat model, datasets, rubrics
-│   ├── target_factory.py               # Unified provider factory (Gemini, Claude, OpenAI, Bedrock, Vertex, your app)
+│   ├── target_factory.py               # Unified provider factory (Gemini, Claude, OpenAI, Bedrock, Vertex, an app)
 │   ├── single_turn_scan.py             # Every dataset probe, graded by your rubrics
 │   ├── system_prompt.py                # The system prompt a scan sends, and the canary token check
 │   ├── planted_records.py              # Fake records of other people in the system prompt, and their leak check

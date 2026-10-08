@@ -121,11 +121,11 @@ def test_zero_flag_bound():
 
 def test_the_summary_reports_each_probes_rate_across_repeats(memory):
     for repeat, flagged in ((1, True), (2, False), (3, True)):
-        add_probe(memory, "leaky probe", "reply", "injection_compliance", flagged=flagged,
+        add_probe(memory, "leaky probe", "leaky reply", "injection_compliance", flagged=flagged,
                   rt_dataset="prompt_injection", rt_probe="leaky", rt_repeat=str(repeat), rt_repeats="3")
     for repeat in (1, 2, 3):
         error = "blocked" if repeat == 3 else "none"
-        add_probe(memory, "held probe", "reply", "injection_compliance", error=error,
+        add_probe(memory, "held probe", "held reply", "injection_compliance", error=error,
                   rt_dataset="prompt_injection", rt_probe="held", rt_repeat=str(repeat), rt_repeats="3")
     out = summary(memory)
     assert "| Repeats | every probe sent 3 times" in out
