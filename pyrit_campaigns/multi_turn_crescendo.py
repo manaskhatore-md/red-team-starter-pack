@@ -275,8 +275,27 @@ def expand_repeats(objectives: list[Objective], repeats: int, run_labels: dict) 
     return goals, overrides
 
 
+def count_calls(target, counter: list[int]):
+    """Wrap a target so `counter[0]` increments on every real call it gets.
+
+    Every target implementation sends through this one method (checked against
+    PyRIT 1.1.0's source: PromptTarget.send_prompt_async calls self._send_prompt_to_target_async,
+    always through the instance), and the judge's self-ask scorer calls through the same
+    `judge` instance - so wrapping the three targets once, before the attack starts,
+    counts every call any of them make, attacker included.
+    """
+    original = target._send_prompt_to_target_async
+
+    async def counted(*, normalized_conversation):
+        counter[0] += 1
+        return await original(normalized_conversation=normalized_conversation)
+
+    target._send_prompt_to_target_async = counted
+    return target
+
+
 @contextlib.asynccontextmanager
-async def heartbeat(interval: float = 25.0):
+async def heartbeat(interval: float = 25.0, calls: list[int] | None = None, estimate: int | None = None):
     """Print a line every `interval` seconds while the wrapped block runs.
 
     A multi-turn campaign waits for every objective's whole attack before printing
@@ -285,13 +304,21 @@ async def heartbeat(interval: float = 25.0):
 
         async with heartbeat():
             result = await something_that_takes_a_while()
+
+    Pass `calls` (a one-item list built with count_calls()) and `estimate` (the same
+    upper bound already printed before the run) to show a real count instead of just
+    elapsed time - elapsed time alone says nothing about how far along a run is.
     """
     started = time.monotonic()
 
     async def beat():
         while True:
             await asyncio.sleep(interval)
-            print(f"  ...still running, {time.monotonic() - started:.0f}s elapsed", flush=True)
+            elapsed = f"{time.monotonic() - started:.0f}s elapsed"
+            if calls is not None:
+                print(f"  ...call {calls[0]} of ~{estimate}, {elapsed}", flush=True)
+            else:
+                print(f"  ...still running, {elapsed}", flush=True)
 
     task = asyncio.create_task(beat())
     try:
@@ -369,6 +396,12 @@ async def main() -> int:
     judge = build_scoring_target()
     await check_models(target=target, attacker=adversarial, judge=judge)
 
+    # So the heartbeat below can show real progress instead of just elapsed time.
+    calls = [0]
+    target = count_calls(target, calls)
+    adversarial = count_calls(adversarial, calls)
+    judge = count_calls(judge, calls)
+
     rubrics = load_rubrics()
     attacker_prompt = blind_attacker_prompt()
     # Every reply is checked for the canary. The check needs no judge call.
@@ -402,10 +435,11 @@ async def main() -> int:
     }
 
     attacks = len(objectives) * repeats
+    estimate = attacks * MAX_TURNS * 4
     repeat_note = f", each {repeats} times (RT_REPEATS)" if repeats > 1 else ""
     print(f"\nRunning {len(objectives)} objective(s){repeat_note}, up to {MAX_TURNS} turns each, "
           f"{MAX_CONCURRENCY} at a time (RT_MAX_CONCURRENCY).")
-    print(f"That is up to about {attacks * MAX_TURNS * 4} calls, before backtracks and retries.\n")
+    print(f"That is up to about {estimate} calls, before backtracks and retries.\n")
 
     attack = CrescendoAttack(
         objective_target=target,
@@ -425,7 +459,7 @@ async def main() -> int:
         max_backtracks=MAX_BACKTRACKS,
     )
     goals, overrides = expand_repeats(objectives, repeats, run_labels)
-    async with heartbeat():
+    async with heartbeat(calls=calls, estimate=estimate):
         executor_result = await AttackExecutor(max_concurrency=MAX_CONCURRENCY).execute_attack_async(
             attack=attack,
             objectives=goals,

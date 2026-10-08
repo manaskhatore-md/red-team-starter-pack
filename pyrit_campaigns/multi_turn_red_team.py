@@ -81,6 +81,7 @@ from pyrit_campaigns.single_turn_scan import FAIL_ON_FINDING, check_placeholders
 from pyrit_campaigns.code_checks import CODE_CHECKS, KnownPromptLeakScorer, code_scorers
 from pyrit_campaigns.multi_turn_crescendo import (
     ConversationRubricScorer,
+    count_calls,
     expand_repeats,
     heartbeat,
     leaked,
@@ -216,6 +217,12 @@ async def main() -> int:
     judge = build_scoring_target()
     await check_models(target=target, attacker=adversarial, judge=judge)
 
+    # So the heartbeat below can show real progress instead of just elapsed time.
+    calls = [0]
+    target = count_calls(target, calls)
+    adversarial = count_calls(adversarial, calls)
+    judge = count_calls(judge, calls)
+
     rubrics = load_rubrics()
 
     # Canary and code checks run on every reply.
@@ -258,10 +265,11 @@ async def main() -> int:
     }
 
     attacks = len(objectives) * repeats
+    estimate = attacks * MAX_TURNS * 3
     repeat_note = f", each {repeats} times (RT_REPEATS)" if repeats > 1 else ""
     print(f"\nRunning {len(objectives)} objective(s){repeat_note}, up to {MAX_TURNS} turns each, "
           f"{MAX_CONCURRENCY} at a time (RT_MAX_CONCURRENCY).")
-    print(f"That is up to about {attacks * MAX_TURNS * 3} calls.\n")
+    print(f"That is up to about {estimate} calls.\n")
 
     # Load PyRIT's general-purpose attacker strategy from its built-in YAML file.
     attacker_prompt = SeedPrompt.from_yaml_file(RTASystemPromptPaths.TEXT_GENERATION.value)
@@ -287,7 +295,7 @@ async def main() -> int:
     )
 
     goals, overrides = expand_repeats(objectives, repeats, run_labels)
-    async with heartbeat():
+    async with heartbeat(calls=calls, estimate=estimate):
         executor_result = await AttackExecutor(max_concurrency=MAX_CONCURRENCY).execute_attack_async(
             attack=attack,
             objectives=goals,
