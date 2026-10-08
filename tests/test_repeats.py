@@ -6,8 +6,8 @@ import uuid
 import pytest
 from pyrit.models import AttackResult, Message, MessagePiece
 
-from pyrit_campaigns import single_turn_scan as scan
-from reporting import run_summary as rs
+from harnesses.pyrit_campaigns import single_turn_scan as scan
+from scripts import run_summary as rs
 from test_run_summary import RUN, add_probe, add_score, summary
 from test_system_prompt import FakeModel, run_scan
 

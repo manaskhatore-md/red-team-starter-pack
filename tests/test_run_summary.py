@@ -1,4 +1,4 @@
-"""reporting/run_summary.py against a small in-memory database."""
+"""scripts/run_summary.py against a small in-memory database."""
 
 import asyncio
 import sys
@@ -9,7 +9,7 @@ import pytest
 from pyrit.models import AttackOutcome, AttackResult, Message, MessagePiece, Score
 from pyrit.models.identifiers.component_identifier import ComponentIdentifier
 
-from reporting import run_summary as rs
+from scripts import run_summary as rs
 
 T0 = datetime(2026, 9, 1, tzinfo=timezone.utc)
 RUN = "run11111-aaaa"
@@ -152,7 +152,7 @@ def test_a_summary_that_cannot_be_written_does_not_stop_the_campaign(memory, cap
     rs.write_after_run("nothing-recorded")
     out = capsys.readouterr().out
     assert "Could not write the run summary" in out
-    assert "python -m reporting.run_summary --run-id nothing-" in out
+    assert "python -m scripts.run_summary --run-id nothing-" in out
 
 
 def test_summary_names_sort_by_start_time_and_end_with_the_run_id(memory):

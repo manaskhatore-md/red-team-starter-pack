@@ -10,8 +10,9 @@ service-account*.json
 *-key.json
 gcloud-key*.json
 
-# IntelliJ run configs store env vars (including API keys) in workspace.xml
-.idea/workspace.xml
+# IDE settings are per-person. IntelliJ run configs also store env vars (including
+# API keys) in .idea/workspace.xml.
+.idea/
 
 # Test output. These contain full prompts and responses from every run, so they
 # inherit the data classification of whatever you tested against. Review before
@@ -25,7 +26,7 @@ dbdata/
 *.db
 
 # Grounding eval set - may contain real constituent questions pulled from logs
-judges/grounding_eval_set.json
+data_fixtures/grounding_eval_set.json
 
 # pytest
 .pytest_cache/

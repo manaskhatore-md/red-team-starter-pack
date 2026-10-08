@@ -24,9 +24,9 @@ on:
       # Only run when something that affects model behavior changes.
       # TODO: add the paths to YOUR application's prompts, tool definitions, and
       # RAG configuration. Those are the files whose edits can break a guardrail.
-      - "datasets/**"
-      - "judges/**"
-      - "pyrit_campaigns/**"
+      - "attack_suites/**"
+      - "config/**"
+      - "harnesses/**"
       - "prompts/**"
       # - "src/your_app/prompts/**"
       # - "src/your_app/tools/**"
@@ -91,7 +91,7 @@ jobs:
         # then exits with tee's status - so the scan could exit 1 on a finding and
         # the job would still pass.
         shell: bash
-        run: python -m pyrit_campaigns.single_turn_scan | tee scan-output.txt
+        run: python -m harnesses.pyrit_campaigns.single_turn_scan | tee scan-output.txt
 
       # Ask PyRIT where its database is rather than hard-coding it. The folder
       # follows each OS's convention (~/.local/share/dbdata on this Linux runner),
@@ -132,7 +132,7 @@ jobs:
       # That is why the deterministic canary checks are the ones worth blocking on
       # first, and why a finding should be re-run before anyone acts on it.
 
-  # TODO: a second job for grounding, once judges/rag_grounding_eval.py has an eval
+  # TODO: a second job for grounding, once harnesses/pyrit_campaigns/rag_grounding_eval.py has an eval
   # set. It exits non-zero below your grounded-rate threshold, which makes
   # hallucination a blocking condition like any other test failure.
   #
@@ -144,7 +144,7 @@ jobs:
   #     - uses: actions/setup-python@v5
   #       with: { python-version: "3.12" }
   #     - run: pip install -r requirements.txt
-  #     - run: python -m judges.rag_grounding_eval
+  #     - run: python -m harnesses.pyrit_campaigns.rag_grounding_eval
   #       env:
   #         GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
 
@@ -152,10 +152,10 @@ jobs:
 # CHECKLIST BEFORE ENABLING
 # ---------------------------------------------------------------------------
 # [ ] Provider API keys added as repository secrets, for the target AND the judge
-# [ ] A profile in pyrit_campaigns/profiles.py customized for your real system, with
+# [ ] A profile in harnesses/pyrit_campaigns/profiles.py customized for your real system, with
 #     the placeholder values filled in
-# [ ] Rubrics in judges/state_policy_rubric.yaml rewritten against your actual policy
-# [ ] Regression probes added to datasets/ for every finding you have already
+# [ ] Rubrics in harnesses/pyrit_campaigns/state_policy_rubric.yaml rewritten against your actual policy
+# [ ] Regression probes added to attack_suites/ for every finding you have already
 #     remediated - this is the actual payload of the gate; generic probes protect
 #     nothing specific
 # [ ] Run it manually (workflow_dispatch) enough times to know the baseline finding

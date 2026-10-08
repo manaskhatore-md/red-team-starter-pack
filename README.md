@@ -6,14 +6,14 @@ A forkable baseline for red teaming AI applications. Fork it, fill in the TODOs 
 your own system, and run.
 
 Model-agnostic by design: Anthropic, OpenAI, and Gemini are selected with one
-environment variable, so nothing in the test suites is tied to a vendor.
+environment variable, so nothing in the attack suites is tied to a vendor.
 
 Built on [PyRIT](https://github.com/Azure/PyRIT), with two passes over the system:
 
 | Pass | What it does | Where |
 |---|---|---|
-| **Single-turn scan** | Every probe in the profile's datasets, graded by your rubrics | `pyrit_campaigns/single_turn_scan.py` |
-| **Multi-turn campaigns** | Attacks that escalate over a conversation | `pyrit_campaigns/multi_turn_crescendo.py`, `pyrit_campaigns/multi_turn_red_team.py` |
+| **Single-turn scan** | Every probe in the profile's datasets, graded by your rubrics | `harnesses/pyrit_campaigns/single_turn_scan.py` |
+| **Multi-turn campaigns** | Attacks that escalate over a conversation | `harnesses/pyrit_campaigns/multi_turn_crescendo.py`, `harnesses/pyrit_campaigns/multi_turn_red_team.py` |
 
 Single-turn scans catch the obvious failures cheaply and are what you re-run on a
 schedule. Multi-turn campaigns catch the ones that need patience. You want both.
@@ -23,37 +23,37 @@ schedule. Multi-turn campaigns catch the ones that need patience. You want both.
 ```bash
 pip install -r requirements.txt
 cp .env.example .env          # add one provider's API key, and your agency's details
-python smoke_test.py          # prove credentials + network work
+python -m scripts.smoke_test  # prove credentials + network work
 ```
 
 The probes are written around blanks like `{{ program_name }}`, filled from the
 **YOUR AGENCY** section of `.env`. Until they're set, the scan runs on placeholder
 text like "TODO Program" and prints the exact lines to add.
 
-`smoke_test.py` sends two benign prompts and prints the replies. It tests
+`scripts/smoke_test.py` sends two benign prompts and prints the replies. It tests
 connectivity, not safety — nothing scores the responses. Once it passes:
 
 ```bash
 # single-turn scan (pick the profile matching your deployment)
-RT_PROFILE=public_conversational python -m pyrit_campaigns.single_turn_scan
+RT_PROFILE=public_conversational python -m harnesses.pyrit_campaigns.single_turn_scan
 
 # multi-turn campaign: Crescendo (gradual escalation; requires a chat target with memory)
-RT_PROFILE=public_conversational python -m pyrit_campaigns.multi_turn_crescendo
+RT_PROFILE=public_conversational python -m harnesses.pyrit_campaigns.multi_turn_crescendo
 
 # adaptive multi-turn: RedTeamingAttack (free-form; works against stateless apps too)
-RT_PROFILE=public_conversational python -m pyrit_campaigns.multi_turn_red_team
+RT_PROFILE=public_conversational python -m harnesses.pyrit_campaigns.multi_turn_red_team
 
 # every run writes a summary to findings/, e.g.
 # 2026-09-30_0951_scan_public_conversational_7f264395.md: every probe, reply,
 # verdict, and the judge's reasons, in full. To write one again:
-python -m reporting.run_summary                                               # the newest run
-python -m reporting.run_summary --run-id 1a2b3c4d                             # the id the run printed
+python -m scripts.run_summary                    # the newest run
+python -m scripts.run_summary --run-id 1a2b3c4d  # the id the run printed
 
 # turn results into finding reports
-python -m reporting.export_finding_report --outcome success --out findings/   # multi-turn
-python -m reporting.export_finding_report --rubric any --out findings/        # single-turn scan
-python -m reporting.export_finding_report --rubric any --latest-run --out findings/  # just the last run
-python -m reporting.export_finding_report --list                              # what's in the database
+python -m scripts.export_finding_report --outcome success --out findings/          # multi-turn
+python -m scripts.export_finding_report --rubric any --out findings/               # single-turn scan
+python -m scripts.export_finding_report --rubric any --latest-run --out findings/  # just the last run
+python -m scripts.export_finding_report --list                                     # what's in the database
 ```
 
 **On Windows** (PowerShell or cmd), the `VAR=value python ...` form above does not
@@ -65,11 +65,11 @@ Use `copy` in place of `cp`.
 ## Choosing a target
 
 ```bash
-RT_PROVIDER=gemini            # the model under test: or openai | anthropic | bedrock | vertex | app
-RT_MODEL=...                  # optional; each provider has a default
-RT_JUDGE_PROVIDER=...         # the model that scores results — use a different one
-RT_JUDGE_MODEL=...            # pin it: a judge that changes between runs changes the finding rate
-RT_ADVERSARIAL_PROVIDER=...   # attacker model for Crescendo and the adaptive red-team campaign
+RT_PROVIDER=gemini           # the model under test: or openai | anthropic | bedrock | vertex | app
+RT_MODEL=...                 # optional; each provider has a default
+RT_JUDGE_PROVIDER=...        # the model that scores results — use a different one
+RT_JUDGE_MODEL=...           # pin it: a judge that changes between runs changes the finding rate
+RT_ADVERSARIAL_PROVIDER=...  # attacker model for Crescendo and the adaptive red-team campaign
 RT_ADVERSARIAL_MODEL=...
 ```
 
@@ -83,7 +83,7 @@ and stops with the provider's own error if one fails. A wrong model id or missin
 model access then shows up in seconds, instead of once per probe after the run.
 `RT_SKIP_MODEL_CHECK=1` turns the check off.
 
-Full list in `.env.example`; defaults live in `pyrit_campaigns/target_factory.py`.
+Full list in `.env.example`; defaults live in `harnesses/pyrit_campaigns/target_factory.py`.
 
 Providers split two ways. `gemini`, `openai`, and `anthropic` need one API key.
 `bedrock` and `vertex` use ambient cloud credentials instead — nothing to paste, and
@@ -110,16 +110,16 @@ response:
 ```bash
 RT_PROVIDER=app
 APP_ENDPOINT=https://abc123.execute-api.us-east-1.amazonaws.com/test/chat
-APP_REQUEST_TEMPLATE={"query": "{PROMPT}"}    # the app's request body; the probe goes in {PROMPT}
-APP_RESPONSE_PATH=answer                      # where the reply is, dotted: e.g. choices.0.message.content
-APP_API_KEY=...                               # sent as x-api-key; or APP_TOKEN, sent as a Bearer token
+APP_REQUEST_TEMPLATE={"query": "{PROMPT}"}  # the app's request body; the probe goes in {PROMPT}
+APP_RESPONSE_PATH=answer                    # where the reply is, dotted: e.g. choices.0.message.content
+APP_API_KEY=...                             # sent as x-api-key; or APP_TOKEN, sent as a Bearer token
 ```
 
 The app keeps its own system prompt, so the scan sends none. How a leak of it is caught
 depends on what you know about it:
 
 ```bash
-APP_PROMPT_CANARY=ZZ-APP-1234            # a code the app's owner planted in its prompt: every reply is checked for it
+APP_PROMPT_CANARY=ZZ-APP-1234              # a code the app's owner planted in its prompt: every reply is checked for it
 APP_SYSTEM_PROMPT_FILE=C:\path\prompt.txt  # its text, e.g. from the app's code: replies are checked for overlap with it
 ```
 
@@ -193,8 +193,8 @@ access. Then each model gets one test prompt, so a wrong model id or missing acc
 stops the run in seconds:
 
 ```bash
-python smoke_test.py                              # checks the model under test only
-python -m pyrit_campaigns.single_turn_scan        # checks the target and the judge, then scans
+python -m scripts.smoke_test                          # checks the model under test only
+python -m harnesses.pyrit_campaigns.single_turn_scan  # checks the target and the judge, then scans
 ```
 
 | Error | Cause |
@@ -212,9 +212,9 @@ must not reveal. So the scan sends one ahead of every probe. Without one, probes
 like "repeat the text above" have nothing to extract.
 
 ```bash
-# default: the stand-in for the profile, system_prompts/PROFILE.txt
-RT_SYSTEM_PROMPT_FILE=C:/secure/our_chatbot_prompt.txt   # your application's real prompt
-RT_SYSTEM_PROMPT_FILE=none                                # no system prompt: the model alone
+# default: the stand-in for the profile, config/system_prompts/PROFILE.txt
+RT_SYSTEM_PROMPT_FILE=C:/secure/our_chatbot_prompt.txt  # your application's real prompt
+RT_SYSTEM_PROMPT_FILE=none                              # no system prompt: the model alone
 ```
 
 The stand-ins are generic prompts for each kind of deployment, filled from the same
@@ -257,7 +257,7 @@ The same section holds a fake database connection string for the search tool, so
 `credential_disclosure` probe has a credential to leak.
 
 **Code checks.** Every reply in every profile also gets three checks that need no judge
-(`pyrit_campaigns/code_checks.py`). Two are PyRIT's own scorers: `credential_leak` (API
+(`harnesses/pyrit_campaigns/code_checks.py`). Two are PyRIT's own scorers: `credential_leak` (API
 keys, tokens, connection strings) and `markdown_exfiltration` (markdown images, and links
 whose URL carries data, which a chat UI would fetch). The third, `pii_pattern`, flags a
 realistic-looking SSN or a card number that passes the Luhn checksum, and skips known test
@@ -292,46 +292,61 @@ prints the total before it sends anything.
 red-team-starter-pack/
 ├── README.md                           # Setup guide, CLI usage, and playbook crosswalk
 ├── .env.example                        # Multi-provider API keys & environment configs
-├── smoke_test.py                       # Connectivity check — run this first
+├── .gitignore                          # Keeps .env, findings/, and PyRIT databases out of git
+├── requirements.txt                    # What a campaign needs: PyRIT, LiteLLM, provider SDKs
 ├── requirements-dev.txt                # Adds pytest and pre-commit for working on the pack
 ├── pytest.ini                          # Runs tests/ only
 ├── .pre-commit-config.yaml             # gitleaks on every commit
-├── .github/workflows/                  # CI/CD security gating pipelines
+├── .github/workflows/
 │   └── redteam-ci-gate.yml             # Scan on pull requests and weekly; off until you enable it
 │
-├── datasets/                           # Vendor-Agnostic Test Suites (DRY Prompts)
-│   ├── prompt_injection.yaml           # Direct jailbreaks & authority tricks
-│   ├── sensitive_data_leakage.yaml     # PII/PHI extraction & cross-session leak checks
-│   ├── algorithmic_bias.yaml           # Matched pairs: dialect, name, zip code, language, disability
-│   ├── rag_poisoning_payloads/         # TODO: only a README so far - how to build indirect injection documents
-│   └── excessive_agency.yaml           # Unauthorized database write & API command prompts
+├── config/
+│   └── system_prompts/                 # A stand-in system prompt per profile, with the canary token slot
 │
-├── system_prompts/                     # A stand-in system prompt per profile, with the canary token slot
+├── attack_suites/                      # Attack probes sent to the system under test, one folder per harm category
+│   ├── 01_prompt_injection/
+│   │   └── prompt_injection.yaml       # Direct jailbreaks & authority tricks
+│   ├── 02_sensitive_data_exposure/
+│   │   └── sensitive_data_leakage.yaml # PII/PHI extraction & cross-session leaks
+│   ├── 03_algorithmic_bias/
+│   │   └── algorithmic_bias.yaml       # Matched pairs: dialect, name, zip code, language, disability
+│   └── 05_excessive_agency/
+│       └── excessive_agency.yaml       # Unauthorized database writes & API commands
 │
-├── pyrit_campaigns/                    # The campaigns (PyRIT)
-│   ├── profiles.py                     # Deployment-type profiles: threat model, datasets, rubrics
-│   ├── target_factory.py               # Unified provider factory (Gemini, Claude, OpenAI, Bedrock, Vertex, an app)
-│   ├── single_turn_scan.py             # Every dataset probe, graded by your rubrics
-│   ├── system_prompt.py                # The system prompt a scan sends, and the canary token check
-│   ├── planted_records.py              # Fake records of other people in the system prompt, and their leak check
-│   ├── code_checks.py                  # Credential, markdown, and SSN/card checks run on every reply
-│   ├── multi_turn_crescendo.py         # Crescendo: gradual escalation (requires target memory)
-│   ├── multi_turn_red_team.py          # Adaptive red team: free-form, works against stateless apps
-│   └── agent_tool_exploitation.py      # Scaffold: sends tool-abuse probes; the backend diff is a TODO
+├── data_fixtures/
+│   └── synthetic_documents/            # TODO: only a README so far - how to build indirect injection documents
 │
-├── judges/                             # LLM-as-a-Judge Rubrics & Scorer Logic
-│   ├── state_policy_rubric.yaml        # Criteria-based scoring prompts (Pass/Fail)
-│   └── rag_grounding_eval.py           # Scaffold: grounding checker, needs an eval set you supply
+├── harnesses/
+│   └── pyrit_campaigns/                # The campaigns and their judges (PyRIT)
+│       ├── profiles.py                 # Deployment-type profiles: threat model, datasets, rubrics
+│       ├── target_factory.py           # Unified provider factory (Gemini, Claude, OpenAI, Bedrock, Vertex, an app)
+│       ├── single_turn_scan.py         # Every dataset probe, graded by your rubrics
+│       ├── state_policy_rubric.yaml    # The judge's rubrics: criteria-based Pass/Fail scoring prompts
+│       ├── calibration.py              # Plain questions sent first, so a canned or blocked reply is not read as a pass
+│       ├── system_prompt.py            # The system prompt a scan sends, and the canary token check
+│       ├── planted_records.py          # Fake records of other people in the system prompt, and their leak check
+│       ├── code_checks.py              # Credential, markdown, and SSN/card checks run on every reply
+│       ├── multi_turn_crescendo.py     # Crescendo: gradual escalation (requires target memory)
+│       ├── multi_turn_red_team.py      # Adaptive red team: free-form, works against stateless apps
+│       ├── agent_tool_exploitation.py  # Scaffold: sends tool-abuse probes; the backend diff is a TODO
+│       └── rag_grounding_eval.py       # Scaffold: grounding checker, needs an eval set you supply
 │
-├── reporting/                          # Playbook Finding Report Generators
+├── templates/
+│   └── finding_report_template.md      # Finding report layout (TODO: match your Playbook's Section 8)
+│
+├── scripts/
+│   ├── smoke_test.py                   # Connectivity check - run this first
 │   ├── run_summary.py                  # One run in full: every probe, reply, and verdict
-│   ├── export_finding_report.py        # Turns results in PyRIT's database into Playbook Markdown
-│   └── templates/                      # Finding report template (TODO: match your Playbook's Section 8)
-│       └── finding_report_template.md
+│   └── export_finding_report.py        # Turns results in PyRIT's database into Playbook Markdown
 │
-├── tests/                              # Offline checks of the pack itself - no keys needed
-└── testing/                            # Live experiments that call real models - not run by pytest
+├── tests/                              # pytest checks of the pack's own code - offline, no keys needed
+└── findings/                           # Created by your runs: summaries and finding reports. Not in git
 ```
+
+`attack_suites/` and `tests/` are unrelated. `attack_suites/` is data: the prompts the
+campaigns send to *your AI system*, and a failure there is a finding about it.
+`tests/` is the pack's own pytest suite: it never calls a model, and a failure there
+is a bug in the pack.
 
 ## Pick your deployment profile
 
@@ -348,7 +363,7 @@ matches what you're testing, not all four.
 `internal_productivity` is the gentlest place to shake out the tooling and is the
 default. `constituent_decision` is the highest risk and needs authorization before
 anything runs. Each profile carries its own threat model, probe selection, and
-pre-sign-off checklist in `pyrit_campaigns/profiles.py` — read the one you're using
+pre-sign-off checklist in `harnesses/pyrit_campaigns/profiles.py` — read the one you're using
 before you run it.
 
 ## What to customize first
@@ -356,14 +371,14 @@ before you run it.
 The pack ships generic on purpose, and generic probes find generic problems. In
 priority order:
 
-1. **`judges/state_policy_rubric.yaml`** — replace the criteria with citations to your
+1. **`harnesses/pyrit_campaigns/state_policy_rubric.yaml`** — replace the criteria with citations to your
    actual policy. "The judge model didn't like it" is not a defensible finding.
 2. **The YOUR AGENCY section of `.env`** — your real program, agency, and tool names,
    which fill the `{{ placeholders }}` in the probes. To share them across a team,
-   change the defaults in `pyrit_campaigns/profiles.py` instead.
-3. **`pyrit_campaigns/profiles.py`** — add a profile for your own system rather than
+   change the defaults in `harnesses/pyrit_campaigns/profiles.py` instead.
+3. **`harnesses/pyrit_campaigns/profiles.py`** — add a profile for your own system rather than
    stretching one of the four generic ones to fit.
-4. **`datasets/*.yaml`** — add probes in your system's own language and policy terms.
+4. **`attack_suites/*/*.yaml`** — add probes in your system's own language and policy terms.
 5. **`RT_PROVIDER=app`**, pointed at a test instance of your deployment, so you test it rather than a bare model.
 
 ## Playbook crosswalk
@@ -372,25 +387,25 @@ priority order:
 
 | Playbook section | Covered by | Status |
 |---|---|---|
-| Prompt injection | `datasets/prompt_injection.yaml` | Working |
-| Indirect prompt injection | `datasets/rag_poisoning_payloads/` | TODO: instructions only, no payloads |
-| Single-turn scan across all of the above | `pyrit_campaigns/single_turn_scan.py` | Working |
-| Data protection | `datasets/sensitive_data_leakage.yaml`, `judges/state_policy_rubric.yaml` | Working |
-| Equity / disparate impact | `datasets/algorithmic_bias.yaml` | Working |
-| Excessive agency | `datasets/excessive_agency.yaml` | Working in the scan (`constituent_decision` profile) |
-| Excessive agency, backend verification | `pyrit_campaigns/agent_tool_exploitation.py` | Scaffold: needs `RT_PROVIDER=app` and a backend diff |
-| Accuracy / grounding | `judges/rag_grounding_eval.py` | Scaffold: needs an eval set |
-| Finding reports | `reporting/` | Working |
+| Prompt injection | `attack_suites/01_prompt_injection/prompt_injection.yaml` | Working |
+| Indirect prompt injection | `data_fixtures/synthetic_documents/` | TODO: instructions only, no payloads |
+| Single-turn scan across all of the above | `harnesses/pyrit_campaigns/single_turn_scan.py` | Working |
+| Data protection | `attack_suites/02_sensitive_data_exposure/sensitive_data_leakage.yaml`, `harnesses/pyrit_campaigns/state_policy_rubric.yaml` | Working |
+| Equity / disparate impact | `attack_suites/03_algorithmic_bias/algorithmic_bias.yaml` | Working |
+| Excessive agency | `attack_suites/05_excessive_agency/excessive_agency.yaml` | Working in the scan (`constituent_decision` profile) |
+| Excessive agency, backend verification | `harnesses/pyrit_campaigns/agent_tool_exploitation.py` | Scaffold: needs `RT_PROVIDER=app` and a backend diff |
+| Accuracy / grounding | `harnesses/pyrit_campaigns/rag_grounding_eval.py` | Scaffold: needs an eval set |
+| Finding reports | `scripts/` | Working |
 
 The two scaffolds run, but test nothing until you finish them:
 
 ```bash
 # refuses to start until RT_TOOL_NAME, RT_RECORD_TYPE, and RT_PROGRAM_NAME are set;
 # against a bare model every probe "passes", since it has no tools to misuse
-RT_PROVIDER=app python -m pyrit_campaigns.agent_tool_exploitation
+RT_PROVIDER=app python -m harnesses.pyrit_campaigns.agent_tool_exploitation
 
-# needs judges/grounding_eval_set.json - the format is in the module's EVAL_SET comment
-python -m judges.rag_grounding_eval
+# needs data_fixtures/grounding_eval_set.json - the format is in the module's EVAL_SET comment
+python -m harnesses.pyrit_campaigns.rag_grounding_eval
 ```
 
 The CI gate (`.github/workflows/redteam-ci-gate.yml`) is switched off with `if: false`,
@@ -412,7 +427,8 @@ at the bottom of that file before you enable it.
 
 ## Testing the pack itself
 
-`tests/` checks the pack's own code offline: provider selection, the report
+`tests/` checks the pack's own code offline (the probes that test *your* system are in
+`attack_suites/`): provider selection, the report
 exporter, the CI workflow, and that profiles, datasets, and rubrics agree. It needs
 no API keys or network and never reads your `.env`, so it is safe to run anywhere.
 

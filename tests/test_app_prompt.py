@@ -6,10 +6,10 @@ import json
 import pytest
 from pyrit.models import MessagePiece
 
-from pyrit_campaigns import code_checks as cc
-from pyrit_campaigns import system_prompt as sp
-from pyrit_campaigns.target_factory import build_target
-from reporting import export_finding_report, run_summary
+from harnesses.pyrit_campaigns import code_checks as cc
+from harnesses.pyrit_campaigns import system_prompt as sp
+from harnesses.pyrit_campaigns.target_factory import build_target
+from scripts import export_finding_report, run_summary
 from test_run_summary import add_probe, summary
 from test_system_prompt import run_scan
 from test_target_factory import fake_app  # noqa: F401 - a fixture, used by name

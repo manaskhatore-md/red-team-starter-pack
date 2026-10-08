@@ -1,4 +1,4 @@
-"""reporting/export_finding_report.py against a small in-memory database."""
+"""scripts/export_finding_report.py against a small in-memory database."""
 
 import asyncio
 import json
@@ -9,7 +9,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 from pyrit.models import AttackOutcome, AttackResult
 
-from reporting import export_finding_report as ex
+from scripts import export_finding_report as ex
 
 T0 = datetime(2026, 9, 1, tzinfo=timezone.utc)
 
@@ -200,7 +200,7 @@ def test_reproduction_steps_for_a_scan_result():
     assert "RT_PROFILE=public_conversational" in steps
     assert "RT_JUDGE_PROVIDER=anthropic" in steps
     assert "RT_JUDGE_MODEL=anthropic/claude-haiku-4-5" in steps
-    assert "datasets/prompt_injection.yaml" in steps
+    assert "attack_suites/01_prompt_injection/prompt_injection.yaml" in steps
 
 
 def test_reproduction_steps_for_a_crescendo_result_pin_every_model():
