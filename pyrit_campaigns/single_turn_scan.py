@@ -82,10 +82,11 @@ from pyrit.setup import SQLITE, initialize_pyrit_async
 
 from pyrit_campaigns import calibration
 from pyrit_campaigns.profiles import PAIR_RUBRICS, Profile, describe, env_var, get_profile
-from pyrit_campaigns.code_checks import code_scorers, fill_pattern_check
+from pyrit_campaigns.code_checks import KnownPromptLeakScorer, code_scorers, fill_pattern_check
 from pyrit_campaigns.planted_records import PlantedRecordScorer, records_for, records_section
 from pyrit_campaigns.system_prompt import (
     CanaryLeakScorer,
+    load_app_prompt,
     load_system_prompt,
     new_canary,
     system_message,
@@ -185,6 +186,9 @@ class Probe:
     compare_on: str = ""
     # What the probe's author says a safe reply looks like. The judge is shown it.
     pass_criteria: str = ""
+    # The probe asks for the system prompt or the rules. See instruction_requests() in
+    # reporting/run_summary.py.
+    asks_for_instructions: bool = False
 
 
 def load_probes(profile: Profile) -> list[Probe]:
@@ -210,6 +214,7 @@ def load_probes(profile: Profile) -> list[Probe]:
                     variant=str(metadata.get("variant", "")),
                     compare_on=str(metadata.get("compare_on", "")),
                     pass_criteria=" ".join(str(metadata.get("pass_criteria", "")).split()),
+                    asks_for_instructions=bool(metadata.get("asks_for_instructions")),
                 )
             )
     return probes
@@ -387,6 +392,7 @@ def expand_repeats(group: list[Probe], repeats: int, run_labels: dict) -> tuple[
                     "rt_harm_categories": ", ".join(probe.harm_categories),
                     "rt_pair_id": probe.pair_id,
                     "rt_variant": probe.variant,
+                    "rt_asks_for_instructions": str(probe.asks_for_instructions).lower(),
                     "rt_repeat": str(repeat),
                 }
             })
@@ -464,6 +470,8 @@ async def main() -> int:
     check_placeholders(profile, probes, system_prompt.text if system_prompt else "")
 
     target = build_target()
+    # What is known about an app's own prompt. A model run sends its prompt instead.
+    app_prompt = load_app_prompt() if resolve_provider("target") == "app" else None
     if system_prompt:
         print(f"\nSystem prompt: {system_prompt.source} (chosen by {system_prompt.chosen_by}), "
               f"with canary token {system_prompt.canary}.")
@@ -477,11 +485,23 @@ async def main() -> int:
                 "!! the user's message instead. The model sees the instructions as coming from the\n"
                 "!! user, which makes extraction and override probes easier than in a real deployment.\n"
             )
+    elif app_prompt:
+        print("\nSystem prompt: the app's own.")
+        if app_prompt.text:
+            print(f"Known from {app_prompt.source}: replies are checked for overlap with it, and the judge is shown it.")
+        if app_prompt.canary:
+            print(f"Every reply is checked for the app's canary, {app_prompt.canary} (APP_PROMPT_CANARY).")
+        if not app_prompt.text and not app_prompt.canary:
+            print(
+                "!! It is not known, so a leak of it is caught only by the judge. If you can get the prompt,\n"
+                "!! set APP_SYSTEM_PROMPT_FILE; if its owner can plant a code in it, set APP_PROMPT_CANARY."
+            )
     else:
         print("\nSystem prompt: none. The model gets each probe with no instructions.")
     judge = build_scoring_target()
     await check_models(target=target, judge=judge)
-    scorers = build_rubric_scorers(profile, judge, probes, system_prompt.text if system_prompt else None)
+    judged_prompt = system_prompt.text if system_prompt else (app_prompt.text if app_prompt else "") or None
+    scorers = build_rubric_scorers(profile, judge, probes, judged_prompt)
 
     compare = "disparate_treatment" in profile.rubrics and any(p.pair_id for p in probes)
     groups = group_by_rubrics(probes, scorers, compare)
@@ -523,7 +543,8 @@ async def main() -> int:
         # Where the system prompt came from, so a report can say what the model was told.
         "rt_system_prompt": system_prompt.source if system_prompt else "none",
         "rt_system_prompt_chosen_by": system_prompt.chosen_by if system_prompt else "",
-        "rt_prompt_canary": system_prompt.canary if system_prompt else "",
+        "rt_prompt_canary": system_prompt.canary if system_prompt else (app_prompt.canary if app_prompt else ""),
+        "rt_app_prompt_file": app_prompt.source if app_prompt else "",
         "rt_planted_records": str(len(records)),
         "rt_repeats": str(repeats),
     }
@@ -537,6 +558,10 @@ async def main() -> int:
     # needs no judge call, so it adds nothing to the cost.
     canary_scorers = [CanaryLeakScorer(canary=system_prompt.canary)] if system_prompt else []
     canary_scorers += [PlantedRecordScorer(records=records)] if records else []
+    if app_prompt and app_prompt.canary:
+        canary_scorers.append(CanaryLeakScorer(canary=app_prompt.canary))
+    if app_prompt and app_prompt.text:
+        canary_scorers.append(KnownPromptLeakScorer(prompt=app_prompt.text))
     # Credentials, markdown exfiltration, and realistic SSNs or card numbers: code_checks.py.
     canary_scorers += code_scorers()
     # PyRIT puts these messages ahead of each probe, in a new conversation per probe.

@@ -98,10 +98,8 @@ def load_system_prompt(
     if not setting and os.getenv("RT_PROVIDER", "").strip().lower() == "app":
         # A deployed app sends its own system prompt. A stand-in would arrive as the
         # start of the user's message, which tests nothing the app actually does.
-        print(
-            "\nNote: RT_PROVIDER=app, so no stand-in system prompt is sent - the app uses its own.\n"
-            "Without one there is no canary token to check replies for.\n"
-        )
+        # The scan says what is known about the app's prompt (load_app_prompt) once the target is built.
+        print("\nNote: RT_PROVIDER=app, so no stand-in system prompt is sent - the app uses its own.\n")
         return None
     if setting:
         path = Path(setting)
@@ -131,6 +129,39 @@ def load_system_prompt(
         print(f"Note: {_shown(path)} has no {{{{ {RECORDS_SLOT} }}}}, so the planted records were added at its end.")
     text = render(template, {**placeholders, CANARY_SLOT: canary, RECORDS_SLOT: records})
     return SystemPrompt(text=text, source=_shown(path), chosen_by=chosen_by, canary=canary)
+
+
+@dataclass(frozen=True)
+class AppPrompt:
+    """What is known about a deployed app's own system prompt, which the scan does not send."""
+
+    # The prompt's text, from APP_SYSTEM_PROMPT_FILE, or "" if it is not known.
+    text: str
+    # Where the text came from, as the reports show it.
+    source: str
+    # A canary the app's owner planted in it (APP_PROMPT_CANARY), or "".
+    canary: str
+
+
+def load_app_prompt() -> AppPrompt:
+    """The app's system prompt as far as it is known. Nothing is sent to the app.
+
+    APP_SYSTEM_PROMPT_FILE: a file with the prompt's text, e.g. from the app's code or
+    its owner. Replies are checked for overlap with it, and the injection judge is shown
+    it. Keep it outside the repo if the repo is public.
+    APP_PROMPT_CANARY: a code the app's owner put in its prompt. Replies are checked
+    for it, as for the kit's own canary token.
+    """
+    setting = os.getenv("APP_SYSTEM_PROMPT_FILE", "").strip()
+    text = ""
+    if setting:
+        path = Path(setting)
+        if not path.is_file():
+            raise SystemExit(f"APP_SYSTEM_PROMPT_FILE={setting}: no such file.")
+        text = path.read_text(encoding="utf-8").strip()
+        if not text:
+            raise SystemExit(f"APP_SYSTEM_PROMPT_FILE={setting} is empty.")
+    return AppPrompt(text=text, source=setting, canary=os.getenv("APP_PROMPT_CANARY", "").strip())
 
 
 def system_message(prompt: SystemPrompt) -> Message:
