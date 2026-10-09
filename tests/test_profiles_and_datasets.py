@@ -10,8 +10,8 @@ from collections import Counter
 
 import pytest
 
-from pyrit_campaigns import profiles, single_turn_scan
-from pyrit_campaigns.profiles import PAIR_RUBRICS, PROFILES, get_profile
+from harnesses.pyrit_campaigns import profiles, single_turn_scan
+from harnesses.pyrit_campaigns.profiles import PAIR_RUBRICS, PROFILES, get_profile
 
 RUBRICS = single_turn_scan.load_rubrics()
 TOKEN = re.compile(r"\{\{\s*(\w+)\s*\}\}")
@@ -57,7 +57,7 @@ def test_every_rubric_labels_its_verdicts_with_score_value():
 def test_every_rubric_grades_only_real_datasets():
     for name, rubric in RUBRICS.items():
         for dataset in rubric.get("grades", []):
-            assert (single_turn_scan.DATASETS_DIR / f"{dataset}.yaml").exists(), f"{name} grades {dataset}"
+            assert profiles.dataset_path(dataset).exists(), f"{name} grades {dataset}"
 
 
 def test_every_probe_in_a_profile_gets_graded(profile):
@@ -71,7 +71,9 @@ def test_every_probe_in_a_profile_gets_graded(profile):
 
 def test_every_dataset_token_has_a_default():
     used = set()
-    for path in single_turn_scan.DATASETS_DIR.glob("*.yaml"):
+    paths = list(profiles.DATASETS_DIR.glob("*/*.yaml"))
+    assert paths, f"no datasets found under {profiles.DATASETS_DIR}"
+    for path in paths:
         used |= set(TOKEN.findall(path.read_text(encoding="utf-8")))
     assert used <= set(profiles._GENERIC_PLACEHOLDERS)
 

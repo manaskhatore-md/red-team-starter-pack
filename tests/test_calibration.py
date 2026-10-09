@@ -1,4 +1,4 @@
-"""pyrit_campaigns/calibration.py: when a scan of an app stops before its probes."""
+"""harnesses/pyrit_campaigns/calibration.py: when a scan of an app stops before its probes."""
 
 import asyncio
 
@@ -6,7 +6,7 @@ import pytest
 from pyrit.models import construct_response_from_request
 from pyrit.prompt_target import PromptTarget
 
-from pyrit_campaigns import calibration
+from harnesses.pyrit_campaigns import calibration
 
 FALLBACK = "Sorry, I can only help with questions about our programs."
 

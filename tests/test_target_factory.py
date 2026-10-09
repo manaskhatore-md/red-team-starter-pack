@@ -9,8 +9,8 @@ import pytest
 from pyrit.models import Message, MessagePiece, construct_response_from_request
 from pyrit.prompt_target import PromptTarget
 
-from pyrit_campaigns import target_factory
-from pyrit_campaigns.target_factory import build_scoring_target, build_target, model_name
+from harnesses.pyrit_campaigns import target_factory
+from harnesses.pyrit_campaigns.target_factory import build_scoring_target, build_target, model_name
 
 
 def test_default_provider_is_gemini(fake_keys):

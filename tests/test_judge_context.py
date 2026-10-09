@@ -5,9 +5,9 @@ import json
 from pyrit.models import construct_response_from_request
 from pyrit.prompt_target import PromptTarget, TargetCapabilities, TargetConfiguration
 
-from pyrit_campaigns import single_turn_scan
-from pyrit_campaigns.code_checks import CODE_CHECKS
-from pyrit_campaigns.profiles import PAIR_RUBRICS, get_profile
+from harnesses.pyrit_campaigns import single_turn_scan
+from harnesses.pyrit_campaigns.code_checks import CODE_CHECKS
+from harnesses.pyrit_campaigns.profiles import PAIR_RUBRICS, get_profile
 from test_system_prompt import FakeModel, run_scan
 
 RUBRICS = single_turn_scan.load_rubrics()

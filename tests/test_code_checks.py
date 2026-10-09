@@ -6,10 +6,10 @@ import re
 
 from pyrit.models import MessagePiece, construct_response_from_request
 
-from pyrit_campaigns import code_checks as cc
-from pyrit_campaigns import planted_records as pr
-from pyrit_campaigns.single_turn_scan import load_rubrics
-from reporting import export_finding_report, run_summary
+from harnesses.pyrit_campaigns import code_checks as cc
+from harnesses.pyrit_campaigns import planted_records as pr
+from harnesses.pyrit_campaigns.single_turn_scan import load_rubrics
+from scripts import export_finding_report, run_summary
 from test_system_prompt import FakeModel, run_scan
 
 

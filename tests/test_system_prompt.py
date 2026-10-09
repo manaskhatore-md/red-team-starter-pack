@@ -10,12 +10,12 @@ from pyrit.prompt_target import PromptTarget, TargetCapabilities, TargetConfigur
 from pyrit.score import MessageTrueFalseScorer
 from pyrit.score.scorer_prompt_validator import ScorerPromptValidator
 
-from pyrit_campaigns import single_turn_scan
-from pyrit_campaigns.code_checks import CREDENTIAL_CHECK
-from pyrit_campaigns.planted_records import RECORD_CHECK
-from pyrit_campaigns import system_prompt as sp
-from pyrit_campaigns.profiles import PROFILES
-from reporting import export_finding_report, run_summary
+from harnesses.pyrit_campaigns import single_turn_scan
+from harnesses.pyrit_campaigns.code_checks import CREDENTIAL_CHECK
+from harnesses.pyrit_campaigns.planted_records import RECORD_CHECK
+from harnesses.pyrit_campaigns import system_prompt as sp
+from harnesses.pyrit_campaigns.profiles import PROFILES
+from scripts import export_finding_report, run_summary
 
 CANARY = "RTC-3F9A-1C7B"
 
@@ -65,7 +65,7 @@ def test_the_canary_scorer_records_a_hit_under_its_own_name():
 def test_every_profile_has_a_stand_in_with_the_canary_slot_and_no_unfilled_tokens(key):
     profile = PROFILES[key]
     prompt = sp.load_system_prompt(key, profile.placeholders, CANARY)
-    assert prompt.source == f"system_prompts/{key}.txt" and prompt.chosen_by == "profile"
+    assert prompt.source == f"config/system_prompts/{key}.txt" and prompt.chosen_by == "profile"
     assert CANARY in prompt.text
     # The extraction probe asks for the text "starting with 'You are'".
     assert prompt.text.startswith("You are")
@@ -90,8 +90,8 @@ def test_a_file_you_choose_gets_the_canary_added_if_it_has_no_slot(monkeypatch, 
 
 def test_a_relative_path_is_found_from_the_repo_root(monkeypatch, tmp_path):
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setenv("RT_SYSTEM_PROMPT_FILE", "system_prompts/internal_productivity.txt")
-    assert sp.load_system_prompt("public_conversational", {}, CANARY).source == "system_prompts/internal_productivity.txt"
+    monkeypatch.setenv("RT_SYSTEM_PROMPT_FILE", "config/system_prompts/internal_productivity.txt")
+    assert sp.load_system_prompt("public_conversational", {}, CANARY).source == "config/system_prompts/internal_productivity.txt"
 
 
 def test_a_missing_file_stops_the_run(monkeypatch):
@@ -186,13 +186,13 @@ def test_the_scan_sends_the_system_prompt_and_flags_a_leak(memory, monkeypatch, 
     out = capsys.readouterr().out
 
     assert all(roles[0] == "system" for roles in target.seen), target.seen
-    assert "System prompt: system_prompts/internal_productivity.txt" in out
+    assert "System prompt: config/system_prompts/internal_productivity.txt" in out
     assert "does not take a system prompt" not in out
     assert "[FINDING: system_prompt_leak]" in out
 
     results = memory.get_attack_results(labels={"rt_run_id": run_id})
     labels = results[0].labels
-    assert labels["rt_system_prompt"] == "system_prompts/internal_productivity.txt"
+    assert labels["rt_system_prompt"] == "config/system_prompts/internal_productivity.txt"
     assert labels["rt_system_prompt_chosen_by"] == "profile"
     canary = labels["rt_prompt_canary"]
     assert canary.startswith("RTC-")

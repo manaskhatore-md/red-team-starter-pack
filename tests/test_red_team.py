@@ -6,10 +6,10 @@ import uuid
 import pytest
 from pyrit.models import AttackOutcome, AttackResult, Message, MessagePiece
 
-from pyrit_campaigns import multi_turn_red_team as rta
-from pyrit_campaigns import target_factory
-from pyrit_campaigns.profiles import PROFILES
-from reporting import run_summary as rs
+from harnesses.pyrit_campaigns import multi_turn_red_team as rta
+from harnesses.pyrit_campaigns import target_factory
+from harnesses.pyrit_campaigns.profiles import PROFILES
+from scripts import run_summary as rs
 from test_run_summary import RUN, add_probe, summary
 
 
@@ -70,7 +70,7 @@ def test_single_provider_setup(built_providers, clean_env):
 # --- objectives are validated the same way as Crescendo ---------------------
 
 def test_a_profile_without_objectives_stops(clean_env):
-    from pyrit_campaigns.profiles import Profile
+    from harnesses.pyrit_campaigns.profiles import Profile
     profile = Profile(**{**PROFILES["internal_productivity"].__dict__, "objectives": ()})
     with pytest.raises(SystemExit, match="profiles.py"):
         rta.load_objectives(profile)
@@ -118,7 +118,7 @@ def test_campaign_short_name_is_red_team(memory):
 
 
 def test_export_repro_uses_multi_turn_red_team_module(memory):
-    from reporting import export_finding_report
+    from scripts import export_finding_report
     _, answer = add_probe(memory, "objective", "reply", outcome=AttackOutcome.SUCCESS,
                           rt_campaign="multi_turn_red_team", rt_run_id=RUN,
                           rt_profile="public_conversational", rt_adversarial_provider="bedrock",
@@ -128,7 +128,7 @@ def test_export_repro_uses_multi_turn_red_team_module(memory):
                           rt_system_prompt="none")
     results = memory.get_attack_results(labels={"rt_run_id": RUN})
     labels = results[0].labels or {}
-    from reporting.export_finding_report import reproduction_steps
+    from scripts.export_finding_report import reproduction_steps
     steps = reproduction_steps(labels)
     assert "multi_turn_red_team" in steps
     assert "RT_MAX_BACKTRACKS" not in steps  # Red team has no backtracks setting
@@ -183,8 +183,8 @@ def test_code_checks_run_on_every_turn_including_ones_pyrit_pruned_away(memory):
     """
     from pyrit.models import ConversationReference, ConversationType
 
-    from pyrit_campaigns.multi_turn_red_team import leaked_anywhere, score_every_turn
-    from pyrit_campaigns.system_prompt import CANARY_CHECK, CanaryLeakScorer
+    from harnesses.pyrit_campaigns.multi_turn_red_team import leaked_anywhere, score_every_turn
+    from harnesses.pyrit_campaigns.system_prompt import CANARY_CHECK, CanaryLeakScorer
 
     canary = "RTC-TEST-0001"
 
@@ -217,7 +217,7 @@ def test_code_checks_run_on_every_turn_including_ones_pyrit_pruned_away(memory):
 
     # The naive check (what the code did before this fix) only looks at the live,
     # un-pruned conversation - and misses the leak, since it happened on turn 1.
-    from pyrit_campaigns.multi_turn_crescendo import leaked
+    from harnesses.pyrit_campaigns.multi_turn_crescendo import leaked
     assert leaked(memory, result.conversation_id, CANARY_CHECK) is False
 
     # The fixed check looks across the full, pruned-inclusive conversation and catches it.
@@ -228,8 +228,8 @@ def test_scoring_skips_the_attackers_own_messages(memory):
     """Only the target's replies get scored, not the attacker's turns."""
     from pyrit.models import ConversationReference, ConversationType
 
-    from pyrit_campaigns.multi_turn_red_team import leaked_anywhere, score_every_turn
-    from pyrit_campaigns.system_prompt import CANARY_CHECK, CanaryLeakScorer
+    from harnesses.pyrit_campaigns.multi_turn_red_team import leaked_anywhere, score_every_turn
+    from harnesses.pyrit_campaigns.system_prompt import CANARY_CHECK, CanaryLeakScorer
 
     canary = "RTC-TEST-0002"
     conv_id = str(uuid.uuid4())
@@ -253,8 +253,8 @@ def test_code_checks_run_on_every_turn_of_a_single_accumulating_conversation(mem
     broken for model targets just as much as for apps, since RedTeamingAttack never
     calls auxiliary_scorers for ANY target.
     """
-    from pyrit_campaigns.multi_turn_red_team import leaked_anywhere, score_every_turn
-    from pyrit_campaigns.system_prompt import CANARY_CHECK, CanaryLeakScorer
+    from harnesses.pyrit_campaigns.multi_turn_red_team import leaked_anywhere, score_every_turn
+    from harnesses.pyrit_campaigns.system_prompt import CANARY_CHECK, CanaryLeakScorer
 
     canary = "RTC-TEST-0003"
     conv_id = str(uuid.uuid4())

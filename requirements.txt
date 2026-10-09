@@ -4,8 +4,8 @@
 # .env.example. Install litellm and you can target Gemini, OpenAI, or Anthropic
 # without touching requirements again.
 
-# PyRIT: the multi-turn campaign engine (pyrit_campaigns/) and the scorers used by
-# judges/. 1.1.0+ required - the pre-1.0 API (pyrit.orchestrator,
+# PyRIT: the multi-turn campaign engine (harnesses/pyrit_campaigns/) and the scorers used by
+# its judges. 1.1.0+ required - the pre-1.0 API (pyrit.orchestrator,
 # PromptRequestPiece) is gone and code written against it will not import.
 pyrit>=1.1.0
 
