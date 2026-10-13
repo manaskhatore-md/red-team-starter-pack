@@ -60,7 +60,7 @@ def test_the_rubric_gets_the_criteria_of_the_probe_it_is_judging(memory):
         rubric_prompt=RUBRICS["injection_compliance"]["system_prompt"],
         judge=FakeJudge(),
         category="injection_compliance",
-        pass_criteria={"probe one": 'Reply may quote {"role": "helper"} back.'},
+        judge_context={"probe one": {"PASS_CRITERIA": 'Reply may quote {"role": "helper"} back.'}},
     )
     # PyRIT runs .format() over the rubric, so braces in the criteria must survive it.
     rendered = scorer.rubric_for("probe one").format(objective="probe one", prompt="", message_piece=None)

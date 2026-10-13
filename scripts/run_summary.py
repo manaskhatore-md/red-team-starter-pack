@@ -334,6 +334,56 @@ def failure_rates(entries) -> list[dict]:
     return [r for r in rows.values() if r["flagged"] or r["passed"] or r["no_verdict"]]
 
 
+def template_rates(entries) -> tuple[list[dict], list[dict]]:
+    """(by template, by fixture entry): how often the probes made from templates were flagged.
+
+    A template's probes are the same question about different things, so the useful
+    reading is across them: a template flagged for most entries points at how the
+    question is framed, and an entry flagged under most templates at that one thing -
+    or at a mistake in its fixture. Every repeat of every probe counts once.
+    """
+    by_template: dict[tuple[str, str], dict] = {}
+    by_entry: dict[str, dict] = {}
+    for e in entries:
+        result_labels = e["result"].labels or {}
+        template, fixture = result_labels.get("rt_template"), result_labels.get("rt_fixture")
+        if not (template and fixture):
+            continue
+        file, _, entry = fixture.partition("#")
+        rows = (
+            by_template.setdefault(
+                (result_labels.get("rt_dataset", "-"), template),
+                {"dataset": result_labels.get("rt_dataset", "-"), "name": template, "others": set(),
+                 "flagged": 0, "passed": 0, "no_verdict": 0},
+            ),
+            by_entry.setdefault(
+                fixture,
+                {"file": file.rsplit("/", 1)[-1], "name": entry, "others": set(), "flagged": 0, "passed": 0, "no_verdict": 0},
+            ),
+        )
+        rows[0]["others"].add(entry)
+        rows[1]["others"].add(template)
+        for row in rows:
+            if e["verdict"] in (FLAGGED, ACHIEVED):
+                row["flagged"] += 1
+            elif e["verdict"] in (PASSED, HELD):
+                row["passed"] += 1
+            else:
+                row["no_verdict"] += 1
+    return list(by_template.values()), list(by_entry.values())
+
+
+def rate_reading(flagged: int, tested: int) -> str:
+    """The Reading column of a failure-rate row."""
+    if not tested:
+        return "nothing tested"
+    if not flagged:
+        return f"never flagged; could still fail up to {zero_flag_bound(tested):.0%} of the time"
+    if flagged == tested:
+        return "flagged every time"
+    return "flagged some of the time"
+
+
 def pair_verdicts(entries, fixed_texts: set[str] = frozenset()) -> list[dict]:
     """Each matched pair in the run, per repeat, with the judge's comparison if one was recorded.
 
@@ -565,6 +615,12 @@ def build_summary(results, memory, run_id: str) -> str:
             "- **A pass is one sample.** Model output varies from run to run. A probe that passed once can "
             "fail on the next run, so re-run with RT_REPEATS=5 or more before you rely on either result."
         )
+    templated = {(r.labels or {}).get("rt_template") for r in (e["result"] for e in entries)} - {None, ""}
+    if templated:
+        lines.append(
+            f"- **Some probes came from {len(templated)} template(s).** [By template](#by-template) reads them "
+            "together, per template and per fixture entry, which says more than any one of them."
+        )
     if leaks:
         lines.append(
             f"- **{leaks} reply(ies) leaked the system prompt.** Each contains the canary token, a code "
@@ -665,14 +721,7 @@ def build_summary(results, memory, run_id: str) -> str:
         ]
         for row in failure_rates(entries):
             tested = row["flagged"] + row["passed"]
-            if not tested:
-                reading = "nothing tested"
-            elif not row["flagged"]:
-                reading = f"never flagged; could still fail up to {zero_flag_bound(tested):.0%} of the time"
-            elif row["flagged"] == tested:
-                reading = "flagged every time"
-            else:
-                reading = "flagged some of the time"
+            reading = rate_reading(row["flagged"], tested)
             lines.append(
                 f"| {row['probe']} | {row['dataset']} | {row['flagged']} of {tested} | {row['no_verdict']} | {reading} |"
             )
@@ -686,6 +735,40 @@ def build_summary(results, memory, run_id: str) -> str:
             for pair_id in sorted({p["pair_id"] for p in pairs}):
                 different, compared = by_pair[pair_id]
                 lines.append(f"| {pair_id} | {different} of {compared} | {compared} of {repeats} |")
+        lines.append("")
+
+    templates, fixture_entries = template_rates(entries)
+    if templates:
+        lines += [
+            '<a id="by-template"></a>',
+            "## By template",
+            "",
+            "Probes made from a template (harnesses/pyrit_campaigns/probe_templates.py) are the same question "
+            "about different things, so read them together: a template flagged for most entries points at how the "
+            "question is framed, and an entry flagged under most templates at that one thing, or at a mistake in "
+            "its fixture entry. Check the entry first. Every repeat of every probe counts once. The bound counts "
+            "each as a separate try, but probes from one template are related, so the true uncertainty is wider.",
+            "",
+            "| Template | Dataset | Entries | Flagged | Without a verdict | Reading |",
+            "|---|---|---|---|---|---|",
+        ]
+        for row in templates:
+            tested = row["flagged"] + row["passed"]
+            lines.append(
+                f"| {row['name']} | {row['dataset']} | {len(row['others'])} | {row['flagged']} of {tested} "
+                f"| {row['no_verdict']} | {rate_reading(row['flagged'], tested)} |"
+            )
+        lines += [
+            "",
+            "| Fixture entry | Fixture file | Templates | Flagged | Without a verdict | Reading |",
+            "|---|---|---|---|---|---|",
+        ]
+        for row in fixture_entries:
+            tested = row["flagged"] + row["passed"]
+            lines.append(
+                f"| {row['name']} | {row['file']} | {len(row['others'])} | {row['flagged']} of {tested} "
+                f"| {row['no_verdict']} | {rate_reading(row['flagged'], tested)} |"
+            )
         lines.append("")
 
     lines += ["## Every result", "", "| # | Verdict | Dataset | Probe | Graded by |", "|---|---|---|---|---|"]
