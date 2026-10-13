@@ -1,0 +1,70 @@
+<!doctype html>
+<!-- A stand-in chat app for tests/test_browser_target.py: replies stream in a few
+     characters at a time, each tab keeps its own history, ?signin=MS hides the
+     chat box for MS milliseconds the way a sign-in page would, and ?pause=MS
+     stops a reply halfway for MS milliseconds. -->
+<html>
+<body>
+  <p id="signin" hidden>Signing in...</p>
+  <main id="chat" hidden>
+    <button id="new-chat">New chat</button>
+    <div id="log"></div>
+    <textarea id="message"></textarea>
+    <button id="send">Send</button>
+    <p id="busy" hidden>Thinking...</p>
+  </main>
+  <script>
+    const params = new URLSearchParams(location.search);
+    const log = document.getElementById("log");
+    const box = document.getElementById("message");
+    const busy = document.getElementById("busy");
+    let turn = 0;
+
+    function showChat() {
+      document.getElementById("signin").hidden = true;
+      document.getElementById("chat").hidden = false;
+    }
+    if (params.get("signin")) {
+      document.getElementById("signin").hidden = false;
+      setTimeout(showChat, Number(params.get("signin")));
+    } else {
+      showChat();
+    }
+
+    document.getElementById("new-chat").onclick = () => { log.innerHTML = ""; turn = 0; };
+
+    function send() {
+      const text = box.value;
+      box.value = "";
+      turn += 1;
+      const mine = document.createElement("div");
+      mine.className = "user";
+      mine.textContent = text;
+      log.appendChild(mine);
+      busy.hidden = false;
+      const full = `turn ${turn}: you said ${text}`;
+      setTimeout(() => {
+        const reply = document.createElement("div");
+        reply.className = "reply";
+        log.appendChild(reply);
+        // ?pause=MS stops halfway through the reply for MS milliseconds, like a model
+        // that hesitates mid-answer: the half-written text holds still the whole time.
+        const pause = Number(params.get("pause") || 0);
+        let shown = 0, paused = false;
+        const step = () => {
+          shown += 4;
+          reply.textContent = full.slice(0, shown);
+          if (shown >= full.length) { busy.hidden = true; return; }
+          if (pause && !paused && shown >= full.length / 2) { paused = true; setTimeout(step, pause); return; }
+          setTimeout(step, 60);
+        };
+        step();
+      }, 200);
+    }
+    document.getElementById("send").onclick = send;
+    box.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
+    });
+  </script>
+</body>
+</html>

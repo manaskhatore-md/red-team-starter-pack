@@ -115,6 +115,30 @@ APP_RESPONSE_PATH=answer                    # where the reply is, dotted: e.g. c
 APP_API_KEY=...                             # sent as x-api-key; or APP_TOKEN, sent as a Bearer token
 ```
 
+**No API you can call?** Drive the app's web page instead, the way a person would: the kit
+opens a browser window, types each probe into the chat box, and reads the reply off the
+page. It needs `pip install playwright`, and uses the Chrome (or, without it, Edge) already installed:
+
+```bash
+RT_PROVIDER=app
+APP_TRANSPORT=browser
+APP_BROWSER_URL=https://your-app.example.gov/   # the chat page
+APP_BROWSER_INPUT=textarea                      # CSS selector of the box you type in
+APP_BROWSER_REPLY=.assistant-message            # CSS selector of each of the app's replies (not your messages)
+APP_BROWSER_SEND=button[type=submit]            # optional: the send button; unset presses Enter
+APP_BROWSER_BUSY=.typing-indicator              # optional: shown while the app is still answering
+```
+
+To find the selectors, open the app, right-click the chat box and choose **Inspect**: an
+`id` (`#message`) or `class` (`.chat-input`) on the highlighted element works. The reply
+selector must match the app's replies only. The first run opens a visible window: if the
+app asks you to sign in, sign in there and the run carries on by itself. The sign-in is
+kept in `~/.rt_browser_profile` (one folder per browser) for later runs; anyone with that folder can use the app
+as you until the session expires, so keep it out of the repo and delete it when testing ends.
+Each conversation gets its own tab, so probes cannot see each other. It is slower than an
+API, one reply at a time per tab, and a change to the page's layout can mean new selectors.
+Every setting is listed in `harnesses/pyrit_campaigns/browser_target.py`.
+
 The app keeps its own system prompt, so the scan sends none. How a leak of it is caught
 depends on what you know about it:
 
@@ -129,8 +153,10 @@ file outside the repo. With neither, only the judge can catch a leak, and a mode
 its instructions sometimes makes some up, so the run summary lists the replies to those
 probes side by side: wording that recurs across attempts is the stronger sign it is real.
 
-The target is single-turn: run
-`single_turn_scan`, not `multi_turn_crescendo`. Set `RT_JUDGE_PROVIDER` to a model
+Run `single_turn_scan` or `multi_turn_red_team`, not `multi_turn_crescendo`, which needs
+to delete refused turns from the app's history. Over the API the target is single-turn,
+so the red-team attacker's turns reach the app as unrelated messages; through the browser
+the app keeps each conversation, so they are a real conversation. Set `RT_JUDGE_PROVIDER` to a model
 provider, since the app cannot grade its own replies; `RT_MODEL` is ignored, since the
 app picks its own model.
 
@@ -320,6 +346,7 @@ red-team-starter-pack/
 │   └── pyrit_campaigns/                # The campaigns and their judges (PyRIT)
 │       ├── profiles.py                 # Deployment-type profiles: threat model, datasets, rubrics
 │       ├── target_factory.py           # Unified provider factory (Gemini, Claude, OpenAI, Bedrock, Vertex, an app)
+│       ├── browser_target.py           # An app with no callable API, driven through its web page (Playwright)
 │       ├── single_turn_scan.py         # Every dataset probe, graded by your rubrics
 │       ├── state_policy_rubric.yaml    # The judge's rubrics: criteria-based Pass/Fail scoring prompts
 │       ├── calibration.py              # Plain questions sent first, so a canned or blocked reply is not read as a pass
