@@ -604,6 +604,7 @@ async def main() -> int:
             objectives=objectives,
             **prepended,
             field_overrides=overrides,
+            return_partial_on_failure=True,
         )
         completed += executor_result.completed_results
         incomplete += executor_result.incomplete_objectives

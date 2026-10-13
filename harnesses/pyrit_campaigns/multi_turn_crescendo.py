@@ -465,6 +465,7 @@ async def main() -> int:
             objectives=goals,
             **prepended,
             field_overrides=overrides,
+            return_partial_on_failure=True,
         )
     completed, incomplete = executor_result.completed_results, executor_result.incomplete_objectives
 
@@ -526,6 +527,8 @@ async def main() -> int:
     for t in (target, adversarial, judge):
         await close_target(t)
 
+    if incomplete:
+        return 1
     return 1 if FAIL_ON_FINDING and (sum(achieved.values()) or leaks or record_leaks or other_hits) else 0
 
 

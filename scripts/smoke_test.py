@@ -52,6 +52,7 @@ async def main():
     executor_result = await AttackExecutor(max_concurrency=2).execute_attack_async(
         attack=attack,
         objectives=BENIGN_PROMPTS,
+        return_partial_on_failure=True,
     )
 
     failures = []
