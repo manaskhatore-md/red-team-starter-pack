@@ -2,58 +2,21 @@
 
 import asyncio
 import sys
-import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import timedelta
 
 import pytest
-from pyrit.models import AttackOutcome, AttackResult, Message, MessagePiece, Score
-from pyrit.models.identifiers.component_identifier import ComponentIdentifier
+from pyrit.models import AttackOutcome
 
 from scripts import run_summary as rs
+from helpers import RUN, T0, add_probe, add_score, nothing, summary
 
-T0 = datetime(2026, 9, 1, tzinfo=timezone.utc)
-RUN = "run11111-aaaa"
-SCAN = {"rt_campaign": "single_turn_scan", "rt_run_id": RUN, "rt_profile": "public_conversational",
-        "rt_provider": "gemini", "rt_target": "gemini/test", "rt_judge_provider": "anthropic", "rt_judge": "anthropic/test"}
 LONG_REPLY = "The full reply. " + "x" * 400 + " END-OF-REPLY"
-
-
-def add_probe(memory, probe, reply, rubric=None, flagged=False, rationale="because", outcome=AttackOutcome.UNDETERMINED,
-              error="none", minutes=0, **labels):
-    """One result: the probe, the reply, and a judge score if a rubric is given."""
-    conversation_id = str(uuid.uuid4())
-    user = MessagePiece(role="user", original_value=probe, conversation_id=conversation_id)
-    memory.add_message_to_memory(request=Message(message_pieces=[user]))
-    answer = MessagePiece(role="assistant", original_value=reply, conversation_id=conversation_id, response_error=error)
-    memory.add_message_to_memory(request=Message(message_pieces=[answer]))
-    if rubric:
-        add_score(memory, answer, rubric, flagged, rationale)
-    result = AttackResult(conversation_id=conversation_id, objective=probe, outcome=outcome,
-                          timestamp=T0 + timedelta(minutes=minutes), labels={**SCAN, **labels})
-    memory.add_attack_results_to_memory(attack_results=[result])
-    return result, answer
-
-
-def add_score(memory, piece, rubric, flagged, rationale):
-    memory.add_scores_to_memory(scores=[Score(
-        score_value="true" if flagged else "false",
-        score_type="true_false",
-        score_category=[rubric],
-        score_rationale=rationale,
-        message_piece_id=piece.id,
-        scorer_class_identifier=ComponentIdentifier(class_name="SelfAskGeneralTrueFalseScorer", class_module="pyrit"),
-    )])
 
 
 def expected_name(minutes, middle="scan_public_conversational"):
     # Named in this machine's time zone, so the expected name is too.
     started = (T0 + timedelta(minutes=minutes)).astimezone()
     return f"{started:%Y-%m-%d_%H%M}_{middle}_run11111.md"
-
-
-def summary(memory):
-    results = [r for r in memory.get_attack_results() if (r.labels or {}).get("rt_run_id") == RUN]
-    return rs.build_summary(results, memory, RUN)
 
 
 def test_every_probe_is_listed_with_its_full_reply_and_rationale(memory):
@@ -119,10 +82,7 @@ def test_a_reply_with_backticks_stays_inside_its_fence(memory):
 
 
 def test_main_writes_the_newest_run(memory, monkeypatch, tmp_path, capsys):
-    async def no_db(*args, **kwargs):
-        pass
-
-    monkeypatch.setattr(rs, "initialize_pyrit_async", no_db)
+    monkeypatch.setattr(rs, "initialize_pyrit_async", nothing)
     add_probe(memory, "old probe", "reply", "injection_compliance", rt_run_id="old00000-run")
     add_probe(memory, "new probe", "reply", "injection_compliance", minutes=5)
     monkeypatch.setattr(sys, "argv", ["run_summary", "--out", str(tmp_path)])
@@ -132,7 +92,7 @@ def test_main_writes_the_newest_run(memory, monkeypatch, tmp_path, capsys):
 
 
 def test_unknown_run_id_stops(memory, monkeypatch):
-    monkeypatch.setattr(rs, "initialize_pyrit_async", lambda **kw: asyncio.sleep(0))
+    monkeypatch.setattr(rs, "initialize_pyrit_async", nothing)
     add_probe(memory, "probe", "reply", "injection_compliance")
     monkeypatch.setattr(sys, "argv", ["run_summary", "--run-id", "nope"])
     with pytest.raises(SystemExit, match="No run with id"):

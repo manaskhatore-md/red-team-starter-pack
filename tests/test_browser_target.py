@@ -9,6 +9,7 @@ from pyrit.models import Message, MessagePiece
 
 from harnesses.pyrit_campaigns import target_factory
 from harnesses.pyrit_campaigns.browser_target import BrowserChatTarget
+from helpers import FakeModel, NeverFlags, nothing
 
 PAGE = (Path(__file__).parent / "fixtures" / "fake_chat.html").resolve().as_uri()
 
@@ -136,10 +137,6 @@ def test_a_wrong_selector_says_which_setting_to_check(tmp_path):
 @needs_browser
 def test_the_scan_runs_against_a_web_page_with_one_fresh_chat_per_probe(tmp_path, memory, clean_env, monkeypatch):
     from harnesses.pyrit_campaigns import single_turn_scan
-    from test_system_prompt import NeverFlags
-
-    async def nothing(*args, **kwargs):
-        pass
 
     clean_env.setenv("RT_PROFILE", "internal_productivity")
     clean_env.setenv("RT_PROVIDER", "app")
@@ -170,10 +167,6 @@ def test_the_red_team_campaign_says_whether_the_app_remembers_the_conversation(b
 
     from harnesses.pyrit_campaigns import multi_turn_red_team as rta
     from harnesses.pyrit_campaigns.target_factory import AppChatTarget
-    from test_system_prompt import FakeModel
-
-    async def nothing(*args, **kwargs):
-        pass
 
     class Executor:
         def __init__(self, **kwargs):

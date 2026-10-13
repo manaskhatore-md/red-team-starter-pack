@@ -7,66 +7,40 @@ import pytest
 
 from pyrit.models import AttackOutcome, Message, MessagePiece
 
-from harnesses.pyrit_campaigns import multi_turn_crescendo, target_factory
+from harnesses.pyrit_campaigns import multi_turn_crescendo, multi_turn_red_team, target_factory
 from harnesses.pyrit_campaigns.profiles import PROFILES, Objective, Profile
-from scripts import run_summary as rs
-from test_run_summary import RUN, add_probe, summary
+from helpers import RUN, add_probe, nothing, summary
 
 
 class _Stop(Exception):
     """Raised when main() asks for the judge - by then target and attacker are built."""
 
 
-@pytest.fixture
-def built_providers(monkeypatch, clean_env):
-    """Run main() up to the attack and return the providers it built targets for."""
-    calls = []
+# Which provider the attacker falls back to is resolve_provider's job, tested in
+# test_target_factory.py. This checks that each campaign asks for the attacker role.
+@pytest.mark.parametrize("campaign", [multi_turn_crescendo, multi_turn_red_team])
+def test_the_campaign_builds_its_attacker_on_rt_adversarial_provider(campaign, monkeypatch, clean_env):
     # A profile with objectives, and no system prompt, so nothing asks the fake target what it supports.
     clean_env.setenv("RT_PROFILE", "public_conversational")
     clean_env.setenv("RT_SYSTEM_PROMPT_FILE", "none")
-
-    async def no_db(*args, **kwargs):
-        pass
+    clean_env.setenv("RT_PROVIDER", "bedrock")
+    clean_env.setenv("RT_JUDGE_PROVIDER", "anthropic")
+    clean_env.setenv("RT_ADVERSARIAL_PROVIDER", "openai")
+    built = []
 
     def fake_build_target(role="target", *, provider=None, model=None):
-        calls.append(provider or target_factory.resolve_provider(role))
+        built.append((role, provider or target_factory.resolve_provider(role)))
         return object()
 
     def stop():
         raise _Stop
 
-    monkeypatch.setattr(multi_turn_crescendo, "initialize_pyrit_async", no_db)
-    monkeypatch.setattr(multi_turn_crescendo, "build_target", fake_build_target)
-    monkeypatch.setattr(multi_turn_crescendo, "build_scoring_target", stop)
-
-    def run():
-        with pytest.raises(_Stop):
-            asyncio.run(multi_turn_crescendo.main())
-        return calls
-
-    return run
-
-
-def test_attacker_uses_rt_adversarial_provider(built_providers, clean_env):
-    clean_env.setenv("RT_PROVIDER", "bedrock")
-    clean_env.setenv("RT_ADVERSARIAL_PROVIDER", "openai")
-    target, attacker = built_providers()
-    assert attacker == "openai"
-
-
-def test_attacker_falls_back_to_the_judge_provider(built_providers, clean_env):
-    clean_env.setenv("RT_PROVIDER", "bedrock")
-    clean_env.setenv("RT_JUDGE_PROVIDER", "anthropic")
-    target, attacker = built_providers()
-    assert attacker == "anthropic"
-
-
-def test_single_provider_setup_attacks_with_that_provider(built_providers, clean_env):
-    # A Bedrock-only setup has no Gemini key. The attacker used to fall back to
-    # gemini, so the run died building an attacker nobody asked for.
-    clean_env.setenv("RT_PROVIDER", "bedrock")
-    target, attacker = built_providers()
-    assert attacker == "bedrock"
+    monkeypatch.setattr(campaign, "initialize_pyrit_async", nothing)
+    monkeypatch.setattr(campaign, "build_target", fake_build_target)
+    monkeypatch.setattr(campaign, "build_scoring_target", stop)
+    with pytest.raises(_Stop):
+        asyncio.run(campaign.main())
+    assert built == [("target", "bedrock"), ("adversarial", "openai")]
 
 
 # --- objectives -------------------------------------------------------------

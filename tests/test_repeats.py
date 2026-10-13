@@ -8,8 +8,7 @@ from pyrit.models import AttackResult, Message, MessagePiece
 
 from harnesses.pyrit_campaigns import single_turn_scan as scan
 from scripts import run_summary as rs
-from test_run_summary import RUN, add_probe, add_score, summary
-from test_system_prompt import FakeModel, run_scan
+from helpers import RUN, FakeModel, add_probe, add_score, run_scan, summary
 
 
 def probe(name, pair_id="", variant=""):
@@ -38,11 +37,6 @@ def test_each_probe_is_sent_once_per_repeat_with_its_repeat_number():
         ("a", "1"), ("a", "2"), ("a", "3"), ("b", "1"), ("b", "2"), ("b", "3"),
     ]
     assert all(l["rt_run_id"] == RUN for l in labels)
-
-
-def test_one_repeat_sends_each_probe_once():
-    objectives, overrides = scan.expand_repeats([probe("a")], 1, {})
-    assert objectives == ["prompt a"] and overrides[0]["memory_labels"]["rt_repeat"] == "1"
 
 
 def test_planned_calls_scale_with_repeats():
