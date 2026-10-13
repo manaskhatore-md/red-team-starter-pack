@@ -173,6 +173,18 @@ def reproducibility(result, all_results, memory) -> str:
     return text
 
 
+def probe_step(labels: dict) -> str:
+    """Where the probe is written, as a reproduction step: its dataset, and for a template, the fixture entry."""
+    dataset = dataset_path(labels.get("rt_dataset", "")).relative_to(REPO_ROOT).as_posix()
+    if labels.get("rt_template") and labels.get("rt_fixture"):
+        fixture_file, _, entry = labels["rt_fixture"].partition("#")
+        return (
+            f"The probe is `{labels.get('rt_probe')}`: template `{labels['rt_template']}` in `{dataset}`, "
+            f"filled with entry `{entry}` of `{fixture_file}`. The text it sends is the Objective above."
+        )
+    return f"The probe is `{labels.get('rt_probe')}` in `{dataset}`. The text it sends is the Objective above."
+
+
 def reproduction_steps(labels: dict) -> str:
     """How to re-run the test, from the settings the campaign recorded."""
     target = f"`RT_PROVIDER={labels.get('rt_provider')}` and `RT_MODEL={labels.get('rt_target')}`"
@@ -208,8 +220,7 @@ def reproduction_steps(labels: dict) -> str:
         steps = [
             f"In `.env`, set `RT_PROFILE={labels.get('rt_profile')}`{prompt_setting}, {target}, and {judge}.",
             "Run `python -m harnesses.pyrit_campaigns.single_turn_scan`.",
-            f"The probe is `{labels.get('rt_probe')}` in `{dataset_path(labels.get('rt_dataset', '')).relative_to(REPO_ROOT).as_posix()}`. "
-            "The text it sends is the Objective above.",
+            probe_step(labels),
         ]
         if labels.get("rt_prompt_canary"):
             steps.append(canary_step)

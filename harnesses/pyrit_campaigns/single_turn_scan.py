@@ -28,7 +28,16 @@ The judge is also shown the probe's pass_criteria from its dataset, what a safe
 reply to that probe looks like, where the rubric has a [[PASS_CRITERIA]] slot. A
 rubric with a [[SYSTEM_PROMPT]] slot (injection_compliance) is shown the system
 prompt too, so a reply that does what its instructions say is not mistaken for one
-that was talked out of them.
+that was talked out of them. A probe's judge_context metadata fills any other
+[[SLOT]] in its rubrics with facts about that probe, such as whether the regulation
+it asks about exists.
+
+TEMPLATES: a seed whose metadata says `expand_with: <name>` is sent once per entry
+in fixtures/<name>.yaml beside its dataset, filled with that entry. See
+harnesses/pyrit_campaigns/probe_templates.py. To see every probe a profile would
+send, without calling any model:
+
+    python -m harnesses.pyrit_campaigns.single_turn_scan --list-probes
 
 THE SYSTEM PROMPT: each probe is sent after a system prompt, as a deployed app would
 send it - by default the stand-in in config/system_prompts/ for the profile, or the file
@@ -50,9 +59,11 @@ within each repeat. The default is 1.
 COST: one target call per probe, one judge call per probe per rubric that grades it,
 plus one judge call per matched pair - all times RT_REPEATS. public_conversational
 is 16 + 16 + 5 = 37 calls per repeat. The scan prints the total before it sends
-anything. Start with one dataset while you tune the rubrics.
+anything, and stops before sending any if the total is over RT_MAX_CALLS (default
+1000; 0 for no limit). Start with one dataset while you tune the rubrics.
 """
 
+import argparse
 import asyncio
 import os
 import re
@@ -75,12 +86,13 @@ import yaml
 
 from pyrit.executor.attack import AttackExecutor, AttackScoringConfig, PromptSendingAttack
 from pyrit.memory import CentralMemory
-from pyrit.models import ComponentIdentifier, MessagePiece, MessageScorable, Score, SeedDataset
+from pyrit.models import ComponentIdentifier, MessagePiece, MessageScorable, Score
 from pyrit.score import MessageTrueFalseScorer, SelfAskGeneralTrueFalseScorer
 from pyrit.score.scorer_prompt_validator import ScorerPromptValidator
 from pyrit.setup import SQLITE, initialize_pyrit_async
 
 from harnesses.pyrit_campaigns import calibration
+from harnesses.pyrit_campaigns.probe_templates import expand, fill, load_dataset
 from harnesses.pyrit_campaigns.profiles import (
     PAIR_RUBRICS,
     Profile,
@@ -179,6 +191,40 @@ def get_repeats() -> int:
     return int(raw)
 
 
+# Above every shipped profile at RT_REPEATS=10 (constituent_decision is ~710 calls),
+# so it stops only a scan that templates or extra datasets have made much larger.
+DEFAULT_MAX_CALLS = 1000
+
+
+def get_max_calls() -> int:
+    """RT_MAX_CALLS: the most target plus judge calls a scan may plan before it stops unsent. 0 for no limit."""
+    raw = os.getenv("RT_MAX_CALLS", str(DEFAULT_MAX_CALLS)).strip()
+    if not raw.isdigit():
+        raise SystemExit(f"RT_MAX_CALLS must be a whole number (0 for no limit), not {raw!r}.")
+    return int(raw)
+
+
+def check_budget(target_calls: int, judge_calls: int, repeats: int, templated: bool) -> None:
+    """Stop before anything is sent when the scan plans more calls than RT_MAX_CALLS allows."""
+    limit = get_max_calls()
+    planned = target_calls + judge_calls
+    if not limit or planned <= limit:
+        return
+    advice = [f"raise the limit: RT_MAX_CALLS={planned} (or 0 for no limit)"]
+    if repeats > 1:
+        advice.insert(0, f"lower RT_REPEATS (now {repeats}); each repeat costs {planned // repeats} calls")
+    if templated:
+        advice.insert(
+            0,
+            "for templated probes, read the per-template rates in the run summary, which need fewer repeats, "
+            "or use a smaller fixture file",
+        )
+    raise SystemExit(
+        f"\nThis scan plans {planned} calls ({target_calls} target + {judge_calls} judge), over RT_MAX_CALLS={limit}. "
+        "Nothing was sent. To go ahead:\n" + "\n".join(f"  - {line}" for line in advice)
+    )
+
+
 @dataclass(frozen=True)
 class Probe:
     dataset: str
@@ -194,34 +240,78 @@ class Probe:
     # The probe asks for the system prompt or the rules. See instruction_requests() in
     # scripts/run_summary.py.
     asks_for_instructions: bool = False
+    # Facts the judge is shown about this probe, from its metadata's judge_context:
+    # (SLOT, text) pairs, each filling [[SLOT]] in the rubrics that grade it.
+    judge_context: tuple[tuple[str, str], ...] = ()
+    # Set only for a probe made from a template (probe_templates.py): the template's
+    # name, and the fixture entry it was filled with, as "path/to/file.yaml#entry_id".
+    template: str = ""
+    fixture: str = ""
+
+    def judge_slots(self) -> dict[str, str]:
+        """Every [[SLOT]] this probe fills in its rubrics, pass criteria included."""
+        slots = dict(self.judge_context)
+        if self.pass_criteria:
+            slots["PASS_CRITERIA"] = self.pass_criteria
+        return slots
+
+
+# [[SLOTS]] the kit fills itself, so a probe's judge_context cannot set them.
+# PASS_CRITERIA comes from the probe's own pass_criteria.
+KIT_SLOTS = frozenset({"SYSTEM_PROMPT", "PATTERN_CHECK", "RESPONSE_A", "RESPONSE_B", "ATTRIBUTE", "PASS_CRITERIA"})
+SLOT = re.compile(r"\[\[([A-Z][A-Z0-9_]*)\]\]")
+
+
+def judge_context(raw, where: str, placeholders: dict[str, str]) -> tuple[tuple[str, str], ...]:
+    """A seed's judge_context metadata as (SLOT, text) pairs, or SystemExit saying what is wrong."""
+    if not raw:
+        return ()
+    if not isinstance(raw, dict):
+        raise SystemExit(f"{where}: judge_context must map slot names to text, e.g. REFERENCE_FACTS: ...")
+    pairs = []
+    for slot, text in raw.items():
+        if not isinstance(slot, str) or not SLOT.fullmatch(f"[[{slot}]]"):
+            raise SystemExit(f"{where}: judge_context slot {slot!r} must be in capitals, e.g. REFERENCE_FACTS")
+        if slot in KIT_SLOTS:
+            raise SystemExit(f"{where}: judge_context cannot set [[{slot}]]; the kit fills it")
+        pairs.append((slot, fill(str(text), **placeholders).strip()))
+    return tuple(pairs)
 
 
 def load_probes(profile: Profile) -> list[Probe]:
-    """Return a Probe for every seed the profile selects."""
+    """Return a Probe for every seed the profile selects: one per fixture entry for a template seed."""
     probes: list[Probe] = []
     for name in profile.datasets:
         path = dataset_path(name)
         if not path.exists():
             raise SystemExit(f"Profile {profile.key!r} names a missing dataset: {path}")
-        dataset = SeedDataset.from_yaml_file(path)
+        dataset = load_dataset(path)
         for seed in dataset.seeds:
-            metadata = seed.metadata or {}
-            probes.append(
-                Probe(
-                    dataset=name,
-                    name=seed.name or "",
-                    # _silent leaves unrecognized placeholders in place rather than
-                    # raising, so adding a token to a dataset does not break the run
-                    # before you have filled it in on the profile.
-                    prompt=seed.render_template_value_silent(**profile.placeholders),
-                    harm_categories=tuple(seed.harm_categories or ()),
-                    pair_id=str(metadata.get("pair_id", "")),
-                    variant=str(metadata.get("variant", "")),
-                    compare_on=str(metadata.get("compare_on", "")),
-                    pass_criteria=" ".join(str(metadata.get("pass_criteria", "")).split()),
-                    asks_for_instructions=bool(metadata.get("asks_for_instructions")),
+            # A template seed becomes one probe per entry in its fixture file; any
+            # other seed, one probe. See probe_templates.py.
+            for expanded in expand(seed, path):
+                metadata = expanded.metadata
+                probes.append(
+                    Probe(
+                        dataset=name,
+                        name=expanded.name,
+                        # fill() leaves unrecognized placeholders in place rather than
+                        # raising, so adding a token to a dataset does not break the run
+                        # before you have filled it in on the profile.
+                        prompt=fill(expanded.value, **profile.placeholders),
+                        harm_categories=tuple(seed.harm_categories or ()),
+                        pair_id=str(metadata.get("pair_id", "")),
+                        variant=str(metadata.get("variant", "")),
+                        compare_on=str(metadata.get("compare_on", "")),
+                        pass_criteria=" ".join(fill(str(metadata.get("pass_criteria", "")), **profile.placeholders).split()),
+                        asks_for_instructions=bool(metadata.get("asks_for_instructions")),
+                        judge_context=judge_context(
+                            metadata.get("judge_context"), f"{path.name}, probe {expanded.name!r}", profile.placeholders
+                        ),
+                        template=expanded.template,
+                        fixture=expanded.fixture,
+                    )
                 )
-            )
     return probes
 
 
@@ -230,25 +320,30 @@ def load_rubrics() -> dict:
 
 
 NO_PASS_CRITERIA = "None were written for this probe."
+NO_JUDGE_CONTEXT = "None were given for this probe."
 NO_SYSTEM_PROMPT = "None. The assistant was sent no system prompt in this run."
 
 
 class RubricScorer(MessageTrueFalseScorer):
-    """A rubric from harnesses/pyrit_campaigns/state_policy_rubric.yaml, with each probe's pass criteria filled in.
+    """A rubric from harnesses/pyrit_campaigns/state_policy_rubric.yaml, with each probe's own facts filled in.
 
     One scorer grades a whole group of probes, and a rubric's text is fixed when the
-    scorer is built, but [[PASS_CRITERIA]] differs per probe. So this fills it in for
-    the probe being scored and hands the result to PyRIT's own rubric scorer.
+    scorer is built, but [[PASS_CRITERIA]] differs per probe, and so does any slot a
+    probe's judge_context fills, such as [[REFERENCE_FACTS]]. So this fills them in
+    for the probe being scored and hands the result to PyRIT's own rubric scorer. A
+    slot the probe has nothing for tells the judge so, rather than reaching it as
+    "[[REFERENCE_FACTS]]".
     """
 
     _DEFAULT_VALIDATOR: ScorerPromptValidator = ScorerPromptValidator(supported_data_types=["text"])
 
-    def __init__(self, *, rubric_prompt: str, judge, category: str, pass_criteria: dict[str, str]) -> None:
+    def __init__(self, *, rubric_prompt: str, judge, category: str, judge_context: dict[str, dict[str, str]]) -> None:
         self._rubric_prompt = rubric_prompt
         self._judge = judge
         self._category = category
-        # Probe text -> its pass criteria. The objective PyRIT scores against is the probe text.
-        self._pass_criteria = pass_criteria
+        # Probe text -> its slots, as Probe.judge_slots() gives them. The objective
+        # PyRIT scores against is the probe text.
+        self._judge_context = judge_context
         super().__init__(validator=self._DEFAULT_VALIDATOR)
 
     def _build_identifier(self) -> ComponentIdentifier:
@@ -258,8 +353,17 @@ class RubricScorer(MessageTrueFalseScorer):
         )
 
     def rubric_for(self, objective: str | None) -> str:
-        criteria = self._pass_criteria.get(objective or "") or NO_PASS_CRITERIA
-        return self._rubric_prompt.replace("[[PASS_CRITERIA]]", _escape_braces(criteria))
+        slots = self._judge_context.get(objective or "", {})
+
+        def filled(match: re.Match) -> str:
+            slot = match.group(1)
+            if slot in KIT_SLOTS - {"PASS_CRITERIA"}:
+                return match.group(0)
+            fallback = NO_PASS_CRITERIA if slot == "PASS_CRITERIA" else NO_JUDGE_CONTEXT
+            return _escape_braces(slots.get(slot) or fallback)
+
+        # One pass, so a slot's text that happens to contain [[ANOTHER]] is left as it is.
+        return SLOT.sub(filled, self._rubric_prompt)
 
     async def _score_piece_async(self, message_piece: MessagePiece, *, objective: str | None = None) -> list[Score]:
         scorer = SelfAskGeneralTrueFalseScorer(
@@ -285,7 +389,7 @@ def build_rubric_scorers(
     and compare_pairs() runs them.
     """
     rubrics = load_rubrics()
-    pass_criteria = {probe.prompt: probe.pass_criteria for probe in probes if probe.pass_criteria}
+    judge_context = {probe.prompt: probe.judge_slots() for probe in probes}
 
     scorers = {}
     for key in profile.rubrics:
@@ -297,7 +401,7 @@ def build_rubric_scorers(
             rubric_prompt=rubric_prompt(rubrics[key], system_prompt),
             judge=judge,
             category=key,
-            pass_criteria=pass_criteria,
+            judge_context=judge_context,
         )
     return scorers
 
@@ -403,6 +507,8 @@ def expand_repeats(group: list[Probe], repeats: int, run_labels: dict) -> tuple[
                     "rt_pair_id": probe.pair_id,
                     "rt_variant": probe.variant,
                     "rt_asks_for_instructions": str(probe.asks_for_instructions).lower(),
+                    "rt_template": probe.template,
+                    "rt_fixture": probe.fixture,
                     "rt_repeat": str(repeat),
                 }
             })
@@ -462,6 +568,35 @@ def check_placeholders(profile: Profile, probes: list[Probe], system_prompt: str
     return [env_var(key) for key in unfilled]
 
 
+def list_probes(profile: Profile) -> int:
+    """Print every probe the profile would send, and what grades it, without calling any model.
+
+    For reviewing a dataset before a run, above all one with templates: the probes
+    a template makes are not written out anywhere else.
+    """
+    print(describe(profile))
+    probes = load_probes(profile)
+    check_placeholders(profile, probes)
+    rubrics = [key for key in profile.rubrics if key not in PAIR_RUBRICS]
+    compare = "disparate_treatment" in profile.rubrics and any(p.pair_id for p in probes)
+    groups = group_by_rubrics(probes, rubrics, compare)
+    graded_by = {(probe.dataset, probe.name): keys for keys, group in groups.items() for probe in group}
+
+    for probe in probes:
+        keys = graded_by.get((probe.dataset, probe.name))
+        grading = " + ".join(keys) if keys else ("pair comparison only" if keys is not None else "NOT SENT: no rubric grades it")
+        print(f"\n{probe.dataset} / {probe.name}  [{grading}]")
+        if probe.fixture:
+            print(f"    template {probe.template!r}, filled from {probe.fixture}")
+        print("    " + probe.prompt.strip().replace("\n", "\n    "))
+        for slot, text in probe.judge_context:
+            print(f"    judge is shown [[{slot}]]: " + text.replace("\n", "\n        "))
+
+    sent = sum(len(group) for group in groups.values())
+    print(f"\n{sent} of {len(probes)} probe(s) would be sent, each RT_REPEATS times.")
+    return 0
+
+
 async def main() -> int:
     started = time.monotonic()
     profile = get_profile()
@@ -513,7 +648,6 @@ async def main() -> int:
     else:
         print("\nSystem prompt: none. The model gets each probe with no instructions.")
     judge = build_scoring_target()
-    await check_models(target=target, judge=judge)
     judged_prompt = system_prompt.text if system_prompt else (app_prompt.text if app_prompt else "") or None
     scorers = build_rubric_scorers(profile, judge, probes, judged_prompt)
 
@@ -542,6 +676,9 @@ async def main() -> int:
     repeat_note = f", each {repeats} times (RT_REPEATS)" if repeats > 1 else ""
     print(f"\nSending {len(sent)} probes{repeat_note}: {', '.join(graded)}{pair_note}.")
     print(f"That is about {target_calls} target calls and {judge_calls} judge calls, before retries.\n")
+    check_budget(target_calls, judge_calls, repeats, templated=any(p.template for p in sent))
+    # After the budget check, so a scan that stops there has called nothing.
+    await check_models(target=target, judge=judge)
 
     # Labels are stored with each result, so the finding report can say what ran
     # without anyone copying it over by hand.
@@ -704,4 +841,12 @@ async def main() -> int:
 
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Send every probe in the profile's datasets, graded by its rubrics.")
+    parser.add_argument(
+        "--list-probes",
+        action="store_true",
+        help="print the probes RT_PROFILE would send, and what grades each, then stop without calling any model",
+    )
+    if parser.parse_args().list_probes:
+        sys.exit(list_probes(get_profile()))
     sys.exit(asyncio.run(main()))

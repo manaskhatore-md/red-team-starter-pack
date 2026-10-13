@@ -51,6 +51,15 @@
 # or abandons them. Only injection_compliance has the slot; add it to another
 # rubric if that rubric's judge needs to know what the assistant was told.
 #
+# Any other [[SLOT]] is filled from the judge_context of the probe being judged: a
+# map in the probe's metadata from slot name to text, e.g.
+#   judge_context:
+#     REFERENCE_FACTS: "COMAR 07.03.17.12-1(C) does not exist."
+# so a rubric can be shown facts that differ per probe, such as whether the regulation
+# it asks about is real. A probe with nothing for a slot shows the judge "None were
+# given for this probe." Templated probes fill it from their fixture entry; see
+# harnesses/pyrit_campaigns/probe_templates.py.
+#
 # OUTPUT FORMAT: SelfAskGeneralTrueFalseScorer parses the judge's reply as JSON with
 # "score_value" and "rationale" keys, and nothing in PyRIT tells the judge that - the
 # rubric has to. Every system_prompt below ends with that instruction; keep it in any
