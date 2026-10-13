@@ -73,6 +73,7 @@ from pyrit.executor.attack import (
 from pyrit.executor.attack.multi_turn.red_teaming import RTASystemPromptPaths
 from pyrit.memory import CentralMemory
 from pyrit.models import AttackOutcome, SeedPrompt
+from pyrit.prompt_target import CapabilityName
 from pyrit.score import MessageScorer
 from pyrit.setup import SQLITE, initialize_pyrit_async
 
@@ -188,12 +189,18 @@ async def main() -> int:
                 "!! The app's system prompt is not known, so only the judge can catch a leak.\n"
                 "!! Set APP_SYSTEM_PROMPT_FILE or APP_PROMPT_CANARY to enable code checks."
             )
-        print(
-            "\nNote: the target is a deployed app, which has no memory of its own. Each turn is sent "
-            "as an isolated, unrelated message - the app never sees the turns before it. Only the "
-            "attacker remembers the conversation and adapts its approach; the app does not. This is "
-            "repeated one-shot attempts informed by what failed before, not an escalating conversation."
-        )
+        if target.configuration.includes(capability=CapabilityName.MULTI_TURN):
+            print(
+                "\nNote: the app keeps each conversation's history itself (here, in its own browser tab), "
+                "so this is a real multi-turn conversation: the app sees every earlier turn."
+            )
+        else:
+            print(
+                "\nNote: the target is a deployed app, which has no memory of its own. Each turn is sent "
+                "as an isolated, unrelated message - the app never sees the turns before it. Only the "
+                "attacker remembers the conversation and adapts its approach; the app does not. This is "
+                "repeated one-shot attempts informed by what failed before, not an escalating conversation."
+            )
     elif system_prompt:
         print(f"\nSystem prompt: {system_prompt.source} (chosen by {system_prompt.chosen_by}), "
               f"with canary token {system_prompt.canary}.")

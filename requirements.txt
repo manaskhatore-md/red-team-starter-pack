@@ -32,6 +32,10 @@ python-dotenv>=1.0
 # truststore.inject_into_ssl(); harmless on a network without a proxy.
 truststore>=0.9
 
+# Driving an app's web page (APP_TRANSPORT=browser only). Drives the Chrome or Edge
+# already installed, so `playwright install` is not needed.
+playwright>=1.40
+
 # Reading the datasets, profiles, and judge rubrics. PyRIT pulls this in already;
 # pinned explicitly because our own modules import it directly.
 pyyaml>=6.0

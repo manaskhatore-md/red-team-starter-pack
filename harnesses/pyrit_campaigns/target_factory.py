@@ -207,6 +207,16 @@ def build_target(role: str = "target", *, provider: str | None = None, model: st
         #
         # Use a non-production instance with synthetic data, and get written
         # authorization before you point this at anything.
+        transport = os.getenv("APP_TRANSPORT", "").strip().lower() or "http"
+        if transport == "browser":
+            # No API to call: drive the app's own web page, as a person would.
+            from harnesses.pyrit_campaigns.browser_target import BrowserChatTarget
+
+            target = BrowserChatTarget.from_env()
+            print(f"{label}: {target._url} (app, through its web page)")
+            return target
+        if transport != "http":
+            raise SystemExit(f"APP_TRANSPORT={transport!r}: use http (the default) or browser.")
         target = AppChatTarget.from_env()
         print(f"{label}: {target._endpoint} (app)")
         return target
