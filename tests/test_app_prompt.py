@@ -10,9 +10,7 @@ from harnesses.pyrit_campaigns import code_checks as cc
 from harnesses.pyrit_campaigns import system_prompt as sp
 from harnesses.pyrit_campaigns.target_factory import build_target
 from scripts import export_finding_report, run_summary
-from test_run_summary import add_probe, summary
-from test_system_prompt import run_scan
-from test_target_factory import fake_app  # noqa: F401 - a fixture, used by name
+from helpers import add_probe, run_scan, summary
 
 APP_PROMPT = (
     "You are an official assistant for the State of Maryland. Answer the question using only the provided "

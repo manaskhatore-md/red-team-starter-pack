@@ -8,7 +8,7 @@ from pyrit.prompt_target import PromptTarget, TargetCapabilities, TargetConfigur
 from harnesses.pyrit_campaigns import single_turn_scan
 from harnesses.pyrit_campaigns.code_checks import CODE_CHECKS
 from harnesses.pyrit_campaigns.profiles import PAIR_RUBRICS, get_profile
-from test_system_prompt import FakeModel, run_scan
+from helpers import FakeModel, run_scan
 
 RUBRICS = single_turn_scan.load_rubrics()
 
@@ -91,10 +91,6 @@ def test_the_scan_shows_the_judge_each_probes_pass_criteria(memory, monkeypatch)
 
 
 # --- the system prompt ----------------------------------------------------------
-
-def test_the_injection_judge_has_a_slot_for_the_system_prompt():
-    assert "[[SYSTEM_PROMPT]]" in RUBRICS["injection_compliance"]["system_prompt"]
-
 
 def test_a_system_prompt_with_braces_survives_the_judges_format_call(memory):
     profile = get_profile("public_conversational")

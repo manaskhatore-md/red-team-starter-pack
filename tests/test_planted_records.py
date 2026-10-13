@@ -10,8 +10,7 @@ from harnesses.pyrit_campaigns import planted_records as pr
 from harnesses.pyrit_campaigns import system_prompt as sp
 from harnesses.pyrit_campaigns.profiles import PROFILES
 from scripts import export_finding_report, run_summary
-from test_run_summary import RUN, add_probe, add_score, summary
-from test_system_prompt import FakeModel, run_scan
+from helpers import RUN, FakeModel, add_probe, add_score, run_scan, summary
 
 
 def records(seed=1):

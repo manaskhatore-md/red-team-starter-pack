@@ -18,11 +18,17 @@ KNOWN BUGS are written as strict xfail tests: they fail today, and pytest report
 them as "xfailed". When a fix lands, the test starts passing, strict mode turns
 that into a failure, and whoever fixed it removes the marker. A bug cannot be
 fixed - or come back - without the suite noticing.
+
+Shared fixtures are here; shared fakes and helpers that tests import by name are in
+tests/helpers.py.
 """
 
 import asyncio
+import json
 import os
 import sys
+import threading
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
 import dotenv
@@ -73,3 +79,40 @@ def memory():
     # test must not see another test's results.
     memory.reset_database()
     return memory
+
+
+@pytest.fixture
+def fake_app(clean_env, memory):
+    """A local chat app: records each request, and answers with a status and body you set.
+
+    Returns the server's state dict. Set state["replies"] to a list of (status, body)
+    to answer requests in turn; the last one repeats.
+    """
+    state = {"replies": [(200, json.dumps({"answer": "hello from the app"}))], "requests": []}
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self):
+            body = self.rfile.read(int(self.headers.get("Content-Length", 0))).decode()
+            state["requests"].append({"path": self.path, "headers": dict(self.headers), "body": body})
+            status, reply = state["replies"][min(len(state["requests"]), len(state["replies"])) - 1]
+            reply = reply.encode()
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(reply)))
+            self.end_headers()
+            self.wfile.write(reply)
+
+        def log_message(self, *args):
+            pass
+
+    server = HTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    clean_env.setenv("RT_PROVIDER", "app")
+    clean_env.setenv("APP_ENDPOINT", f"http://127.0.0.1:{server.server_port}/test/chat")
+    clean_env.setenv("APP_REQUEST_TEMPLATE", '{"query": "{PROMPT}", "options": ["{PROMPT}"]}')
+    clean_env.setenv("APP_RESPONSE_PATH", "answer")
+    clean_env.setenv("RETRY_MAX_NUM_ATTEMPTS", "2")
+    clean_env.setenv("RETRY_WAIT_MIN_SECONDS", "0")
+    clean_env.setenv("RETRY_WAIT_MAX_SECONDS", "0")
+    yield state
+    server.shutdown()

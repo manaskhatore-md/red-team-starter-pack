@@ -10,7 +10,7 @@ from harnesses.pyrit_campaigns import code_checks as cc
 from harnesses.pyrit_campaigns import planted_records as pr
 from harnesses.pyrit_campaigns.single_turn_scan import load_rubrics
 from scripts import export_finding_report, run_summary
-from test_system_prompt import FakeModel, run_scan
+from helpers import FakeModel, run_scan
 
 
 def score(scorer, text):

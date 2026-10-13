@@ -10,6 +10,7 @@ import pytest
 from pyrit.models import AttackOutcome, AttackResult
 
 from scripts import export_finding_report as ex
+from helpers import nothing
 
 T0 = datetime(2026, 9, 1, tzinfo=timezone.utc)
 
@@ -30,10 +31,7 @@ def add_result(memory, objective, outcome, minutes=0, **labels):
 def run_exporter(memory, monkeypatch, capsys):
     """Run the exporter's main() with the given arguments; return what it printed."""
 
-    async def no_db(*args, **kwargs):
-        pass
-
-    monkeypatch.setattr(ex, "initialize_pyrit_async", no_db)
+    monkeypatch.setattr(ex, "initialize_pyrit_async", nothing)
 
     def run(*argv):
         monkeypatch.setattr(sys, "argv", ["export_finding_report", *argv])

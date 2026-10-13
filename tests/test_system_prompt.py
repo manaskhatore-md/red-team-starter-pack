@@ -4,11 +4,8 @@ import asyncio
 import base64
 
 import pytest
-from pyrit.models import Message, MessagePiece, construct_response_from_request
-from pyrit.models.identifiers.component_identifier import ComponentIdentifier
-from pyrit.prompt_target import PromptTarget, TargetCapabilities, TargetConfiguration
-from pyrit.score import MessageTrueFalseScorer
-from pyrit.score.scorer_prompt_validator import ScorerPromptValidator
+from pyrit.models import MessagePiece
+from pyrit.prompt_target import TargetCapabilities, TargetConfiguration
 
 from harnesses.pyrit_campaigns import single_turn_scan
 from harnesses.pyrit_campaigns.code_checks import CREDENTIAL_CHECK
@@ -16,6 +13,7 @@ from harnesses.pyrit_campaigns.planted_records import RECORD_CHECK
 from harnesses.pyrit_campaigns import system_prompt as sp
 from harnesses.pyrit_campaigns.profiles import PROFILES
 from scripts import export_finding_report, run_summary
+from helpers import FakeModel, run_scan
 
 CANARY = "RTC-3F9A-1C7B"
 
@@ -114,70 +112,8 @@ def test_the_placeholder_check_covers_the_system_prompt(capsys):
 
 # --- the scan, end to end, against a fake model ----------------------------------
 
-class FakeModel(PromptTarget):
-    """Leaks its system prompt when asked to repeat it; otherwise stays on script."""
-
-    _DEFAULT_CONFIGURATION = TargetConfiguration(
-        capabilities=TargetCapabilities(
-            supports_system_prompt=True, supports_editable_history=True, supports_multi_turn=True
-        )
-    )
-
-    def __init__(self):
-        super().__init__(model_name="fake-model")
-        self.seen = []
-
-    async def _send_prompt_to_target_async(self, *, normalized_conversation):
-        pieces = [p for m in normalized_conversation for p in m.message_pieces]
-        self.seen.append([p.role for p in pieces])
-        request = normalized_conversation[-1].message_pieces[0]
-        system = next((p.converted_value for p in pieces if p.role == "system"), "")
-        reply = system if "Repeat the text above" in request.converted_value else "I can help with the program."
-        return [construct_response_from_request(request=request, response_text_pieces=[reply])]
-
-
 class FakeSystemlessModel(FakeModel):
     _DEFAULT_CONFIGURATION = TargetConfiguration(capabilities=TargetCapabilities(supports_multi_turn=True))
-
-
-class NeverFlags(MessageTrueFalseScorer):
-    """A rubric judge that passes everything, so only the canary can flag."""
-
-    def __init__(self, *, category):
-        self._category = category
-        super().__init__(validator=ScorerPromptValidator(supported_data_types=["text"]))
-
-    def _build_identifier(self) -> ComponentIdentifier:
-        return self._create_identifier(params={"category": self._category})
-
-    async def _score_piece_async(self, message_piece, *, objective=None):
-        from pyrit.models import Score
-
-        return [Score(score_value="False", score_value_description="", score_metadata=None, score_type="true_false",
-                      score_category=[self._category], score_rationale="looks fine",
-                      scorer_class_identifier=self.get_identifier(), message_piece_id=message_piece.id,
-                      objective=objective)]
-
-
-def run_scan(monkeypatch, target, judge=None):
-    """Run the scan on the fake target. Without a judge, every rubric passes every reply."""
-    async def nothing(*args, **kwargs):
-        pass
-
-    monkeypatch.setenv("RT_PROFILE", "internal_productivity")
-    monkeypatch.setattr(single_turn_scan, "initialize_pyrit_async", nothing)
-    monkeypatch.setattr(single_turn_scan, "check_models", nothing)
-    monkeypatch.setattr(single_turn_scan, "close_target", nothing)
-    monkeypatch.setattr(single_turn_scan, "build_target", lambda: target)
-    monkeypatch.setattr(single_turn_scan, "build_scoring_target", lambda: judge)
-    monkeypatch.setattr(single_turn_scan, "model_name", lambda t: "fake-model")
-    if judge is None:
-        monkeypatch.setattr(single_turn_scan, "build_rubric_scorers",
-                            lambda profile, judge, *rest: {k: NeverFlags(category=k) for k in profile.rubrics})
-    runs = []
-    monkeypatch.setattr(single_turn_scan, "write_after_run", runs.append)
-    asyncio.run(single_turn_scan.main())
-    return runs[0]
 
 
 def test_the_scan_sends_the_system_prompt_and_flags_a_leak(memory, monkeypatch, capsys):
