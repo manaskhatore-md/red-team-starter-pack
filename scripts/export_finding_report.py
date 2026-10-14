@@ -150,9 +150,11 @@ def flagged_rubrics(scores) -> list[str]:
 
 def is_finding(result, memory) -> bool:
     # A scan finding is flagged by a rubric judge; a Crescendo finding by its outcome.
+    # Every turn counts: against a stateless app, the earlier turns are not in the
+    # result's own conversation (see full_conversation_ids).
     if result.outcome.value == "success":
         return True
-    return bool(flagged_rubrics(memory.get_prompt_scores(conversation_id=result.conversation_id)))
+    return bool(flagged_rubrics(full_conversation_scores(memory, result)))
 
 
 def reproducibility(result, all_results, memory) -> str:
@@ -404,9 +406,10 @@ def flagged_by_rubric(result, memory, rubrics: set[str]) -> bool:
 
     single_turn_scan.py records policy violations as auxiliary scores, not as the
     attack outcome, so --outcome does not find them. This is the same test the scan
-    uses to count a finding: a true score, in the rubric's score_category.
+    uses to count a finding: a true score, in the rubric's score_category, on any
+    turn of the conversation, including turns PyRIT set aside (see full_conversation_ids).
     """
-    for score in memory.get_prompt_scores(conversation_id=result.conversation_id):
+    for score in full_conversation_scores(memory, result):
         if score.get_value() is True and rubrics & set(score.score_category or []):
             return True
     return False
