@@ -217,6 +217,39 @@ def test_an_unknown_transport_is_refused(clean_env):
         target_factory.build_target()
 
 
+@pytest.mark.parametrize("sends_history", [True, False])
+def test_the_red_team_campaign_says_when_the_kit_sends_the_conversation(sends_history, clean_env, monkeypatch, capsys):
+    from types import SimpleNamespace
+
+    from harnesses.pyrit_campaigns import multi_turn_red_team as rta
+    from harnesses.pyrit_campaigns.target_factory import AppChatTarget
+
+    class Executor:
+        def __init__(self, **kwargs):
+            pass
+
+        async def execute_attack_async(self, **kwargs):
+            return SimpleNamespace(completed_results=[], incomplete_objectives=[])
+
+    template = '{"message": "{PROMPT}", "history": "{HISTORY}"}' if sends_history else '{"message": "{PROMPT}"}'
+    app = AppChatTarget(endpoint="https://example.test/chat", request_template=template)
+    clean_env.setenv("RT_PROFILE", "public_conversational")
+    clean_env.setenv("RT_PROVIDER", "app")
+    clean_env.setenv("RT_JUDGE_PROVIDER", "gemini")
+    for name in ("initialize_pyrit_async", "check_models", "close_target"):
+        monkeypatch.setattr(rta, name, nothing)
+    monkeypatch.setattr(rta, "build_target", lambda role="target", **kw: app if role == "target" else FakeModel())
+    monkeypatch.setattr(rta, "build_scoring_target", lambda: FakeModel())
+    monkeypatch.setattr(rta, "model_name", lambda t: "fake")
+    monkeypatch.setattr(rta, "write_after_run", lambda run_id: None)
+    monkeypatch.setattr(rta, "AttackExecutor", Executor)
+
+    asyncio.run(rta.main())
+    out = capsys.readouterr().out
+    assert ("sends the app the whole conversation" in out) == sends_history
+    assert ("no memory of its own" in out) == (not sends_history)
+
+
 def test_the_browser_target_says_it_keeps_history_but_takes_no_system_prompt():
     from pyrit.prompt_target import CapabilityName
 
@@ -224,3 +257,174 @@ def test_the_browser_target_says_it_keeps_history_but_takes_no_system_prompt():
     assert target.configuration.includes(capability=CapabilityName.MULTI_TURN)
     assert not target.configuration.includes(capability=CapabilityName.EDITABLE_HISTORY)
     assert not target.configuration.includes(capability=CapabilityName.SYSTEM_PROMPT)
+
+
+# --- APP_TRANSPORT=browser-api: the app's API, called from its signed-in page ----------
+
+APP_PAGE = '<!doctype html><html><body><textarea id="message"></textarea></body></html>'
+
+
+@pytest.fixture
+def signed_in_api():
+    """A stand-in app behind a sign-in, like an API behind an identity-aware proxy.
+
+    GET /chat signs the browser in (a cookie) and shows the page. With ?signin=MS a
+    browser that is not signed in is first sent to a sign-in page on another site, which
+    sends it back after MS milliseconds. POST /api/chat answers only a signed-in browser,
+    redirecting any other request to sign in, and echoes the history it was sent.
+    """
+    import json
+    import threading
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+    from urllib.parse import parse_qs, quote, urlparse
+
+    state = {"page_loads": 0, "requests": []}
+
+    class SignInSite(BaseHTTPRequestHandler):
+        def do_GET(self):
+            query = parse_qs(urlparse(self.path).query)
+            back, ms = query["back"][0], int(query["ms"][0])
+            page = f"<p>Sign in</p><script>setTimeout(() => location = {json.dumps(back)}, {ms})</script>"
+            self._send(200, page.encode(), "text/html")
+
+        def _send(self, status, body, kind, extra=()):
+            self.send_response(status)
+            for name, value in extra:
+                self.send_header(name, value)
+            self.send_header("Content-Type", kind)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args):
+            pass
+
+    class App(SignInSite):
+        def signed_in(self):
+            return "session=ok" in self.headers.get("Cookie", "")
+
+        def do_GET(self):
+            url = urlparse(self.path)
+            if url.path != "/chat":    # the browser's own extras, e.g. /favicon.ico
+                return self._send(404, b"", "text/plain")
+            ms = parse_qs(url.query).get("signin", [None])[0]
+            if ms and not self.signed_in():
+                back = quote(f"http://127.0.0.1:{app.server_port}/chat")
+                where = f"http://127.0.0.1:{sign_in.server_port}/login?back={back}&ms={ms}"
+                return self._send(302, b"", "text/plain", [("Location", where)])
+            state["page_loads"] += 1
+            self._send(200, APP_PAGE.encode(), "text/html", [("Set-Cookie", "session=ok; Path=/")])
+
+        def do_POST(self):
+            body = self.rfile.read(int(self.headers.get("Content-Length", 0))).decode()
+            if not self.signed_in() or "signin" in self.path:
+                return self._send(302, b"", "text/plain", [("Location", "/chat")])
+            sent = json.loads(body)
+            state["requests"].append(sent)
+            turn = 1 + sum(1 for t in sent.get("history", []) if t["role"] == "user")
+            reply = {"reply": f"turn {turn}: you said {sent['message']}", "usage": {"total_tokens": 1}}
+            self._send(200, json.dumps(reply).encode(), "application/json")
+
+    app = HTTPServer(("127.0.0.1", 0), App)
+    sign_in = HTTPServer(("127.0.0.1", 0), SignInSite)
+    for server in (app, sign_in):
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+    state["url"] = f"http://127.0.0.1:{app.server_port}/chat"
+    yield state
+    for server in (app, sign_in):
+        server.shutdown()
+
+
+def make_api_target(tmp_path, page_url, **overrides):
+    from harnesses.pyrit_campaigns.browser_target import BrowserApiTarget
+
+    settings = dict(
+        page_url=page_url, endpoint="/api/chat", profile=tmp_path / "profile", headless=True, ready_timeout=0.5,
+        sign_in_timeout=15, request_template='{"message": "{PROMPT}", "history": "{HISTORY}", "session_id": "kit"}',
+        history_turn='{"role": "{ROLE}", "text": "{TEXT}"}', history_roles="user,model", response_path="reply",
+        timeout=15,
+    )
+    settings.update(overrides)
+    return BrowserApiTarget(**settings)
+
+
+async def converse(target, memory, conversation_id, text):
+    """Send one turn and store both sides, as PyRIT does after each exchange of an attack."""
+    piece = MessagePiece(role="user", original_value=text, conversation_id=conversation_id)
+    message = Message(message_pieces=[piece])
+    reply = (await target.send_prompt_async(message=message))[0]
+    memory.add_message_to_memory(request=message)
+    memory.add_message_to_memory(request=reply)
+    return reply.get_value()
+
+
+@needs_browser
+def test_browser_api_sends_the_conversation_the_kit_holds(tmp_path, memory, signed_in_api):
+    target = make_api_target(tmp_path, signed_in_api["url"])
+    a, b = str(uuid.uuid4()), str(uuid.uuid4())
+
+    async def script():
+        return [await converse(target, memory, a, "first"), await converse(target, memory, a, "second"),
+                await converse(target, memory, b, "other")]
+
+    assert run(target, script) == ["turn 1: you said first", "turn 2: you said second", "turn 1: you said other"]
+    # The second turn carried the first exchange, in the app's own shape.
+    assert signed_in_api["requests"][1]["history"] == [
+        {"role": "user", "text": "first"}, {"role": "model", "text": "turn 1: you said first"},
+    ]
+    # One page, signed in once, serves every conversation.
+    assert signed_in_api["page_loads"] == 1
+
+
+@needs_browser
+def test_browser_api_waits_while_you_sign_in_on_another_site(tmp_path, memory, signed_in_api, capsys):
+    target = make_api_target(tmp_path, signed_in_api["url"] + "?signin=2000")
+    assert run(target, lambda: converse(target, memory, str(uuid.uuid4()), "hi")) == "turn 1: you said hi"
+    assert "sign in there" in capsys.readouterr().out
+
+
+@needs_browser
+def test_browser_api_signs_in_again_when_the_sign_in_lapses(tmp_path, memory, signed_in_api, capsys):
+    target = make_api_target(tmp_path, signed_in_api["url"])
+
+    async def script():
+        first = await converse(target, memory, str(uuid.uuid4()), "one")
+        await target._context.clear_cookies()    # the session expires
+        return first, await converse(target, memory, str(uuid.uuid4()), "two")
+
+    assert run(target, script) == ("turn 1: you said one", "turn 1: you said two")
+    assert signed_in_api["page_loads"] == 2
+    assert "reloading its page" in capsys.readouterr().out
+
+
+@needs_browser
+def test_browser_api_says_so_when_the_app_keeps_turning_requests_away(tmp_path, memory, signed_in_api):
+    # An APP_ENDPOINT that always redirects: reloading the page does not help.
+    target = make_api_target(tmp_path, signed_in_api["url"], endpoint="/api/chat?signin=1")
+    with pytest.raises(Exception, match="redirected the request"):
+        run(target, lambda: converse(target, memory, str(uuid.uuid4()), "hi"))
+
+
+def test_the_browser_api_transport_is_chosen_by_app_transport(clean_env):
+    from pyrit.prompt_target import CapabilityName
+
+    from harnesses.pyrit_campaigns.browser_target import BrowserApiTarget
+
+    clean_env.setenv("RT_PROVIDER", "app")
+    clean_env.setenv("APP_TRANSPORT", "browser-api")
+    clean_env.setenv("APP_BROWSER_URL", "https://example.test/chat")
+    clean_env.setenv("APP_ENDPOINT", "/api/chat")
+    clean_env.setenv("APP_REQUEST_TEMPLATE", '{"message": "{PROMPT}", "history": "{HISTORY}"}')
+    target = target_factory.build_target()
+    assert isinstance(target, BrowserApiTarget)
+    # A path is taken on the page's own site.
+    assert target._endpoint == "https://example.test/api/chat"
+    assert target_factory.model_name(target) == "app:example.test/api/chat (browser-api)"
+    assert target.configuration.includes(capability=CapabilityName.EDITABLE_HISTORY)
+
+
+def test_the_browser_api_transport_names_the_settings_it_is_missing(clean_env):
+    clean_env.setenv("RT_PROVIDER", "app")
+    clean_env.setenv("APP_TRANSPORT", "browser-api")
+    with pytest.raises(SystemExit, match="APP_BROWSER_URL, APP_ENDPOINT"):
+        target_factory.build_target()

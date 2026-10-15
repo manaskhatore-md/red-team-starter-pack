@@ -1,4 +1,9 @@
-"""A deployed chat app driven through its web page, for apps whose API the kit cannot call.
+"""A deployed chat app reached through a real browser, for apps whose API the kit cannot call alone.
+
+Two ways in. APP_TRANSPORT=browser (BrowserChatTarget, below) types into the app's chat
+page as a person would. APP_TRANSPORT=browser-api (BrowserApiTarget, at the end) sends
+the app's own API requests from inside its signed-in page, so the kit can supply the
+conversation history itself; see that class for its settings.
 
 Used as RT_PROVIDER=app with APP_TRANSPORT=browser, so the scan treats it as an app in
 every other way (calibration, fixed replies, the app's own system prompt). Settings, all
@@ -34,15 +39,70 @@ import os
 import time
 from collections import OrderedDict
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import urljoin, urlparse
 
 from pyrit.models import Message, construct_response_from_request
 from pyrit.prompt_target import PromptTarget, TargetCapabilities, TargetConfiguration, limit_requests_per_minute
+
+from harnesses.pyrit_campaigns.target_factory import AppChatTarget
 
 DEFAULT_PROFILE = Path.home() / ".rt_browser_profile"
 POLL_SECONDS = 0.25
 # How long to wait for the chat box before saying the page may need a sign-in.
 READY_SECONDS = 15.0
+
+
+async def launch_browser(channel: str, profile: Path | None, headless: bool) -> tuple:
+    """Start Playwright and the installed browser with its kept profile: (playwright, context)."""
+    try:
+        from playwright.async_api import async_playwright
+    except ImportError as e:
+        raise SystemExit("APP_TRANSPORT=browser and browser-api need Playwright: pip install playwright") from e
+    playwright = await async_playwright().start()
+    # Unset means Chrome, or Edge where Chrome is not installed (Edge ships with Windows).
+    channels = [channel] if channel else ["chrome", "msedge"]
+    for i, name in enumerate(channels):
+        try:
+            context = await playwright.chromium.launch_persistent_context(
+                user_data_dir=str(profile or DEFAULT_PROFILE / name),
+                channel=None if name == "chromium" else name,
+                headless=headless,
+            )
+            return playwright, context
+        except Exception as e:
+            if i == len(channels) - 1:
+                await playwright.stop()
+                raise RuntimeError(
+                    f"Could not start {' or '.join(channels)}: {e}. Set APP_BROWSER_CHANNEL to an "
+                    "installed browser (chrome or msedge)."
+                ) from e
+
+
+SIGN_IN_NOTE = (
+    "\nWaiting for the app's page. If the browser window shows a sign-in page, sign in there:\n"
+    "the run carries on by itself once the app's page is back (up to {timeout:.0f}s)."
+)
+
+
+async def wait_for_element(tab, selector: str, ready_timeout: float, sign_in_timeout: float) -> None:
+    """Wait for APP_BROWSER_INPUT on the page, giving you time to sign in if it does not show."""
+    from playwright.async_api import TimeoutError as PlaywrightTimeout
+
+    box = tab.locator(selector).first
+    try:
+        await box.wait_for(state="visible", timeout=ready_timeout * 1000)
+        return
+    except PlaywrightTimeout:
+        pass
+    print(SIGN_IN_NOTE.format(timeout=sign_in_timeout))
+    try:
+        await box.wait_for(state="visible", timeout=sign_in_timeout * 1000)
+    except PlaywrightTimeout as e:
+        raise RuntimeError(
+            f"No element matching APP_BROWSER_INPUT={selector!r} appeared at {tab.url}. If the page "
+            "needs a sign-in, run once without APP_BROWSER_HEADLESS so you can sign in; otherwise the "
+            "selector does not match the page."
+        ) from e
 
 
 class BrowserChatTarget(PromptTarget):
@@ -126,31 +186,8 @@ class BrowserChatTarget(PromptTarget):
         )
 
     async def _start(self) -> None:
-        if self._context is not None:
-            return
-        try:
-            from playwright.async_api import async_playwright
-        except ImportError as e:
-            raise SystemExit("APP_TRANSPORT=browser needs Playwright: pip install playwright") from e
-        self._playwright = await async_playwright().start()
-        # Unset means Chrome, or Edge where Chrome is not installed (Edge ships with Windows).
-        channels = [self._channel] if self._channel else ["chrome", "msedge"]
-        for i, channel in enumerate(channels):
-            try:
-                self._context = await self._playwright.chromium.launch_persistent_context(
-                    user_data_dir=str(self._profile or DEFAULT_PROFILE / channel),
-                    channel=None if channel == "chromium" else channel,
-                    headless=self._headless,
-                )
-                return
-            except Exception as e:
-                if i == len(channels) - 1:
-                    await self._playwright.stop()
-                    self._playwright = None
-                    raise RuntimeError(
-                        f"Could not start {' or '.join(channels)}: {e}. Set APP_BROWSER_CHANNEL to an "
-                        "installed browser (chrome or msedge)."
-                    ) from e
+        if self._context is None:
+            self._playwright, self._context = await launch_browser(self._channel, self._profile, self._headless)
 
     async def _tab_for(self, conversation_id: str) -> tuple:
         """The tab holding this conversation, opening a fresh chat for a new one."""
@@ -186,26 +223,7 @@ class BrowserChatTarget(PromptTarget):
             await self._wait_for_chat_box(tab)
 
     async def _wait_for_chat_box(self, tab) -> None:
-        from playwright.async_api import TimeoutError as PlaywrightTimeout
-
-        box = tab.locator(self._input).first
-        try:
-            await box.wait_for(state="visible", timeout=self._ready_timeout * 1000)
-            return
-        except PlaywrightTimeout:
-            pass
-        print(
-            "\nWaiting for the app's chat box. If the browser window shows a sign-in page, sign in there:\n"
-            f"the run carries on by itself once the chat page is back (up to {self._sign_in_timeout:.0f}s)."
-        )
-        try:
-            await box.wait_for(state="visible", timeout=self._sign_in_timeout * 1000)
-        except PlaywrightTimeout as e:
-            raise RuntimeError(
-                f"No element matching APP_BROWSER_INPUT={self._input!r} appeared at {tab.url}. If the page "
-                "needs a sign-in, run once without APP_BROWSER_HEADLESS so you can sign in; otherwise the "
-                "selector does not match the page."
-            ) from e
+        await wait_for_element(tab, self._input, self._ready_timeout, self._sign_in_timeout)
 
     async def _reply_text(self, tab, first: int) -> str:
         replies = tab.locator(self._reply)
@@ -266,3 +284,175 @@ class BrowserChatTarget(PromptTarget):
             await self._playwright.stop()
             self._playwright = None
         self._tabs.clear()
+
+
+# Runs inside the app's page. Same-origin requests carry the page's sign-in cookies.
+# redirect: "manual" makes a bounce to a sign-in page visible instead of followed.
+FETCH_SCRIPT = """
+async ({url, body, headers, timeoutMs}) => {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const r = await fetch(url, {method: "POST", headers, body, redirect: "manual", signal: controller.signal});
+    if (r.type === "opaqueredirect") return {status: 0, body: "", problem: "redirect"};
+    return {status: r.status, body: await r.text(), problem: ""};
+  } catch (e) {
+    return {status: 0, body: String(e), problem: e.name === "AbortError" ? "timeout" : "network"};
+  } finally {
+    clearTimeout(timer);
+  }
+}
+"""
+
+
+class BrowserApiTarget(AppChatTarget):
+    """Calls the app's API from inside its signed-in web page, for an API behind a browser sign-in.
+
+    Used as RT_PROVIDER=app with APP_TRANSPORT=browser-api. Each request is built exactly
+    as over plain HTTP (APP_ENDPOINT, APP_REQUEST_TEMPLATE, APP_RESPONSE_PATH and the
+    {HISTORY} settings: see AppChatTarget), but the browser sends it, so it carries the
+    sign-in the browser holds. That reaches an API that admits only a signed-in browser
+    (single sign-on, an identity-aware proxy) with no token to obtain or refresh. With
+    {HISTORY} in the template the kit holds the conversation and can rewrite it, so
+    Crescendo runs, which it cannot through APP_TRANSPORT=browser. Settings beyond
+    AppChatTarget's:
+
+        APP_BROWSER_URL       the app's page, opened once to sign in. APP_ENDPOINT may be a
+                              path on it, e.g. /api/chat
+        APP_BROWSER_INPUT     optional: an element shown only once you are signed in, such
+                              as the chat box. Unset: the page counts as ready once it is
+                              back on APP_BROWSER_URL's site after any sign-in
+        APP_BROWSER_CHANNEL, APP_BROWSER_PROFILE, APP_BROWSER_HEADLESS and
+        APP_BROWSER_SIGN_IN_TIMEOUT work as for APP_TRANSPORT=browser.
+
+    The browser's own rules apply to the request: an APP_ENDPOINT on another site works
+    only if that site allows it (CORS). If the sign-in lapses mid-run (the app redirects
+    or answers 401), the page is reloaded once so the browser can sign in again.
+    """
+
+    def __init__(
+        self,
+        *,
+        page_url: str,
+        endpoint: str,
+        ready_selector: str = "",
+        channel: str = "",
+        profile: Path | None = None,
+        headless: bool = False,
+        sign_in_timeout: float = 300.0,
+        ready_timeout: float = READY_SECONDS,
+        **app_settings,
+    ):
+        parsed = urlparse(page_url)
+        if parsed.scheme not in ("http", "https") or not parsed.netloc:
+            raise SystemExit(f"APP_BROWSER_URL={page_url!r} is not an http(s) URL.")
+        super().__init__(endpoint=urljoin(page_url, endpoint), **app_settings)
+        api = urlparse(self._endpoint)
+        self.set_model_name(model_name=f"app:{api.netloc}{api.path} (browser-api)")
+        self._page_url = page_url
+        self._origin = (parsed.scheme, parsed.netloc)
+        self._ready_selector = ready_selector
+        self._channel = channel
+        self._profile = Path(profile) if profile else None
+        self._headless = headless
+        self._sign_in_timeout = sign_in_timeout
+        self._ready_timeout = ready_timeout
+        self._playwright = None
+        self._context = None
+        self._page = None
+        self._lock = asyncio.Lock()
+        # Counts page loads, so requests that hit the same lapsed sign-in reload it once between them.
+        self._loads = 0
+
+    @classmethod
+    def from_env(cls) -> "BrowserApiTarget":
+        missing = [n for n in ("APP_BROWSER_URL", "APP_ENDPOINT") if not os.getenv(n, "").strip()]
+        if missing:
+            raise SystemExit(
+                f"APP_TRANSPORT=browser-api needs {', '.join(missing)} - see BrowserApiTarget in browser_target.py."
+            )
+        return cls(
+            page_url=os.environ["APP_BROWSER_URL"].strip(),
+            ready_selector=os.getenv("APP_BROWSER_INPUT", "").strip(),
+            channel=os.getenv("APP_BROWSER_CHANNEL", "").strip(),
+            profile=os.getenv("APP_BROWSER_PROFILE", "").strip() or None,
+            headless=os.getenv("APP_BROWSER_HEADLESS", "").strip().lower() in ("1", "true", "yes"),
+            sign_in_timeout=float(os.getenv("APP_BROWSER_SIGN_IN_TIMEOUT") or 300),
+            **AppChatTarget.settings_from_env(),
+        )
+
+    async def _load(self) -> None:
+        """Open (or reload) the app's page and wait until you are signed in. Holds self._lock."""
+        if self._context is None:
+            self._playwright, self._context = await launch_browser(self._channel, self._profile, self._headless)
+            self._page = self._context.pages[0] if self._context.pages else await self._context.new_page()
+        await self._page.goto(self._page_url)
+        if self._ready_selector:
+            await wait_for_element(self._page, self._ready_selector, self._ready_timeout, self._sign_in_timeout)
+        else:
+            await self._wait_for_site()
+        self._loads += 1
+
+    async def _wait_for_site(self) -> None:
+        """Wait until the page is back on the app's own site, after any sign-in page."""
+        def on_site() -> bool:
+            url = urlparse(self._page.url)
+            return (url.scheme, url.netloc) == self._origin
+
+        deadline = time.monotonic() + self._ready_timeout
+        noted = False
+        while not on_site():
+            if time.monotonic() > deadline:
+                if noted:
+                    raise RuntimeError(
+                        f"The page did not come back to {self._page_url} after {self._sign_in_timeout:.0f}s "
+                        f"(it is at {self._page.url}). If it needs a sign-in, run once without "
+                        "APP_BROWSER_HEADLESS so you can sign in."
+                    )
+                print(SIGN_IN_NOTE.format(timeout=self._sign_in_timeout))
+                noted, deadline = True, time.monotonic() + self._sign_in_timeout
+            await asyncio.sleep(POLL_SECONDS)
+        await self._page.wait_for_load_state()
+
+    async def _fetch(self, body: str) -> dict:
+        return await self._page.evaluate(
+            FETCH_SCRIPT,
+            {"url": self._endpoint, "body": body, "headers": self._headers, "timeoutMs": self._timeout * 1000},
+        )
+
+    async def _post(self, body: str) -> tuple[int, str]:
+        async with self._lock:
+            if self._page is None:
+                await self._load()
+        loads = self._loads
+        result = await self._fetch(body)
+        if result["problem"] in ("redirect", "network") or result["status"] == 401:
+            # Most likely the sign-in lapsed. Reload once - unless another request
+            # already did since this one was sent - and try again.
+            async with self._lock:
+                if self._loads == loads:
+                    print("\nThe app turned a request away; reloading its page in case the sign-in lapsed.")
+                    await self._load()
+            result = await self._fetch(body)
+        if result["problem"] == "timeout":
+            raise RuntimeError(f"No reply from {self._endpoint} within {self._timeout:.0f}s (APP_TIMEOUT).")
+        if result["problem"] == "redirect":
+            raise RuntimeError(
+                f"{self._endpoint} redirected the request, even after the page was reloaded. The sign-in may "
+                "need you: run without APP_BROWSER_HEADLESS. Or APP_ENDPOINT is not the API's address."
+            )
+        if result["problem"]:
+            raise RuntimeError(
+                f"The browser could not send the request to {self._endpoint}: {result['body']}. An APP_ENDPOINT "
+                "on another site than APP_BROWSER_URL must allow requests from it (CORS)."
+            )
+        return result["status"], result["body"]
+
+    async def cleanup_target_async(self) -> None:
+        if self._context is not None:
+            await self._context.close()
+            self._context = None
+        if self._playwright is not None:
+            await self._playwright.stop()
+            self._playwright = None
+        self._page = None

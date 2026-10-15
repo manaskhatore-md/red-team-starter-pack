@@ -94,6 +94,7 @@ from harnesses.pyrit_campaigns.system_prompt import (
     CANARY_CHECK,
     AppPrompt,
     CanaryLeakScorer,
+    announce_app_prompt,
     load_app_prompt,
     load_system_prompt,
     new_canary,
@@ -177,19 +178,14 @@ async def main() -> int:
 
     if is_app:
         app_prompt = load_app_prompt()
-        print("\nSystem prompt: the app's own.")
-        if app_prompt.text:
-            print(f"Known from {app_prompt.source}: replies are checked for overlap with it, "
-                  "and the judge is shown it.")
-            judged_prompt = app_prompt.text
-        if app_prompt.canary:
-            print(f"Every reply is checked for the app's canary, {app_prompt.canary} (APP_PROMPT_CANARY).")
-        if not app_prompt.text and not app_prompt.canary:
+        announce_app_prompt(app_prompt)
+        judged_prompt = app_prompt.text or None
+        if getattr(target, "sends_history", False):
             print(
-                "!! The app's system prompt is not known, so only the judge can catch a leak.\n"
-                "!! Set APP_SYSTEM_PROMPT_FILE or APP_PROMPT_CANARY to enable code checks."
+                "\nNote: the kit sends the app the whole conversation with each message, so this is a real "
+                "multi-turn conversation: the app sees every earlier turn."
             )
-        if target.configuration.includes(capability=CapabilityName.MULTI_TURN):
+        elif target.configuration.includes(capability=CapabilityName.MULTI_TURN):
             print(
                 "\nNote: the app keeps each conversation's history itself (here, in its own browser tab), "
                 "so this is a real multi-turn conversation: the app sees every earlier turn."

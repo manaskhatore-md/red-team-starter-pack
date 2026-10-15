@@ -37,7 +37,13 @@ import uuid
 
 from pyrit.exceptions import RateLimitException, pyrit_target_retry
 from pyrit.models import Message, MessagePiece, construct_response_from_request
-from pyrit.prompt_target import LiteLLMChatTarget, PromptTarget, limit_requests_per_minute
+from pyrit.prompt_target import (
+    LiteLLMChatTarget,
+    PromptTarget,
+    TargetCapabilities,
+    TargetConfiguration,
+    limit_requests_per_minute,
+)
 
 # Key-based providers: (LiteLLM model id, env var holding the API key).
 # TODO: pin these to the models your agency actually has contracts for, and add a
@@ -215,8 +221,15 @@ def build_target(role: str = "target", *, provider: str | None = None, model: st
             target = BrowserChatTarget.from_env()
             print(f"{label}: {target._url} (app, through its web page)")
             return target
+        if transport == "browser-api":
+            # An API that only a signed-in browser may call: the browser sends the requests.
+            from harnesses.pyrit_campaigns.browser_target import BrowserApiTarget
+
+            target = BrowserApiTarget.from_env()
+            print(f"{label}: {target._endpoint} (app, called from its signed-in web page)")
+            return target
         if transport != "http":
-            raise SystemExit(f"APP_TRANSPORT={transport!r}: use http (the default) or browser.")
+            raise SystemExit(f"APP_TRANSPORT={transport!r}: use http (the default), browser, or browser-api.")
         target = AppChatTarget.from_env()
         print(f"{label}: {target._endpoint} (app)")
         return target
@@ -342,6 +355,36 @@ class AnthropicVertexChatTarget(PromptTarget):
 APP_RETRY_STATUSES = {429, 503, 504}
 
 PROMPT_SLOT = "{PROMPT}"
+HISTORY_SLOT = "{HISTORY}"
+CONVERSATION_SLOT = "{CONVERSATION_ID}"
+DEFAULT_HISTORY_TURN = '{"role": "{ROLE}", "content": "{TEXT}"}'
+
+
+def _fill_slots(value, slots: dict):
+    """The JSON value with every slot filled. A string that is exactly one slot whose
+    value is not a string (a list of turns) becomes that value; slots inside a longer
+    string are filled in one pass, so a probe that happens to contain a slot's name is
+    sent as written."""
+    if isinstance(value, str):
+        if value in slots and not isinstance(slots[value], str):
+            return slots[value]
+        names = [name for name, filler in slots.items() if isinstance(filler, str)]
+        pattern = "|".join(re.escape(name) for name in names)
+        return re.sub(pattern, lambda m: slots[m.group(0)], value) if pattern else value
+    if isinstance(value, list):
+        return [_fill_slots(v, slots) for v in value]
+    if isinstance(value, dict):
+        return {k: _fill_slots(v, slots) for k, v in value.items()}
+    return value
+
+
+def _holds_whole_value(value, slot: str) -> bool:
+    """Whether the slot appears in the JSON value as a complete string of its own."""
+    if isinstance(value, list):
+        return any(_holds_whole_value(v, slot) for v in value)
+    if isinstance(value, dict):
+        return any(_holds_whole_value(v, slot) for v in value.values())
+    return value == slot
 
 
 class AppChatTarget(PromptTarget):
@@ -353,6 +396,13 @@ class AppChatTarget(PromptTarget):
         APP_ENDPOINT          the chat URL, e.g. https://abc123.execute-api.us-east-1.amazonaws.com/test/chat
         APP_REQUEST_TEMPLATE  the request body, with {PROMPT} where the probe goes.
                               Default: {"message": "{PROMPT}"}
+                              Optional slots: {CONVERSATION_ID}, a fresh id for each
+                              conversation, and "{HISTORY}" (quoted, as a whole value),
+                              which becomes the list of the conversation's earlier turns
+        APP_HISTORY_TURN      the shape of one earlier turn in {HISTORY}, with {ROLE}
+                              and {TEXT}. Default: {"role": "{ROLE}", "content": "{TEXT}"}
+        APP_HISTORY_ROLES     the app's names for the user's turns and its own, in that
+                              order. Default: user,assistant
         APP_RESPONSE_PATH     where the reply is in the response, dotted, e.g. answer
                               or choices.0.message.content. Unset: the whole body.
         APP_API_KEY           sent as the x-api-key header (API Gateway API keys)
@@ -364,9 +414,13 @@ class AppChatTarget(PromptTarget):
     putting the prompt into it. The template is parsed as JSON before the probe is
     put in, so a probe full of quotes and newlines cannot break the request.
 
-    The app keeps its own system prompt and history, so this target declares
-    neither: it is single-turn, and the scan sends it no stand-in system prompt.
-    A multi-turn campaign against it stops with PyRIT's capability error.
+    Without {HISTORY}, the app keeps its own history, so this target is single-turn
+    and a multi-turn campaign against it stops with PyRIT's capability error. With
+    {HISTORY}, the app remembers nothing between requests and takes the whole
+    conversation from each one, so the kit holds the history and may rewrite it: the
+    target declares multi-turn and editable history, which Crescendo's backtracking
+    needs. Either way it declares no system prompt, since the app sends its own, and
+    the scan sends it no stand-in.
     """
 
     def __init__(
@@ -374,6 +428,8 @@ class AppChatTarget(PromptTarget):
         *,
         endpoint: str,
         request_template: str = '{"message": "{PROMPT}"}',
+        history_turn: str = DEFAULT_HISTORY_TURN,
+        history_roles: str = "user,assistant",
         response_path: str = "",
         headers: dict[str, str] | None = None,
         timeout: float = 60.0,
@@ -384,55 +440,105 @@ class AppChatTarget(PromptTarget):
         url = urlparse(endpoint)
         if url.scheme not in ("http", "https") or not url.netloc:
             raise SystemExit(f"APP_ENDPOINT={endpoint!r} is not an http(s) URL.")
-        super().__init__(
-            endpoint=endpoint,
-            model_name=f"app:{url.netloc}{url.path}",
-            max_requests_per_minute=max_requests_per_minute,
-        )
         try:
             self._template = json.loads(request_template)
         except ValueError as e:
             raise SystemExit(f"APP_REQUEST_TEMPLATE is not valid JSON ({e}): {request_template}") from e
         if PROMPT_SLOT not in request_template:
             raise SystemExit(f"APP_REQUEST_TEMPLATE has no {PROMPT_SLOT} for the probe to go in: {request_template}")
+
+        # None: the app keeps its own history, and requests carry only the new message.
+        self._history_turn = None
+        if HISTORY_SLOT in request_template:
+            if not _holds_whole_value(self._template, HISTORY_SLOT):
+                raise SystemExit(
+                    f'APP_REQUEST_TEMPLATE: put {HISTORY_SLOT} in quotes as a whole value, e.g. "history": '
+                    f'"{HISTORY_SLOT}". It is replaced by a list of turns, not by text: {request_template}'
+                )
+            try:
+                self._history_turn = json.loads(history_turn)
+            except ValueError as e:
+                raise SystemExit(f"APP_HISTORY_TURN is not valid JSON ({e}): {history_turn}") from e
+            if "{TEXT}" not in history_turn:
+                raise SystemExit(f"APP_HISTORY_TURN has no {{TEXT}} for a turn's text to go in: {history_turn}")
+            roles = [r.strip() for r in history_roles.split(",")]
+            if len(roles) != 2 or not all(roles):
+                raise SystemExit(
+                    f"APP_HISTORY_ROLES={history_roles!r}: give two names, the user's and the app's, e.g. user,assistant"
+                )
+            self._roles = {"user": roles[0], "assistant": roles[1]}
+
+        super().__init__(
+            endpoint=endpoint,
+            model_name=f"app:{url.netloc}{url.path}",
+            max_requests_per_minute=max_requests_per_minute,
+            custom_configuration=TargetConfiguration(
+                capabilities=TargetCapabilities(supports_multi_turn=True, supports_editable_history=True)
+            ) if self._history_turn is not None else None,
+        )
         self._response_path = response_path.strip()
         self._headers = {"Content-Type": "application/json", **(headers or {})}
         self._timeout = timeout
         self._client = None
 
-    @classmethod
-    def from_env(cls) -> "AppChatTarget":
-        endpoint = os.getenv("APP_ENDPOINT", "").strip()
-        if not endpoint:
-            raise SystemExit("APP_ENDPOINT is not set - see the YOUR APPLICATION section of .env.example.")
+    @staticmethod
+    def settings_from_env() -> dict:
+        """The constructor's settings from the APP_* variables, for this class and the browser-api one."""
         headers = {}
         if os.getenv("APP_API_KEY"):
             headers["x-api-key"] = os.environ["APP_API_KEY"].strip()
         if os.getenv("APP_TOKEN"):
             headers["Authorization"] = f"Bearer {os.environ['APP_TOKEN'].strip()}"
         rpm = os.getenv("APP_MAX_RPM", "").strip()
-        return cls(
-            endpoint=endpoint,
+        return dict(
+            endpoint=os.getenv("APP_ENDPOINT", "").strip(),
             request_template=os.getenv("APP_REQUEST_TEMPLATE") or '{"message": "{PROMPT}"}',
+            history_turn=os.getenv("APP_HISTORY_TURN") or DEFAULT_HISTORY_TURN,
+            history_roles=os.getenv("APP_HISTORY_ROLES") or "user,assistant",
             response_path=os.getenv("APP_RESPONSE_PATH", ""),
             headers=headers,
             timeout=float(os.getenv("APP_TIMEOUT") or 60),
             max_requests_per_minute=int(rpm) if rpm else None,
         )
 
-    def request_body(self, prompt: str) -> str:
-        """The JSON request for one probe: the template with the probe in every {PROMPT}."""
+    @classmethod
+    def from_env(cls) -> "AppChatTarget":
+        if not os.getenv("APP_ENDPOINT", "").strip():
+            raise SystemExit("APP_ENDPOINT is not set - see the YOUR APPLICATION section of .env.example.")
+        return cls(**cls.settings_from_env())
 
-        def fill(value):
-            if isinstance(value, str):
-                return value.replace(PROMPT_SLOT, prompt)
-            if isinstance(value, list):
-                return [fill(v) for v in value]
-            if isinstance(value, dict):
-                return {k: fill(v) for k, v in value.items()}
-            return value
+    @property
+    def sends_history(self) -> bool:
+        """Whether each request carries the conversation so far ({HISTORY} in the template)."""
+        return self._history_turn is not None
 
-        return json.dumps(fill(self._template))
+    def request_body(self, prompt: str, history: list[tuple[str, str]] = (), conversation_id: str = "") -> str:
+        """The JSON request for one message: the template with the message in every {PROMPT},
+        the conversation's id in every {CONVERSATION_ID}, and its earlier turns, given as
+        (role, text) with role "user" or "assistant", in {HISTORY}."""
+        turns = [
+            _fill_slots(self._history_turn, {"{ROLE}": self._roles[role], "{TEXT}": text}) for role, text in history
+        ]
+        slots = {PROMPT_SLOT: prompt, CONVERSATION_SLOT: conversation_id}
+        if self.sends_history:
+            slots[HISTORY_SLOT] = turns
+        return json.dumps(_fill_slots(self._template, slots))
+
+    @staticmethod
+    def history_of(conversation: list[Message]) -> list[tuple[str, str]]:
+        """The turns before the newest message, as (role, text). PyRIT's simulated
+        assistant turns (a conversation seeded with replies the app never gave) are sent
+        as the app's own, which is how an app that trusts its client would see them."""
+        turns = []
+        for message in conversation[:-1]:
+            piece = message.message_pieces[0]
+            if piece.api_role not in ("user", "assistant"):
+                raise ValueError(
+                    f"A {piece.api_role!r} message cannot go in {HISTORY_SLOT}: an app's history holds only the "
+                    "user's turns and its own. A deployed app sends its own system prompt."
+                )
+            turns.append((piece.api_role, piece.converted_value))
+        return turns
 
     def reply_text(self, body: str) -> str:
         """The reply, read from APP_RESPONSE_PATH in the response body."""
@@ -457,27 +563,30 @@ class AppChatTarget(PromptTarget):
             return ""
         return value if isinstance(value, str) else json.dumps(value)
 
+    async def _post(self, body: str) -> tuple[int, str]:
+        """Send one request body to APP_ENDPOINT; return the status and the response body."""
+        import httpx
+
+        if self._client is None:
+            self._client = httpx.AsyncClient(timeout=self._timeout)
+        response = await self._client.post(self._endpoint, content=body, headers=self._headers)
+        return response.status_code, response.text
+
     @limit_requests_per_minute
     @pyrit_target_retry
     async def _send_prompt_to_target_async(self, *, normalized_conversation: list[Message]) -> list[Message]:
-        import httpx
-
         request = normalized_conversation[-1].message_pieces[0]
-        if self._client is None:
-            self._client = httpx.AsyncClient(timeout=self._timeout)
-
-        response = await self._client.post(
-            self._endpoint, content=self.request_body(request.converted_value), headers=self._headers
-        )
-        if response.status_code in APP_RETRY_STATUSES:
-            raise RateLimitException(status_code=response.status_code, message=response.text[:300])
-        if not response.is_success:
+        history = self.history_of(normalized_conversation) if self.sends_history else []
+        status, body = await self._post(self.request_body(request.converted_value, history, request.conversation_id))
+        if status in APP_RETRY_STATUSES:
+            raise RateLimitException(status_code=status, message=body[:300])
+        if not 200 <= status < 300:
             # The status alone is ambiguous on API Gateway: 403 "Missing Authentication
             # Token" is a wrong URL, 403 "Forbidden" a missing or wrong API key, and 502
             # a Lambda that crashed or returned the wrong shape. The body says which.
-            raise RuntimeError(f"The app returned HTTP {response.status_code}: {response.text[:300]}")
+            raise RuntimeError(f"The app returned HTTP {status}: {body[:300]}")
 
-        text = self.reply_text(response.text)
+        text = self.reply_text(body)
         return [construct_response_from_request(request=request, response_text_pieces=[text])]
 
     async def cleanup_target_async(self) -> None:
