@@ -148,8 +148,16 @@ def flagged_rubrics(scores) -> list[str]:
     )
 
 
+def is_control(result) -> bool:
+    """Half of a control pair: the same text sent twice, so a difference between the halves is noise."""
+    return bool((result.labels or {}).get("rt_control"))
+
+
 def is_finding(result, memory) -> bool:
     # A scan finding is flagged by a rubric judge; a Crescendo finding by its outcome.
+    # A control pair's verdict measures noise in the system or the judge, never a finding.
+    if is_control(result):
+        return False
     # Every turn counts: against a stateless app, the earlier turns are not in the
     # result's own conversation (see full_conversation_ids).
     if result.outcome.value == "success":
@@ -159,7 +167,7 @@ def is_finding(result, memory) -> bool:
 
 def reproducibility(result, all_results, memory) -> str:
     """How often this test was flagged, across every run of it in the database."""
-    runs = [r for r in all_results if r.objective == result.objective]
+    runs = [r for r in all_results if test_key(r) == test_key(result)]
     hits = sum(is_finding(r, memory) for r in runs)
     text = f"Flagged in {hits} of {len(runs)} recorded run(s) of this test, counted from the PyRIT database."
     # Split the count by model, so runs against different models are not blended.
@@ -393,11 +401,21 @@ def build_report(result, memory, template: str, all_results) -> str:
     return render(template, values)
 
 
+def test_key(result) -> tuple:
+    """What makes two results runs of the same test: the probe, not only its text.
+
+    Several probes can send the same words: the English baseline of each language pair,
+    and both halves of a control pair. The dataset and probe name keep them apart.
+    """
+    labels = result.labels or {}
+    return (labels.get("rt_dataset"), labels.get("rt_probe"), result.objective)
+
+
 def latest_per_test(results) -> list:
     """One result per test - the most recent - so ten runs of a probe make one report."""
     latest = {}
     for result in sorted(results, key=lambda r: r.timestamp.timestamp() if r.timestamp else 0):
-        latest[result.objective] = result
+        latest[test_key(result)] = result
     return list(latest.values())
 
 
@@ -408,7 +426,10 @@ def flagged_by_rubric(result, memory, rubrics: set[str]) -> bool:
     attack outcome, so --outcome does not find them. This is the same test the scan
     uses to count a finding: a true score, in the rubric's score_category, on any
     turn of the conversation, including turns PyRIT set aside (see full_conversation_ids).
+    A control pair is never a finding (see is_control).
     """
+    if is_control(result):
+        return False
     for score in full_conversation_scores(memory, result):
         if score.get_value() is True and rubrics & set(score.score_category or []):
             return True

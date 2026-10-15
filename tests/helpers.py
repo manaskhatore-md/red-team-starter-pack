@@ -64,9 +64,9 @@ class NeverFlags(MessageTrueFalseScorer):
 
 # --- the scan, end to end ---------------------------------------------------
 
-def scan_main(monkeypatch, target, judge=None):
+def scan_main(monkeypatch, target, judge=None, profile="internal_productivity"):
     """Run the scan on the fake target; return (exit code, run id). Without a judge, every rubric passes."""
-    monkeypatch.setenv("RT_PROFILE", "internal_productivity")
+    monkeypatch.setenv("RT_PROFILE", profile)
     monkeypatch.setattr(single_turn_scan, "initialize_pyrit_async", nothing)
     monkeypatch.setattr(single_turn_scan, "check_models", nothing)
     monkeypatch.setattr(single_turn_scan, "close_target", nothing)

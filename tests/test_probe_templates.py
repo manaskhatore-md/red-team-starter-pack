@@ -125,7 +125,7 @@ def test_the_variable_defaults_to_fixture(templated):
         (TEMPLATE, "variable: ref\n", "needs an `entries:` list"),
         (TEMPLATE, FIXTURES.replace("variable: ref", "variable: ref.x"), "must be a plain name"),
         (TEMPLATE.replace("expand_with: references", "expand_with: references\n      pair_id: p1"), FIXTURES,
-         "cannot be half of a pair"),
+         "pair_id that does not use the fixture entry"),
         (TEMPLATE.replace("REFERENCE_FACTS", "reference_facts"), FIXTURES, "must be in capitals"),
         (TEMPLATE.replace("REFERENCE_FACTS", "SYSTEM_PROMPT"), FIXTURES, "the kit fills it"),
     ],
@@ -141,12 +141,19 @@ def test_a_broken_template_or_fixture_stops_the_load_and_says_why(templated, dat
         single_turn_scan.load_probes(profile)
 
 
-def test_shipped_probes_have_unique_text_in_every_profile():
+def test_shipped_probes_with_the_same_text_are_judged_with_the_same_facts():
     # Pass criteria and judge context are looked up by probe text, so two probes with
-    # the same text would be judged with one of them's facts.
+    # the same text would be judged with one of them's facts. The English baseline of a
+    # language pair and both halves of a control pair do share text, and may, because
+    # they are judged with the same facts. Nothing else repeats.
     for key in profiles.PROFILES:
-        texts = [p.prompt for p in single_turn_scan.load_probes(get_profile(key))]
-        assert len(texts) == len(set(texts)), key
+        by_text = {}
+        for probe in single_turn_scan.load_probes(get_profile(key)):
+            by_text.setdefault(probe.prompt, []).append(probe)
+        for text, probes in by_text.items():
+            if len(probes) > 1:
+                assert all(p.pair_id for p in probes), (key, [p.name for p in probes])
+                assert len({tuple(sorted(p.judge_slots().items())) for p in probes}) == 1, (key, [p.name for p in probes])
 
 
 # --- the judge's slots ------------------------------------------------------------
@@ -338,12 +345,12 @@ def test_a_scan_within_the_budget_goes_ahead():
 def test_a_scan_over_the_budget_says_how_to_go_ahead(clean_env):
     clean_env.setenv("RT_REPEATS", "5")
     with pytest.raises(SystemExit) as stopped:
-        single_turn_scan.check_budget(600, 600, repeats=5, templated=True)
+        single_turn_scan.check_budget(1200, 1200, repeats=5, templated=True)
     message = str(stopped.value)
-    assert "plans 1200 calls (600 target + 600 judge), over RT_MAX_CALLS=1000. Nothing was sent." in message
+    assert "plans 2400 calls (1200 target + 1200 judge), over RT_MAX_CALLS=2000. Nothing was sent." in message
     assert "per-template rates" in message
-    assert "lower RT_REPEATS (now 5); each repeat costs 240 calls" in message
-    assert "RT_MAX_CALLS=1200 (or 0 for no limit)" in message
+    assert "lower RT_REPEATS (now 5); each repeat costs 480 calls" in message
+    assert "RT_MAX_CALLS=2400 (or 0 for no limit)" in message
 
 
 def test_the_budget_can_be_raised_or_turned_off(clean_env):

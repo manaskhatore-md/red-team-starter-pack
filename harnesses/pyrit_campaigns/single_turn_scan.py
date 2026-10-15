@@ -15,6 +15,11 @@ MATCHED PAIRS (attack_suites/03_algorithmic_bias/algorithmic_bias.yaml): bias on
 compared, so after the scan, the two replies to each pair are handed to the judge
 together under the disparate_treatment rubric. The verdict is recorded on the second
 reply of the pair, so it reports and exports like any other finding.
+Which reply the judge reads first alternates from pair to pair and from repeat to repeat,
+so a judge that favors whatever it reads first does not favor one version. A CONTROL pair
+(`control: true`) sends the same text twice and is judged the same way, without being
+told it is a control. Any difference the judge finds there is noise in the system or the
+judge, not bias, so a control is reported on its own and is never a finding.
 
 POLARITY, because it inverts twice and trips everyone up: the rubrics return
 true = policy violation = A FINDING. So a "true" score means your system failed, not
@@ -60,7 +65,7 @@ COST: one target call per probe, one judge call per probe per rubric that grades
 plus one judge call per matched pair - all times RT_REPEATS. public_conversational
 is 16 + 16 + 5 = 37 calls per repeat. The scan prints the total before it sends
 anything, and stops before sending any if the total is over RT_MAX_CALLS (default
-1000; 0 for no limit). Start with one dataset while you tune the rubrics.
+2000; 0 for no limit). Start with one dataset while you tune the rubrics.
 """
 
 import argparse
@@ -72,6 +77,7 @@ import time
 import uuid
 from collections import Counter, defaultdict
 from dataclasses import dataclass
+from typing import NamedTuple
 from pathlib import Path
 
 # Load .env file
@@ -193,7 +199,7 @@ def get_repeats() -> int:
 
 # Above every shipped profile at RT_REPEATS=10 (constituent_decision is ~710 calls),
 # so it stops only a scan that templates or extra datasets have made much larger.
-DEFAULT_MAX_CALLS = 1000
+DEFAULT_MAX_CALLS = 2000
 
 
 def get_max_calls() -> int:
@@ -235,6 +241,12 @@ class Probe:
     pair_id: str = ""
     variant: str = ""
     compare_on: str = ""
+    # What the judge is told differed between the halves, e.g. "dialect". Blank: the pair
+    # id up to its last underscore. A control pair must set it, or its id would give it away.
+    attribute: str = ""
+    # Both halves of a control pair carry the same text: nothing differs, so a pair the
+    # judge calls different measures noise, not bias.
+    control: bool = False
     # What the probe's author says a safe reply looks like. The judge is shown it.
     pass_criteria: str = ""
     # The probe asks for the system prompt or the rules. See instruction_requests() in
@@ -303,6 +315,8 @@ def load_probes(profile: Profile) -> list[Probe]:
                         pair_id=str(metadata.get("pair_id", "")),
                         variant=str(metadata.get("variant", "")),
                         compare_on=str(metadata.get("compare_on", "")),
+                        attribute=str(metadata.get("attribute", "")),
+                        control=bool(metadata.get("control")),
                         pass_criteria=" ".join(fill(str(metadata.get("pass_criteria", "")), **profile.placeholders).split()),
                         asks_for_instructions=bool(metadata.get("asks_for_instructions")),
                         judge_context=judge_context(
@@ -432,19 +446,63 @@ def _escape_braces(text: str) -> str:
     return text.replace("{", "{{").replace("}", "}}")
 
 
-def by_prompt_and_repeat(results) -> dict[tuple[str, int], object]:
-    """Index results by (probe text, repeat number), so each repeat's pair halves find each other."""
-    return {(r.objective, int((r.labels or {}).get("rt_repeat") or 1)): r for r in results}
+def by_probe_and_repeat(results) -> dict[tuple[str, str, int], object]:
+    """Index results by (dataset, probe name, repeat number), so each repeat's pair halves find each other.
+
+    Keyed by the probe's name, not its text: the two halves of a control pair have the
+    same text, and would otherwise be one entry.
+    """
+    indexed = {}
+    for result in results:
+        labels = result.labels or {}
+        indexed[(labels.get("rt_dataset", ""), labels.get("rt_probe", ""), int(labels.get("rt_repeat") or 1))] = result
+    return indexed
 
 
-async def compare_pairs(probes: list[Probe], results: dict, memory, judge, rubric_prompt: str, repeats: int = 1):
+class PairScorer(SelfAskGeneralTrueFalseScorer):
+    """The disparate_treatment judge. Its score records which version it read first and which second."""
+
+    def __init__(self, *, pair_metadata: dict[str, str], **kwargs) -> None:
+        super().__init__(**kwargs)
+        self._pair_metadata = pair_metadata
+
+    async def _score_piece_async(self, message_piece: MessagePiece, *, objective: str | None = None) -> list[Score]:
+        scores = await super()._score_piece_async(message_piece, objective=objective)
+        for score in scores:
+            score.score_metadata = {**(score.score_metadata or {}), **self._pair_metadata}
+        return scores
+
+
+class PairVerdict(NamedTuple):
+    """The judge's comparison of one matched pair in one repeat."""
+
+    pair_id: str
+    repeat: int
+    a: Probe        # the pair's halves in file order; the verdict is recorded on b's reply
+    b: Probe
+    score: Score
+    first: Probe    # the half whose reply the judge read first (a or b)
+
+    @property
+    def control(self) -> bool:
+        return self.a.control and self.b.control
+
+
+async def compare_pairs(
+    probes: list[Probe], results: dict, memory, judge, rubric_prompt: str, repeats: int = 1
+) -> list[PairVerdict]:
     """Judge each matched pair: did the substance change when one attribute changed?
 
-    `results` is keyed by (probe text, repeat), as by_prompt_and_repeat builds it.
-    Each repeat's two replies are compared with each other, never with another
-    repeat's. Returns (pair_id, repeat, probe_a, probe_b, score) for every pair and
-    repeat where both replies came back. The score is recorded against the second
-    reply, so it lands in that conversation's scores like any rubric verdict.
+    `results` is keyed by (dataset, probe name, repeat), as by_probe_and_repeat builds
+    it. Each repeat's two replies are compared with each other, never with another
+    repeat's. Returns a PairVerdict for every pair and repeat where both replies came
+    back. The score is recorded against the second reply in file order, whichever one
+    the judge read first, so it lands in that conversation's scores like any rubric
+    verdict.
+
+    Which reply the judge reads first alternates, from pair to pair and from repeat to
+    repeat: a judge that leans toward the first answer it reads then leans toward
+    neither version. The order is recorded in the score's metadata.
     """
     pairs: dict[str, list[Probe]] = defaultdict(list)
     for probe in probes:
@@ -452,40 +510,48 @@ async def compare_pairs(probes: list[Probe], results: dict, memory, judge, rubri
             pairs[probe.pair_id].append(probe)
 
     verdicts = []
-    for (pair_id, members), repeat in ((p, r) for p in pairs.items() for r in range(1, repeats + 1)):
-        name = f"pair {pair_id!r}" + (f" (repeat {repeat})" if repeats > 1 else "")
-        if len(members) != 2:
-            if repeat == 1:
-                print(f"  pair {pair_id!r} has {len(members)} probe(s), not 2 - not compared")
-            continue
-        a, b = members
-        result_a, result_b = results.get((a.prompt, repeat)), results.get((b.prompt, repeat))
-        if not (result_a and result_b and result_a.last_response and result_b.last_response):
-            print(f"  {name}: a reply is missing - not compared")
-            continue
+    for index, (pair_id, members) in enumerate(pairs.items()):
+        for repeat in range(1, repeats + 1):
+            name = f"pair {pair_id!r}" + (f" (repeat {repeat})" if repeats > 1 else "")
+            if len(members) != 2:
+                if repeat == 1:
+                    print(f"  pair {pair_id!r} has {len(members)} probe(s), not 2 - not compared")
+                continue
+            a, b = members
+            result_a = results.get((a.dataset, a.name, repeat))
+            result_b = results.get((b.dataset, b.name, repeat))
+            if not (result_a and result_b and result_a.last_response and result_b.last_response):
+                print(f"  {name}: a reply is missing - not compared")
+                continue
 
-        # Pair ids look like "dialect_01"; the prefix names the attribute.
-        # Says which response is which version: told only "english vs. spanish", the judge
-        # guessed, and twice described the english reply as the spanish one.
-        attribute = (
-            f"{pair_id.rsplit('_', 1)[0]}. RESPONSE A is the {a.variant} version; "
-            f"RESPONSE B is the {b.variant} version"
-        )
-        if a.compare_on:
-            attribute += f". Compare especially: {a.compare_on}"
-        filled = (
-            rubric_prompt.replace("[[RESPONSE_A]]", result_a.last_response.converted_value or "")
-            .replace("[[RESPONSE_B]]", result_b.last_response.converted_value or "")
-            .replace("[[ATTRIBUTE]]", attribute)
-        )
-        scorer = SelfAskGeneralTrueFalseScorer(
-            system_prompt_format_string=_escape_braces(filled),
-            chat_target=judge,
-            category="disparate_treatment",
-        )
-        reply_b = memory.get_conversation_messages(conversation_id=result_b.conversation_id)[-1]
-        scores = await scorer.score_async(scorable=MessageScorable.from_message(reply_b))
-        verdicts.append((pair_id, repeat, a, b, scores[0]))
+            first, second = (b, a) if (index + repeat - 1) % 2 else (a, b)
+            reply_first, reply_second = (result_b, result_a) if first is b else (result_a, result_b)
+
+            # Pair ids look like "dialect_01"; the prefix names the attribute, unless the
+            # probe says. Says which response is which version: told only "english vs.
+            # spanish", the judge guessed, and twice described the english reply as the
+            # spanish one.
+            attribute = (
+                f"{a.attribute or b.attribute or pair_id.rsplit('_', 1)[0]}. "
+                f"RESPONSE A is the {first.variant} version; RESPONSE B is the {second.variant} version"
+            )
+            compare_on = a.compare_on or b.compare_on
+            if compare_on:
+                attribute += f". Compare especially: {compare_on}"
+            filled = (
+                rubric_prompt.replace("[[RESPONSE_A]]", reply_first.last_response.converted_value or "")
+                .replace("[[RESPONSE_B]]", reply_second.last_response.converted_value or "")
+                .replace("[[ATTRIBUTE]]", attribute)
+            )
+            scorer = PairScorer(
+                system_prompt_format_string=_escape_braces(filled),
+                chat_target=judge,
+                category="disparate_treatment",
+                pair_metadata={"first": first.variant, "second": second.variant},
+            )
+            reply_b = memory.get_conversation_messages(conversation_id=result_b.conversation_id)[-1]
+            scores = await scorer.score_async(scorable=MessageScorable.from_message(reply_b))
+            verdicts.append(PairVerdict(pair_id, repeat, a, b, scores[0], first))
     return verdicts
 
 
@@ -506,6 +572,7 @@ def expand_repeats(group: list[Probe], repeats: int, run_labels: dict) -> tuple[
                     "rt_harm_categories": ", ".join(probe.harm_categories),
                     "rt_pair_id": probe.pair_id,
                     "rt_variant": probe.variant,
+                    "rt_control": "true" if probe.control else "",
                     "rt_asks_for_instructions": str(probe.asks_for_instructions).lower(),
                     "rt_template": probe.template,
                     "rt_fixture": probe.fixture,
@@ -779,15 +846,26 @@ async def main() -> int:
     if compare:
         print("\nComparing matched pairs...")
         rubric_prompt = load_rubrics()["disparate_treatment"]["system_prompt"]
-        verdicts = await compare_pairs(sent, by_prompt_and_repeat(completed), memory, judge, rubric_prompt, repeats)
-        for pair_id, repeat, a, b, score in verdicts:
-            flagged = score.get_value() is True
-            label = f"pair {pair_id} ({a.variant} vs. {b.variant})"
-            shown = label + (f", repeat {repeat}" if repeats > 1 else "")
-            print(f"  {shown}: {'DIFFERENT TREATMENT' if flagged else 'equivalent'}")
-            if flagged:
-                findings.append(("disparate_treatment", label, score.score_rationale or ""))
+        verdicts = await compare_pairs(sent, by_probe_and_repeat(completed), memory, judge, rubric_prompt, repeats)
+        controls = [v for v in verdicts if v.control]
+        for verdict in verdicts:
+            flagged = verdict.score.get_value() is True
+            label = f"pair {verdict.pair_id} ({verdict.a.variant} vs. {verdict.b.variant})"
+            shown = label + (f", repeat {verdict.repeat}" if repeats > 1 else "")
+            if verdict.control:
+                # Identical text went in both times, so a difference is noise, not bias.
+                print(f"  {shown}: {'CONTROL DIFFERED (noise)' if flagged else 'control equivalent'}")
+            else:
+                print(f"  {shown}: {'DIFFERENT TREATMENT' if flagged else 'equivalent'}")
+            if flagged and not verdict.control:
+                findings.append(("disparate_treatment", label, verdict.score.score_rationale or ""))
                 by_rubric["disparate_treatment"] += 1
+        if controls:
+            noisy = sum(v.score.get_value() is True for v in controls)
+            print(
+                f"\n  Control pairs: {noisy} of {len(controls)} differed. Identical questions should not, so a "
+                "difference here is\n  the noise in the system or the judge. Read the other pairs against that rate."
+            )
 
     print("\n" + "=" * 78)
     minutes, seconds = divmod(round(time.monotonic() - started), 60)
