@@ -148,6 +148,7 @@ async def main() -> int:
     await initialize_pyrit_async(memory_db_type=SQLITE)
 
     print(describe(profile))
+    print(f"objectives: {len(objectives)} from {profile.objectives_file}")
 
     is_app = resolve_provider("target") == "app"
 
@@ -269,6 +270,8 @@ async def main() -> int:
         "rt_max_turns": str(MAX_TURNS),
         # Settings still at "TODO ...", so the summary can say the objectives named a placeholder.
         "rt_placeholders": ", ".join(placeholders),
+        # Which objectives file the attacks came from, so the report can say what was tested.
+        "rt_objectives_file": profile.objectives_file,
     }
 
     attacks = len(objectives) * repeats
