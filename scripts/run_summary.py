@@ -62,6 +62,10 @@ from scripts.export_finding_report import (
 # Graded by comparing two replies, so its verdict belongs to the pair, not to the
 # reply it happens to be recorded against.
 PAIR_RUBRIC = "disparate_treatment"
+# A control pair sends the same text twice, so a difference is noise, never a finding.
+DIFFERENT_TREATMENT = "DIFFERENT TREATMENT"
+CONTROL_DIFFERED = "CONTROL DIFFERED (noise)"
+PAIR_FLAGS = (DIFFERENT_TREATMENT, CONTROL_DIFFERED)
 
 # The repo's findings/ folder, wherever the command is run from.
 DEFAULT_OUT = Path(__file__).resolve().parents[1] / "findings"
@@ -388,7 +392,8 @@ def pair_verdicts(entries, fixed_texts: set[str] = frozenset()) -> list[dict]:
     """Each matched pair in the run, per repeat, with the judge's comparison if one was recorded.
 
     A pair whose halves both got the same fixed message has no comparison: the model saw
-    neither, so the judge's "equivalent" says nothing about it.
+    neither, so the judge's "equivalent" says nothing about it. A control pair (the same
+    text sent twice) is judged like any other, but its verdict is a measure of noise.
     """
     pairs = defaultdict(list)
     for entry in entries:
@@ -402,16 +407,22 @@ def pair_verdicts(entries, fixed_texts: set[str] = frozenset()) -> list[dict]:
             None,
         )
         replies = {last_reply(m["messages"]) for m in members}
+        control = all((m["result"].labels or {}).get("rt_control") for m in members)
         if score is not None and len(replies) == 1 and replies <= fixed_texts:
             score = None
             verdict = "not tested (both halves got the same fixed message)"
         elif score is None:
             verdict = "not compared (a reply was missing, or the profile does not compare pairs)"
         elif score.get_value() is True:
-            verdict = "DIFFERENT TREATMENT"
+            verdict = CONTROL_DIFFERED if control else DIFFERENT_TREATMENT
         else:
-            verdict = "equivalent"
-        out.append({"pair_id": pair_id, "repeat": repeat, "members": members, "score": score, "verdict": verdict})
+            verdict = "control equivalent" if control else "equivalent"
+        # Which version the judge read first, from the score's metadata (the scan alternates it).
+        first = (score.score_metadata or {}).get("first") if score is not None else None
+        out.append({
+            "pair_id": pair_id, "repeat": repeat, "members": members, "score": score, "verdict": verdict,
+            "control": control, "first": first,
+        })
     return out
 
 
@@ -470,15 +481,18 @@ def build_summary(results, memory, run_id: str) -> str:
 
     def pair_shown(p) -> bool:
         # With repeats, one entry per pair per repeat buries the flags; the failure rates count the rest.
-        return repeats == 1 or p["verdict"] == "DIFFERENT TREATMENT"
+        return repeats == 1 or p["verdict"] in PAIR_FLAGS
 
     def pair_anchor(p) -> str:
         return f"pair-{p['pair_id']}-{p['repeat']}"
 
     counts = Counter(e["verdict"] for e in entries)
     flagged = counts[FLAGGED] + counts[ACHIEVED]
-    pairs_flagged = sum(p["verdict"] == "DIFFERENT TREATMENT" for p in pairs)
-    pairs_compared = sum(p["score"] is not None for p in pairs)
+    # Control pairs are counted apart: a control that differs is noise, not a finding.
+    pairs_flagged = sum(p["verdict"] == DIFFERENT_TREATMENT for p in pairs)
+    pairs_compared = sum(p["score"] is not None and not p["control"] for p in pairs)
+    controls_differed = sum(p["verdict"] == CONTROL_DIFFERED for p in pairs)
+    controls_compared = sum(p["score"] is not None and p["control"] for p in pairs)
     started = min((r.timestamp for r in results if r.timestamp), default=None)
 
     lines = [f"# Run summary: {campaign}, run {run_id[:8]}", ""]
@@ -539,9 +553,15 @@ def build_summary(results, memory, run_id: str) -> str:
         lines.append(f"| Repeats | every probe sent {repeats} times (RT_REPEATS), each in a new conversation |")
     result_counts = ", ".join(f"{n} {v}" for v, n in counts.most_common())
     lines.append(f"| Results | {len(entries)}: {result_counts} |")
-    if pairs:
+    matched = [p for p in pairs if not p["control"]]
+    if matched:
         what = "pair comparisons (one per pair per repeat)" if repeats > 1 else "matched pairs"
-        lines.append(f"| Matched pairs | {len(pairs)} {what}: {pairs_compared} compared, {pairs_flagged} flagged as different treatment |")
+        lines.append(f"| Matched pairs | {len(matched)} {what}: {pairs_compared} compared, {pairs_flagged} flagged as different treatment |")
+    if controls_compared:
+        lines.append(
+            f"| Control pairs | {controls_compared} compared, {controls_differed} differed. A control sends the same "
+            "text twice, so a difference is noise in the system or the judge, not bias |"
+        )
     lines.append("")
 
     lines += ["## What this means", ""]
@@ -561,6 +581,15 @@ def build_summary(results, memory, run_id: str) -> str:
             + (f" and **{pairs_flagged} of {pairs_compared}** matched pairs" if pairs_compared else "")
             + " in this run."
         )
+    if controls_compared:
+        lines += [
+            "",
+            f"**{controls_differed} of {controls_compared}** control pairs (the same question sent twice) were judged "
+            "different. That is the noise rate: a matched pair counts as different treatment only if it is clearly "
+            "more than that." if controls_differed else
+            f"None of the {controls_compared} control pairs (the same question sent twice) were judged different, so "
+            "the judge and the system gave consistent answers to identical input.",
+        ]
     # Only a pass in which the model answered is evidence the model held, so say how
     # many did not test it before anyone reads the flag count as the rest. Each group
     # gets only what the run recorded about it, never a guess at the cause.
@@ -730,11 +759,13 @@ def build_summary(results, memory, run_id: str) -> str:
             for p in pairs:
                 if p["score"] is not None:
                     by_pair[p["pair_id"]][1] += 1
-                    by_pair[p["pair_id"]][0] += p["verdict"] == "DIFFERENT TREATMENT"
+                    by_pair[p["pair_id"]][0] += p["verdict"] in PAIR_FLAGS
             lines += ["", "| Pair | Different treatment | Compared |", "|---|---|---|"]
+            control_ids = {p["pair_id"] for p in pairs if p["control"]}
             for pair_id in sorted({p["pair_id"] for p in pairs}):
                 different, compared = by_pair[pair_id]
-                lines.append(f"| {pair_id} | {different} of {compared} | {compared} of {repeats} |")
+                name = f"{pair_id} (control)" if pair_id in control_ids else pair_id
+                lines.append(f"| {name} | {different} of {compared} | {compared} of {repeats} |")
         lines.append("")
 
     templates, fixture_entries = template_rates(entries)
@@ -863,6 +894,10 @@ def build_summary(results, memory, run_id: str) -> str:
             # Different fixed messages are still compared: the app treating the halves differently is a finding.
             if p["score"] is not None and all(last_reply(m["messages"]) in fixed_texts for m in p["members"]):
                 lines += ["Both replies were fixed messages, so this comparison did not test the model.", ""]
+            if p["control"]:
+                lines += ["Control: the same text was sent both times, so any difference is noise.", ""]
+            if p["first"]:
+                lines += [f"The judge read the **{p['first']}** reply first.", ""]
             if p["score"] is not None and p["score"].score_rationale:
                 lines += [f"Judge's summary: {p['score'].score_rationale}", ""]
             # The two replies, one after the other, so the difference can be read here. A pair

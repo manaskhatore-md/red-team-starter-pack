@@ -27,6 +27,11 @@ once per entry:
 
 That seed becomes one probe per entry, named `authority_premise[snap_vehicle]`.
 
+A matched pair (attack_suites/03_algorithmic_bias/) is two templates over the same fixture
+whose `pair_id` uses the entry, e.g. `pair_id: "casefile_{{ case.id }}"`, and whose
+`variant` differs. Each entry then gives one pair, and the entry's fields are what
+changes between the halves.
+
 Two kinds of blank, filled at two different times:
   - {{ ref.citation }}: from the fixture entry, when the dataset is loaded.
   - {{ program_name }}: from the profile and .env, as in every other probe. A fixture
@@ -163,13 +168,19 @@ def expand(seed, dataset_file: Path) -> list[Expanded]:
     if not fixtures:
         return [Expanded(name=name, value=seed.value, metadata=metadata)]
 
-    # Every probe made from the template would share the pair id, and a pair is two
-    # probes: the bias judge would compare whichever two it found.
-    if metadata.get("pair_id"):
-        raise SystemExit(f"Template {name!r} in {dataset_file.name} has a pair_id; a template cannot be half of a pair.")
-
     path = fixture_path(dataset_file, str(fixtures))
     variable, entries = load_fixtures(path)
+
+    # A fixed pair_id would be shared by every probe made from the template, and a pair
+    # is two probes: the bias judge would compare whichever two it found. A pair_id that
+    # uses the fixture entry ({{ case.id }}) is one pair per entry, so a second template
+    # over the same fixture with the same pair_id is its other half.
+    pair_id = str(metadata.get("pair_id") or "")
+    if pair_id and not re.search(rf"\b{variable}\.\w+", pair_id):
+        raise SystemExit(
+            f"Template {name!r} in {dataset_file.name} has a pair_id that does not use the fixture "
+            f"entry; every probe would share it. Write it like pair_id: \"topic_{{{{ {variable}.id }}}}\"."
+        )
 
     # A field the entry does not have would be rendered as a stray {{ field }}, and the
     # scan would then report it as an unknown placeholder. Name it here instead.

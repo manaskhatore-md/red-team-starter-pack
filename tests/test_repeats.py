@@ -49,39 +49,41 @@ class FakePairScorer:
     """Stands in for the judge: records which two replies it was shown, and says 'equivalent'."""
     shown: list[str] = []
 
-    def __init__(self, *, system_prompt_format_string, chat_target, category):
+    def __init__(self, *, system_prompt_format_string, chat_target, category, pair_metadata=None):
         FakePairScorer.shown.append(system_prompt_format_string)
 
     async def score_async(self, *, scorable):
         return [type("FakeScore", (), {"get_value": lambda self: False})()]
 
 
-def add_reply(memory, prompt, reply, repeat):
+def add_reply(memory, probe, reply, repeat):
     conversation_id = str(uuid.uuid4())
     piece = MessagePiece(role="assistant", original_value=reply, conversation_id=conversation_id)
     memory.add_message_to_memory(request=Message(message_pieces=[piece]))
-    return AttackResult(conversation_id=conversation_id, objective=prompt, last_response=piece,
-                        labels={"rt_repeat": str(repeat)})
+    return AttackResult(conversation_id=conversation_id, objective=probe.prompt, last_response=piece,
+                        labels={"rt_repeat": str(repeat), "rt_dataset": probe.dataset, "rt_probe": probe.name})
 
 
 def test_pairs_are_compared_within_a_repeat_never_across(memory, monkeypatch):
-    monkeypatch.setattr(scan, "SelfAskGeneralTrueFalseScorer", FakePairScorer)
+    monkeypatch.setattr(scan, "PairScorer", FakePairScorer)
     FakePairScorer.shown = []
     a, b = probe("p_a", "zip_01", "a"), probe("p_b", "zip_01", "b")
-    results = [add_reply(memory, p.prompt, f"{p.variant} reply {r}", r) for p in (a, b) for r in (1, 2)]
-    verdicts = asyncio.run(scan.compare_pairs([a, b], scan.by_prompt_and_repeat(results), memory, None,
+    results = [add_reply(memory, p, f"{p.variant} reply {r}", r) for p in (a, b) for r in (1, 2)]
+    verdicts = asyncio.run(scan.compare_pairs([a, b], scan.by_probe_and_repeat(results), memory, None,
                                               "A: [[RESPONSE_A]] B: [[RESPONSE_B]] ([[ATTRIBUTE]])", repeats=2))
     assert [(pair_id, repeat) for pair_id, repeat, *_ in verdicts] == [("zip_01", 1), ("zip_01", 2)]
+    # Each repeat compares its own two replies. The judge reads them in the other order
+    # on the second repeat (see tests/test_bias_pairs.py).
     assert "A: a reply 1 B: b reply 1" in FakePairScorer.shown[0]
-    assert "A: a reply 2 B: b reply 2" in FakePairScorer.shown[1]
+    assert "A: b reply 2 B: a reply 2" in FakePairScorer.shown[1]
 
 
 def test_a_repeat_missing_one_half_is_not_compared(memory, monkeypatch):
-    monkeypatch.setattr(scan, "SelfAskGeneralTrueFalseScorer", FakePairScorer)
+    monkeypatch.setattr(scan, "PairScorer", FakePairScorer)
     a, b = probe("p_a", "zip_01", "a"), probe("p_b", "zip_01", "b")
-    results = [add_reply(memory, a.prompt, "a1", 1), add_reply(memory, b.prompt, "b1", 1),
-               add_reply(memory, a.prompt, "a2", 2)]
-    verdicts = asyncio.run(scan.compare_pairs([a, b], scan.by_prompt_and_repeat(results), memory, None,
+    results = [add_reply(memory, a, "a1", 1), add_reply(memory, b, "b1", 1),
+               add_reply(memory, a, "a2", 2)]
+    verdicts = asyncio.run(scan.compare_pairs([a, b], scan.by_probe_and_repeat(results), memory, None,
                                               "[[RESPONSE_A]] [[RESPONSE_B]] [[ATTRIBUTE]]", repeats=2))
     assert [repeat for _, repeat, *_ in verdicts] == [1]
 

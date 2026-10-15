@@ -307,7 +307,7 @@ The run summary then shows a **Failure rates** table (e.g. "flagged 2 of 5") and
 probes that never flagged, a confidence bound — a probe that never flagged isn't proven
 safe (0 of 5 still allows a true rate up to ~45%). Cost grows linearly; the scan prints
 the total before sending anything, and stops unsent if it is over `RT_MAX_CALLS` (target
-plus judge calls; default 1000, `0` for no limit). Every shipped profile fits at
+plus judge calls; default 2000, `0` for no limit). Every shipped profile fits at
 `RT_REPEATS=10`.
 
 ## Structure
@@ -333,7 +333,8 @@ red-team-starter-pack/
 │   ├── 02_sensitive_data_exposure/
 │   │   └── sensitive_data_leakage.yaml # PII/PHI extraction & cross-session leaks
 │   ├── 03_algorithmic_bias/
-│   │   └── algorithmic_bias.yaml       # Matched pairs: dialect, name, zip code, language, disability
+│   │   ├── algorithmic_bias.yaml       # Matched pairs and A/A controls: dialect, name, zip code, language, disability, case files
+│   │   └── fixtures/                   # scenarios.yaml (eligibility questions) and case_files.yaml (swapped names/addresses)
 │   └── 05_excessive_agency/
 │       └── excessive_agency.yaml       # Unauthorized database writes & API commands
 │
@@ -444,6 +445,40 @@ mistake in its entry). Those rates already pool many probes, so `RT_REPEATS=1` o
 is usually enough, where a lone hand-written probe needs 5 or more.
 
 Details and the rules a template must follow: `harnesses/pyrit_campaigns/probe_templates.py`.
+
+### Bias pairs: controls, reading order, and adding your own
+
+Bias shows only when two replies are compared, so the bias suite
+(`attack_suites/03_algorithmic_bias/algorithmic_bias.yaml`) is made of **matched pairs**:
+the same request twice, with one thing changed. The judge reads both replies and says
+whether the substance changed. The suite has three kinds:
+
+| Pairs | Built from | What changes |
+|---|---|---|
+| 5 written out in the file | the file itself | dialect, name, zip code, language, disability |
+| Eligibility questions | `fixtures/scenarios.yaml` | standard English vs. African American Vernacular English, Spanish, and Chinese |
+| Case files | `fixtures/case_files.yaml` | the applicant's name or address, in a summary for a supervisor and in the outcome letter |
+
+Two things keep the result honest:
+
+- **Control pairs** send the *same* text twice. A fair system and judge call them
+  equivalent, so a control judged "different" is noise in your system or your judge. The run
+  summary reports controls on their own (**Control pairs**), and they are never exported as
+  findings. Read the other pairs against that rate: a skew is a finding only if it is clearly
+  above it. The judge is not told which pairs are controls.
+- **The judge reads the replies in alternating order**, from pair to pair and from repeat
+  to repeat, so a judge that favors whatever it reads first does not favor one version. The
+  run summary says which reply it read first.
+
+**To add a scenario**, copy an entry in `fixtures/scenarios.yaml`, give it an `id`, and
+write all four versions with the same facts: the same jobs, the same amounts, the same
+number of children. A version that adds or drops a fact has a different correct answer, and
+the judge will report bias that is not there. Each entry adds three pairs and a control
+(about 20 calls per repeat). **To add a case file**, copy an entry in
+`fixtures/case_files.yaml` and change one thing: the name *or* the address (about 10 calls
+per repeat). The names shipped follow published hiring-audit studies; replace them with
+names common among the people your program serves, and have a fluent speaker check every
+Spanish and Chinese version before you rely on a result.
 
 ## Playbook crosswalk
 
