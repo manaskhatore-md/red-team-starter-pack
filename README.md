@@ -91,7 +91,7 @@ Once the scan runs, add the multi-turn campaigns — attacks that build over a c
 
 ```bash
 RT_PROFILE=public_conversational python -m harnesses.pyrit_campaigns.multi_turn_red_team   # adaptive; works against an app
-RT_PROFILE=public_conversational python -m harnesses.pyrit_campaigns.multi_turn_crescendo  # gradual escalation; needs a target with memory
+RT_PROFILE=public_conversational python -m harnesses.pyrit_campaigns.multi_turn_crescendo  # gradual escalation; an app must take {HISTORY}
 ```
 
 ## Fine-tuning
@@ -163,6 +163,41 @@ the app needs a sign-in, sign in there and the run continues. The session is sav
 with it can use the app as you. Each conversation gets its own tab. Every setting is
 documented in `harnesses/pyrit_campaigns/browser_target.py`.
 
+**An app that takes the whole conversation with each request.** Many chat APIs remember
+nothing between requests: the page sends the earlier turns along with each new message.
+Put `"{HISTORY}"` in the template, as a whole quoted value, and the kit sends the
+conversation so far in the app's own shape. The kit then holds the history and can
+rewrite it, which is what Crescendo needs:
+
+```bash
+APP_REQUEST_TEMPLATE={"message": "{PROMPT}", "history": "{HISTORY}", "session_id": "{CONVERSATION_ID}"}
+APP_HISTORY_TURN={"role": "{ROLE}", "text": "{TEXT}"}   # one earlier turn; default {"role": "{ROLE}", "content": "{TEXT}"}
+APP_HISTORY_ROLES=user,model                          # the app's names for your turns and its own; default user,assistant
+```
+
+`{CONVERSATION_ID}` is optional: a fresh id per conversation, for apps that log or group
+turns by one. Read the request format off the app's page: **Inspect** → **Network**, send
+a message, and open the request.
+
+**An API that only a signed-in browser can call?** Behind single sign-on or an
+identity-aware proxy, a script has no token, but the app's own page calls the API with
+your browser's sign-in. `APP_TRANSPORT=browser-api` does the same: it opens the page
+once, you sign in, and each request is sent from inside it. Requests are built as above,
+so with `{HISTORY}` this is how Crescendo reaches such an app:
+
+```bash
+RT_PROVIDER=app
+APP_TRANSPORT=browser-api
+APP_BROWSER_URL=https://your-app.example.gov/    # the page to sign in at
+APP_BROWSER_INPUT=textarea                       # optional: an element shown once you are signed in
+APP_ENDPOINT=/api/chat                           # the API, here a path on that page's site
+APP_REQUEST_TEMPLATE={"message": "{PROMPT}", "history": "{HISTORY}"}
+APP_RESPONSE_PATH=reply
+```
+
+If the sign-in lapses mid-run, the page is reloaded once so you can sign in again. Every
+setting is documented in `BrowserApiTarget`, in `browser_target.py`.
+
 **System-prompt leaks.** The app keeps its own system prompt, so the scan sends none.
 How a leak is caught depends on what you can supply:
 
@@ -175,11 +210,12 @@ With neither, only the judge can catch a leak, so the run summary lists repeated
 replies side by side — recurring wording is the stronger sign it is real. Keep any prompt
 file outside the repo.
 
-**Which campaigns.** Run `single_turn_scan` or `multi_turn_red_team`, not
-`multi_turn_crescendo` (it needs to delete refused turns the app won't give up). Over the
-API the target is single-turn; through the browser the app keeps each conversation, so
-multi-turn is real. Set `RT_JUDGE_PROVIDER` (the app can't grade itself); `RT_MODEL` is
-ignored.
+**Which campaigns.** `single_turn_scan` and `multi_turn_red_team` run against any app.
+`multi_turn_crescendo` needs `{HISTORY}`: it deletes refused turns and carries on, which
+only works when the kit holds the conversation. Without `{HISTORY}`, an app over its API
+is single-turn; through `APP_TRANSPORT=browser` the app keeps each conversation itself, so
+multi-turn is real but cannot be rewound. Set `RT_JUDGE_PROVIDER` (the app can't grade
+itself); `RT_MODEL` is ignored.
 
 **Fixed replies.** Some replies come from the app, not its model (a guardrail block, a
 "Sorry, I can only help with..." fallback). To learn these, the scan first asks two
@@ -346,7 +382,7 @@ red-team-starter-pack/
 │   └── pyrit_campaigns/                # The campaigns and their judges (PyRIT)
 │       ├── profiles.py                 # Deployment-type profiles: threat model, datasets, rubrics
 │       ├── target_factory.py           # Unified provider factory (Gemini, Claude, OpenAI, Bedrock, Vertex, an app)
-│       ├── browser_target.py           # An app with no callable API, driven through its web page (Playwright)
+│       ├── browser_target.py           # An app reached through a real browser: its web page, or its API from the signed-in page
 │       ├── single_turn_scan.py         # Every dataset probe, graded by your rubrics
 │       ├── probe_templates.py          # One seed sent once per entry in a fixture file
 │       ├── state_policy_rubric.yaml    # The judge's rubrics: criteria-based Pass/Fail scoring prompts
@@ -354,7 +390,7 @@ red-team-starter-pack/
 │       ├── system_prompt.py            # The system prompt a scan sends, and the canary token check
 │       ├── planted_records.py          # Fake records of other people in the system prompt, and their leak check
 │       ├── code_checks.py              # Credential, markdown, and SSN/card checks run on every reply
-│       ├── multi_turn_crescendo.py     # Crescendo: gradual escalation (requires target memory)
+│       ├── multi_turn_crescendo.py     # Crescendo: gradual escalation (needs history it can rewrite)
 │       ├── multi_turn_red_team.py      # Adaptive red team: free-form, works against stateless apps
 │       ├── agent_tool_exploitation.py  # Scaffold: sends tool-abuse probes; the backend diff is a TODO
 │       └── rag_grounding_eval.py       # Scaffold: grounding checker, needs an eval set you supply

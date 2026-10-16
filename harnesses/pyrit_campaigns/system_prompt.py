@@ -164,6 +164,21 @@ def load_app_prompt() -> AppPrompt:
     return AppPrompt(text=text, source=setting, canary=os.getenv("APP_PROMPT_CANARY", "").strip())
 
 
+def announce_app_prompt(app_prompt: AppPrompt) -> None:
+    """Say what a multi-turn run knows about the app's own prompt, and so which leak checks run."""
+    print("\nSystem prompt: the app's own.")
+    if app_prompt.text:
+        print(f"Known from {app_prompt.source}: replies are checked for overlap with it, "
+              "and the judge is shown it.")
+    if app_prompt.canary:
+        print(f"Every reply is checked for the app's canary, {app_prompt.canary} (APP_PROMPT_CANARY).")
+    if not app_prompt.text and not app_prompt.canary:
+        print(
+            "!! The app's system prompt is not known, so only the judge can catch a leak.\n"
+            "!! Set APP_SYSTEM_PROMPT_FILE or APP_PROMPT_CANARY to enable code checks."
+        )
+
+
 def system_message(prompt: SystemPrompt) -> Message:
     """The system prompt as the message PyRIT puts ahead of each probe."""
     piece = MessagePiece(role="system", original_value=prompt.text, conversation_id=str(uuid.uuid4()))
