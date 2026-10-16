@@ -1577,7 +1577,7 @@ def render_report(config: AccessCheckConfig, results: list[CheckResult], timesta
         "",
         "| # | Phase | Check | OWASP API Top 10 | Verdict | Plain-English Result |",
         "|---|---|---|---|---|---|",
-    ]
+    ])
 
     for idx, res in enumerate(results, start=1):
         short_phase = "Phase 1 (Logged Out)" if "Phase 1" in res.phase else "Phase 2 (Logged In)"
