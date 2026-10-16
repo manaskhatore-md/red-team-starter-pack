@@ -60,7 +60,7 @@ def test_objectives_have_their_placeholders_filled():
 
 def test_a_profile_without_objectives_stops_with_where_to_add_them():
     profile = Profile(**{**PROFILES["internal_productivity"].__dict__, "objectives": ()})
-    with pytest.raises(SystemExit, match="profiles.py"):
+    with pytest.raises(SystemExit, match="config/objectives/internal_productivity.yaml"):
         multi_turn_crescendo.load_objectives(profile)
 
 

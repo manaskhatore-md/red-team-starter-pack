@@ -8,9 +8,10 @@ comply once they have already agreed to four adjacent things.
 
     RT_PROFILE=public_conversational python -m harnesses.pyrit_campaigns.multi_turn_crescendo
 
-WHAT RUNS is decided by the profile, as in the single-turn scan: each Objective in the
-profile's `objectives` (harnesses/pyrit_campaigns/profiles.py) is one attack, and the rubric it
-names judges it. Adapting the campaign to a system means rewriting those sentences.
+WHAT RUNS is decided by the profile, as in the single-turn scan: each objective in
+config/objectives/<profile>.yaml is one attack, and the rubric it names judges it.
+Adapting the campaign to a system means rewriting those sentences - in a file of your
+own, outside the repo, named by RT_OBJECTIVES_FILE, which replaces the profile's.
 
 THE SYSTEM PROMPT is the scan's: the profile's stand-in in config/system_prompts/, the file
 RT_SYSTEM_PROMPT_FILE names, or none (RT_SYSTEM_PROMPT_FILE=none). It carries a canary
@@ -142,16 +143,16 @@ def load_objectives(profile: Profile) -> list[Objective]:
     """The profile's objectives with their placeholders filled, checked against its rubrics."""
     if not profile.objectives:
         raise SystemExit(
-            f"Profile {profile.key!r} has no Crescendo objectives yet. Add them to its `objectives`\n"
-            "in harnesses/pyrit_campaigns/profiles.py, or run a profile that has some, e.g.\n"
-            "RT_PROFILE=public_conversational."
+            f"Profile {profile.key!r} has no objectives. Add them to config/objectives/{profile.key}.yaml,\n"
+            "or point RT_OBJECTIVES_FILE at a file of your own."
         )
     rubrics = load_rubrics()
     for objective in profile.objectives:
         if objective.rubric not in profile.rubrics or objective.rubric not in rubrics:
             raise SystemExit(
-                f"Profile {profile.key!r} has an objective judged by {objective.rubric!r}, which is not "
-                "one of its rubrics."
+                f"{profile.objectives_file or 'Profile ' + repr(profile.key)} has an objective judged by "
+                f"{objective.rubric!r}, which is not one of profile {profile.key!r}'s rubrics: "
+                f"{', '.join(profile.rubrics)}."
             )
         if objective.rubric in PAIR_RUBRICS:
             raise SystemExit(f"{objective.rubric!r} compares two replies, so it cannot judge a Crescendo attack.")
@@ -352,6 +353,7 @@ async def main() -> int:
     await initialize_pyrit_async(memory_db_type=SQLITE)
 
     print(describe(profile))
+    print(f"objectives: {len(objectives)} from {profile.objectives_file}")
 
     records = records_for(profile)
     system_prompt = load_system_prompt(
@@ -432,6 +434,8 @@ async def main() -> int:
         "rt_max_backtracks": str(MAX_BACKTRACKS),
         # Settings still at "TODO ...", so the summary can say the objectives named a placeholder.
         "rt_placeholders": ", ".join(placeholders),
+        # Which objectives file the attacks came from, so the report can say what was tested.
+        "rt_objectives_file": profile.objectives_file,
     }
 
     attacks = len(objectives) * repeats

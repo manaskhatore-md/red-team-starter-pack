@@ -76,6 +76,12 @@ def test_a_crescendo_run_uses_its_outcome(memory):
     assert "## Next steps" not in out
 
 
+def test_a_multi_turn_run_says_which_objectives_file_it_used(memory):
+    add_probe(memory, "get a determination", "no", outcome=AttackOutcome.FAILURE,
+              rt_campaign="multi_turn_crescendo", rt_objectives_file="C:/engagements/app/objectives.yaml")
+    assert "| Objectives | from `C:/engagements/app/objectives.yaml` |" in summary(memory)
+
+
 def test_a_reply_with_backticks_stays_inside_its_fence(memory):
     add_probe(memory, "code please", "```python\nprint(1)\n```", "injection_compliance")
     assert "````\n[user] code please" in summary(memory)

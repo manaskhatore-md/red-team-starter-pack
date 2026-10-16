@@ -546,6 +546,8 @@ def build_summary(results, memory, run_id: str) -> str:
     lines.append(f"| Judge | {recorded(labels.get('rt_judge'))} (RT_JUDGE_PROVIDER={recorded(labels.get('rt_judge_provider'))}) |")
     if labels.get("rt_adversarial"):
         lines.append(f"| Attacker | {labels['rt_adversarial']} (RT_ADVERSARIAL_PROVIDER={recorded(labels.get('rt_adversarial_provider'))}) |")
+    if labels.get("rt_objectives_file"):
+        lines.append(f"| Objectives | from `{labels['rt_objectives_file']}` |")
     if started:
         local = started.astimezone()
         lines.append(f"| Run started | {local:%Y-%m-%d %H:%M} {local.tzname()} ({started:%H:%M} UTC) |")
