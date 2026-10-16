@@ -1537,6 +1537,10 @@ def render_report(config: AccessCheckConfig, results: list[CheckResult], timesta
     now = timestamp or datetime.now(timezone.utc)
     counts = {v: sum(1 for r in results if r.verdict == v) for v in ("PASS", "FAIL", "REVIEW", "NOT TESTED")}
 
+    passed_names = [r.name for r in results if r.verdict == "PASS"]
+    review_names = [r.name for r in results if r.verdict == "REVIEW"]
+    fail_names = [r.name for r in results if r.verdict == "FAIL"]
+
     lines = [
         "# Application Access-Control & API Configuration Report",
         "",
@@ -1544,6 +1548,23 @@ def render_report(config: AccessCheckConfig, results: list[CheckResult], timesta
         f"- **Chat Endpoint:** `{config.chat_url}`",
         f"- **Date (UTC):** `{now.strftime('%Y-%m-%d %H:%M:%S UTC')}`",
         f"- **Summary:** **{counts['PASS']} PASS** | **{counts['FAIL']} FAIL** | **{counts['REVIEW']} REVIEW** | **{counts['NOT TESTED']} NOT TESTED**",
+        "",
+        "## What This Report Tests",
+        "",
+        "While prompt-based red-team tests check whether the *AI model* can be tricked by clever questions, this suite tests the **security gates around the application itself**. It checks two things:",
+        "1. **Phase 1 (Signed-Out Checks #1–#8):** Can someone who is *not* logged in bypass the login screen using direct API calls, fake API keys, forged digital ID badges (JWTs), tokens from a different app, fake email headers, or cross-website requests?",
+        "2. **Phase 2 (Signed-In & Outsider Checks #9–#14):** Once someone *is* signed in, can they impersonate another user's email, can a personal `@gmail.com` outsider account get in, are login cookies properly locked down, and does the API expose extra developer/debugging data?",
+        "",
+        f"**Bottom Line for This Run:** **{counts['PASS']} of {len(results)} checks passed** with **{counts['FAIL']} failures**.",
+    ]
+    if fail_names:
+        lines.append(f"- **Needs Fix ({counts['FAIL']}):** " + "; ".join(fail_names) + ".")
+    if review_names:
+        lines.append(f"- **For Developer Review ({counts['REVIEW']}):** " + "; ".join(review_names) + ".")
+    if passed_names:
+        lines.append(f"- **Passed ({counts['PASS']}):** " + "; ".join(passed_names) + ".")
+
+    lines.extend([
         "",
         "## How to Read This Report",
         "",
