@@ -372,7 +372,6 @@ def test_vertex_sends_the_latest_user_turn(fake_vertex):
     assert _FakeVertexClient.sent["messages"][-1] == {"role": "user", "content": "hello"}
 
 
-@pytest.mark.xfail(strict=True, reason="Bug E: the Vertex target drops the system prompt and earlier turns")
 def test_vertex_sends_system_prompt_and_history(fake_vertex):
     conversation = _conversation(
         ("system", "SYSTEM-MARKER"),
@@ -385,7 +384,6 @@ def test_vertex_sends_system_prompt_and_history(fake_vertex):
     assert [m["role"] for m in _FakeVertexClient.sent["messages"]] == ["user", "assistant", "user"]
 
 
-@pytest.mark.xfail(strict=True, reason="Bug E: PyRIT rejects the Vertex target as a judge (not multi-turn)")
 def test_vertex_can_be_a_judge(fake_vertex):
     from pyrit.score import SelfAskGeneralTrueFalseScorer
 
