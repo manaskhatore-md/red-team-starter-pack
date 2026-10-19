@@ -127,13 +127,10 @@ wrong model id or missing access fails in seconds instead of once per probe
 
 `gemini`, `openai`, and `anthropic` need one API key. `bedrock` and `vertex` use ambient
 cloud credentials and print the resolved identity before the first call — see
-[Running on Bedrock](#running-on-bedrock).
-
-**Vertex has a known limitation:** its target sends only the latest user message, so the
-system prompt and earlier turns never reach the model, and PyRIT does not accept it as a
-judge. The canary token, planted records, and Crescendo results are not meaningful on
-Vertex until that is fixed ("Bug E" in `tests/test_target_factory.py`); use Bedrock or a
-key-based provider. If you use it anyway, set `PROJECT_ID` to your Google Cloud project.
+[Running on Bedrock](#running-on-bedrock). For `vertex` (Claude on Google Cloud Vertex AI),
+authenticate with `gcloud auth application-default login` (or set
+`GOOGLE_APPLICATION_CREDENTIALS`) and set `PROJECT_ID` to your Google Cloud project
+(optional `GOOGLE_VERTEX_REGION`, default `us-east5`).
 
 ## Testing your app in depth
 
