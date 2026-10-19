@@ -47,6 +47,7 @@ import re
 import subprocess
 import sys
 import time
+import traceback
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -92,7 +93,45 @@ DEFAULT_PROBE_PATHS = (
 )
 
 REDIRECT_STATUSES = {301, 302, 303, 307, 308}
-REFUSED_STATUSES = REDIRECT_STATUSES | {401, 403}
+REFUSED_STATUSES = {401, 403}
+
+LOGIN_HOST_MARKERS = (
+    "accounts.google.com",
+    "login.microsoftonline.com",
+    "login.live.com",
+    "login.windows.net",
+    ".okta.com",
+    ".oktapreview.com",
+    ".auth0.com",
+    ".onelogin.com",
+    ".duosecurity.com",
+    ".pingidentity.com",
+    ".b2clogin.com",
+    ".amazoncognito.com",
+)
+LOGIN_HOST_PREFIXES = ("login.", "auth.", "sso.", "idp.", "id.", "signin.", "accounts.")
+LOGIN_PATH_MARKERS = (
+    "/login",
+    "/signin",
+    "/sign-in",
+    "/sign_in",
+    "/authenticate",
+    "/oauth",
+    "/oauth2",
+    "/authorize",
+    "/saml",
+    "/sso",
+    "/_gcp_iap",
+    "/cdn-cgi/access",
+)
+LOGIN_QUERY_MARKERS = (
+    "client_id=",
+    "redirect_uri=",
+    "response_type=",
+    "samlrequest=",
+    "return_to=",
+    "returnurl=",
+)
 
 SPOOFED_EMAIL = "unverified-header-check@example.invalid"
 SPOOFED_IDENTITY_HEADERS = {
@@ -318,6 +357,34 @@ def _status_label(response: httpx.Response) -> str:
     return f"HTTP {code}"
 
 
+def _is_login_redirect(response: httpx.Response) -> bool:
+    """Return True only when a 3xx redirect points to an SSO/IdP or login URL."""
+    if response.status_code not in REDIRECT_STATUSES:
+        return False
+    loc = response.headers.get("location", "").strip()
+    if not loc:
+        return False
+    parsed = urlparse(loc)
+    host = (parsed.netloc or "").lower().split(":")[0]
+    path = (parsed.path or "").lower()
+    query = (parsed.query or "").lower()
+    if host:
+        if any(host == m or host.endswith(m) for m in LOGIN_HOST_MARKERS):
+            return True
+        if host.startswith(LOGIN_HOST_PREFIXES):
+            return True
+    if any(marker in path for marker in LOGIN_PATH_MARKERS):
+        return True
+    if any(marker in query for marker in LOGIN_QUERY_MARKERS):
+        return True
+    return False
+
+
+def _is_auth_refusal(response: httpx.Response) -> bool:
+    """Return True if the response is HTTP 401/403 or a 3xx redirect to a sign-in gate."""
+    return response.status_code in REFUSED_STATUSES or _is_login_redirect(response)
+
+
 def _is_post_first_path(path: str, chat_path: str) -> bool:
     return path in {chat_path, "/api/chat", "/api/event"}
 
@@ -362,7 +429,7 @@ async def check_no_credentials(client: httpx.AsyncClient, config: AccessCheckCon
 
         code = resp.status_code
         label = _status_label(resp)
-        if code in REFUSED_STATUSES:
+        if _is_auth_refusal(resp):
             refused_count += 1
             details.append(f"`{method_used} {path}` -> {label} (blocked)")
         elif code == 404:
@@ -380,7 +447,7 @@ async def check_no_credentials(client: httpx.AsyncClient, config: AccessCheckCon
                 exposed.append(f"`{method_used} {path}` returned HTTP {code}")
                 details.append(f"`{method_used} {path}` -> HTTP {code} (FAIL: reachable without login)")
         else:
-            errors.append(f"`{path}` (HTTP {code})")
+            errors.append(f"`{path}` ({label})")
             details.append(f"`{method_used} {path}` -> {label} (unverified)")
 
     if exposed:
@@ -470,12 +537,12 @@ async def check_junk_credentials(client: httpx.AsyncClient, config: AccessCheckC
             continue
         status_desc = _status_label(resp)
         details.append(f"{label} on `POST {config.chat_path}` -> {status_desc}")
-        if resp.status_code in REFUSED_STATUSES:
+        if _is_auth_refusal(resp):
             continue
         if 200 <= resp.status_code < 300 or resp.status_code == 422:
             failures.append(f"{label} returned HTTP {resp.status_code}")
         else:
-            errors.append(f"{label} (HTTP {resp.status_code})")
+            errors.append(f"{label} ({status_desc})")
 
     if failures:
         return CheckResult(
@@ -539,12 +606,12 @@ async def check_forged_jwt(client: httpx.AsyncClient, config: AccessCheckConfig)
             continue
         status_desc = _status_label(resp)
         details.append(f"Forged badge ({kind}) on `POST {config.chat_path}` -> {status_desc}")
-        if resp.status_code in REFUSED_STATUSES:
+        if _is_auth_refusal(resp):
             continue
         if 200 <= resp.status_code < 300 or resp.status_code == 422:
             failures.append(f"Forged badge ({kind}) returned HTTP {resp.status_code}")
         else:
-            errors.append(f"{kind} (HTTP {resp.status_code})")
+            errors.append(f"{kind} ({status_desc})")
 
     if failures:
         return CheckResult(
@@ -624,7 +691,7 @@ async def check_wrong_audience_token(client: httpx.AsyncClient, config: AccessCh
 
     status_desc = _status_label(resp)
     details.append(f"`POST {config.chat_path}` with token from `{source}` -> {status_desc}")
-    if resp.status_code in REFUSED_STATUSES:
+    if _is_auth_refusal(resp):
         return CheckResult(
             phase=phase,
             name=name,
@@ -653,7 +720,7 @@ async def check_wrong_audience_token(client: httpx.AsyncClient, config: AccessCh
         name=name,
         owasp=owasp,
         verdict="NOT TESTED",
-        summary=f"`POST {config.chat_path}` returned HTTP {resp.status_code}; could not verify wrong-audience token rejection.",
+        summary=f"`POST {config.chat_path}` returned {status_desc}; could not verify wrong-audience token rejection.",
         what_it_tests=what_it_tests,
         details=details,
     )
@@ -693,14 +760,14 @@ async def check_unauthenticated_identity_headers(
             continue
         status_desc = _status_label(resp)
         details.append(f"`{label}` with fake email headers -> {status_desc}")
-        if resp.status_code in REFUSED_STATUSES:
+        if _is_auth_refusal(resp):
             continue
         if resp.status_code == 404 and url != config.chat_url:
             continue
         if 200 <= resp.status_code < 300 or resp.status_code == 422:
             failures.append(f"`{label}` returned HTTP {resp.status_code}")
         else:
-            errors.append(f"`{label}` (HTTP {resp.status_code})")
+            errors.append(f"`{label}` ({status_desc})")
 
     if failures:
         return CheckResult(
@@ -777,7 +844,7 @@ async def check_cors_preflight(client: httpx.AsyncClient, config: AccessCheckCon
     # Auth gateways like Google Cloud IAP return HTTP 401/403/302 on unauthenticated OPTIONS
     # requests (which causes the browser to block the cross-origin request), even if the
     # gateway's 401 error response echoes Access-Control-Allow-Origin.
-    if resp.status_code in REFUSED_STATUSES:
+    if _is_auth_refusal(resp):
         if acao:
             details.append(
                 f"Note: Although the login gate echoed `Access-Control-Allow-Origin` on its `{status_desc}` error "
@@ -841,7 +908,6 @@ async def check_http_methods(client: httpx.AsyncClient, config: AccessCheckConfi
     failures: list[str] = []
     errors: list[str] = []
 
-    allowed_refusal = REFUSED_STATUSES | {405}
     for method in ("GET", "PUT", "DELETE"):
         try:
             resp = await client.request(method, config.chat_url)
@@ -851,12 +917,12 @@ async def check_http_methods(client: httpx.AsyncClient, config: AccessCheckConfi
             continue
         status_desc = _status_label(resp)
         details.append(f"`{method} {config.chat_path}` -> {status_desc}")
-        if resp.status_code in allowed_refusal:
+        if _is_auth_refusal(resp) or resp.status_code == 405:
             continue
         if 200 <= resp.status_code < 300 or resp.status_code == 422:
             failures.append(f"`{method}` returned HTTP {resp.status_code}")
         else:
-            errors.append(f"`{method}` (HTTP {resp.status_code})")
+            errors.append(f"`{method}` ({status_desc})")
 
     if failures:
         return CheckResult(
@@ -949,7 +1015,7 @@ async def check_alternate_urls(client: httpx.AsyncClient, config: AccessCheckCon
             details.append(f"`{url}` -> unreachable ({type(e).__name__})")
             continue
         status_desc = _status_label(resp)
-        if resp.status_code in REFUSED_STATUSES:
+        if _is_auth_refusal(resp):
             details.append(f"`POST {url}` -> {status_desc} (blocked)")
         elif 200 <= resp.status_code < 300 or resp.status_code == 422:
             details.append(f"`POST {url}` -> {status_desc} (FAIL: reachable without login)")
@@ -958,7 +1024,7 @@ async def check_alternate_urls(client: httpx.AsyncClient, config: AccessCheckCon
             details.append(f"`POST {url}` -> HTTP 404 (not found)")
         else:
             details.append(f"`POST {url}` -> {status_desc} (unverified)")
-            errors.append(f"`{url}` (HTTP {resp.status_code})")
+            errors.append(f"`{url}` ({status_desc})")
 
     if failures:
         return CheckResult(
@@ -1382,9 +1448,10 @@ async def check_openapi_docs_exposed(
                 )
                 continue
             code = resp.status_code
-            if code in REFUSED_STATUSES:
+            status_desc = _status_label(resp)
+            if _is_auth_refusal(resp):
                 details.append(
-                    f"Logged-out test of discovered route `{method} {route_path}` -> {_status_label(resp)} (blocked)"
+                    f"Logged-out test of discovered route `{method} {route_path}` -> {status_desc} (blocked)"
                 )
             elif 200 <= code < 300 or code == 422:
                 unauth_leaks.append(f"`{method} {route_path}` (HTTP {code})")
@@ -1392,9 +1459,9 @@ async def check_openapi_docs_exposed(
                     f"Logged-out test of discovered route `{method} {route_path}` -> HTTP {code} (FAIL: reachable without login)"
                 )
             else:
-                unverified_routes.append(f"`{method} {route_path}` (HTTP {code})")
+                unverified_routes.append(f"`{method} {route_path}` ({status_desc})")
                 details.append(
-                    f"Logged-out test of discovered route `{method} {route_path}` -> HTTP {code} (not verified)"
+                    f"Logged-out test of discovered route `{method} {route_path}` -> {status_desc} (not verified)"
                 )
 
     if unauth_leaks:
@@ -1628,29 +1695,36 @@ def check_cookie_security_flags(config: AccessCheckConfig, session: SignedInSess
     )
 
 
-async def _wait_for_outsider_outcome(page, config: AccessCheckConfig) -> None:
-    """If the outsider browser is on an interactive sign-in form, wait until sign-in finishes
-    (either landing back on the app's origin or hitting an IAP/IdP access-denied screen)."""
-    if config.headless:
-        return
-
+async def _wait_for_outsider_outcome(
+    page, config: AccessCheckConfig, nav_status: int = 0
+) -> tuple[bool, bool]:
+    """Wait until the outsider browser either lands on the target origin or hits an explicit
+    access-denied screen. Returns (on_target_origin, browser_denied)."""
     target_origin = (urlparse(config.base_url).scheme, urlparse(config.base_url).netloc)
-    denied_phrases = ("don't have access", "do not have access", "access denied", "not authorized", "403")
+    denied_phrases = (
+        "don't have access",
+        "do not have access",
+        "access denied",
+        "not authorized",
+        "permission denied",
+        "403",
+    )
 
-    async def settled() -> bool:
+    async def inspect_state() -> tuple[bool, bool]:
         parsed = urlparse(getattr(page, "url", "") or "")
-        if (parsed.scheme, parsed.netloc) == target_origin:
-            return True
-        if not hasattr(page, "content"):
-            return True
-        try:
-            body_lower = (await page.content()).lower()
-            return any(p in body_lower for p in denied_phrases)
-        except Exception:
-            return False
+        on_target = (parsed.scheme, parsed.netloc) == target_origin
+        denied = nav_status in REFUSED_STATUSES
+        if not denied and hasattr(page, "content"):
+            try:
+                body_lower = (await page.content()).lower()
+                denied = any(p in body_lower for p in denied_phrases)
+            except Exception:
+                pass
+        return on_target, denied
 
-    if await settled():
-        return
+    on_target, denied = await inspect_state()
+    if on_target or denied or config.headless:
+        return on_target, denied
 
     email_hint = f" ({config.outsider_email})" if config.outsider_email else ""
     print(
@@ -1659,9 +1733,11 @@ async def _wait_for_outsider_outcome(page, config: AccessCheckConfig) -> None:
     )
     deadline = time.monotonic() + config.sign_in_timeout
     while time.monotonic() < deadline:
-        if await settled():
-            return
+        on_target, denied = await inspect_state()
+        if on_target or denied:
+            return on_target, denied
         await asyncio.sleep(POLL_SECONDS)
+    return await inspect_state()
 
 
 async def check_outsider_account(
@@ -1720,7 +1796,7 @@ async def check_outsider_account(
         nav_response = await page.goto(config.page_url)
         nav_status = nav_response.status if nav_response else 0
 
-        await _wait_for_outsider_outcome(page, config)
+        on_target_origin, browser_denied = await _wait_for_outsider_outcome(page, config, nav_status)
 
         reached_chat_box = False
         if config.ready_selector:
@@ -1731,8 +1807,6 @@ async def check_outsider_account(
                 reached_chat_box = False
 
         cookies = await context.cookies([config.base_url, config.page_url])
-        if not cookies:
-            cookies = await context.cookies()
         cookie_header = "; ".join(f"{c['name']}={c['value']}" for c in cookies if c.get("name"))
     except Exception as e:
         return CheckResult(
@@ -1752,8 +1826,24 @@ async def check_outsider_account(
 
     details = [
         f"Outsider account tested: `{outsider_label}`",
-        f"Browser navigation to `{config.page_url}` -> HTTP {nav_status}, chat box visible: `{reached_chat_box}`",
+        f"Browser navigation to `{config.page_url}` -> HTTP {nav_status}, "
+        f"on target origin: `{on_target_origin}`, browser access-denied screen: `{browser_denied}`, "
+        f"chat box visible: `{reached_chat_box}`",
     ]
+
+    if not reached_chat_box and not browser_denied and (not on_target_origin or not cookie_header):
+        return CheckResult(
+            phase=phase,
+            name=name,
+            owasp=owasp,
+            verdict="NOT TESTED",
+            summary=(
+                f"Outsider sign-in did not complete for `{outsider_label}` "
+                "(browser remained on sign-in page or had no target session cookies)."
+            ),
+            what_it_tests=what_it_tests,
+            details=details,
+        )
 
     headers: dict[str, str] = {"Content-Type": "application/json"}
     if cookie_header:
@@ -1804,7 +1894,7 @@ async def check_outsider_account(
             ),
         )
 
-    if chat_resp.status_code in REFUSED_STATUSES:
+    if chat_resp.status_code in REFUSED_STATUSES or (browser_denied and _is_auth_refusal(chat_resp)):
         return CheckResult(
             phase=phase,
             name=name,
@@ -1820,7 +1910,10 @@ async def check_outsider_account(
         name=name,
         owasp=owasp,
         verdict="NOT TESTED",
-        summary=f"Outsider `POST {config.chat_path}` returned {_status_label(chat_resp)}; could not verify outsider API refusal.",
+        summary=(
+            f"Outsider `POST {config.chat_path}` returned {_status_label(chat_resp)} "
+            "without an authenticated outsider refusal; could not verify outsider block."
+        ),
         what_it_tests=what_it_tests,
         details=details,
     )
@@ -1832,19 +1925,27 @@ async def check_outsider_account(
 
 
 async def _run_check_safely(phase: str, name: str, owasp: str, fn, *args) -> CheckResult:
-    """Run a single check function and convert any unexpected exception into a NOT TESTED CheckResult."""
+    """Run a single check function and convert any unexpected exception into a NOT TESTED CheckResult with traceback."""
     try:
         res = fn(*args)
         if asyncio.iscoroutine(res):
             res = await res
         return res
     except Exception as e:
+        tb_lines = [
+            line.rstrip()
+            for chunk in traceback.format_exception(type(e), e, e.__traceback__)
+            for line in chunk.splitlines()
+            if line.strip()
+        ]
+        print(f"\n[ERROR] Internal crash in check {name!r}:\n" + "\n".join(tb_lines), file=sys.stderr)
         return CheckResult(
             phase=phase,
             name=name,
             owasp=owasp,
             verdict="NOT TESTED",
-            summary=f"Check could not be completed due to an unexpected error ({type(e).__name__}: {e}).",
+            summary=f"Check crashed with an internal error ({type(e).__name__}: {e}); see traceback in details.",
+            details=[f"`{line}`" for line in tb_lines],
         )
 
 
@@ -1980,6 +2081,8 @@ def render_report(config: AccessCheckConfig, results: list[CheckResult], timesta
     passed_names = [r.name for r in results if r.verdict == "PASS"]
     review_names = [r.name for r in results if r.verdict == "REVIEW"]
     fail_names = [r.name for r in results if r.verdict == "FAIL"]
+    not_tested_names = [r.name for r in results if r.verdict == "NOT TESTED"]
+    has_phase2 = any("Phase 2" in r.phase for r in results)
 
     lines = [
         "# Application Access-Control & API Configuration Report",
@@ -1991,18 +2094,38 @@ def render_report(config: AccessCheckConfig, results: list[CheckResult], timesta
         "",
         "## What This Report Tests",
         "",
-        "While prompt-based red-team tests check whether the *AI model* can be tricked by clever questions, this suite tests the **security gates around the application itself**. It checks two things:",
-        "1. **Phase 1 (Signed-Out Checks #1–#8):** Can someone who is *not* logged in bypass the login screen using direct API calls, fake API keys, forged digital ID badges (JWTs), tokens from a different app, fake email headers, or cross-website requests?",
-        "2. **Phase 2 (Signed-In & Outsider Checks #9–#14):** Once someone *is* signed in, can they impersonate another user's email, can a personal `@gmail.com` outsider account get in, are login cookies properly locked down, and does the API expose extra developer/debugging data?",
-        "",
-        f"**Bottom Line for This Run:** **{counts['PASS']} of {len(results)} checks passed** with **{counts['FAIL']} failures**.",
     ]
+    if has_phase2:
+        lines.extend(
+            [
+                "While prompt-based red-team tests check whether the *AI model* can be tricked by clever questions, this suite tests the **security gates around the application itself**. It checks two things:",
+                "1. **Phase 1 (Signed-Out Checks #1–#8):** Can someone who is *not* logged in bypass the login screen using direct API calls, fake API keys, forged digital ID badges (JWTs), tokens from a different app, fake email headers, or cross-website requests?",
+                "2. **Phase 2 (Signed-In & Outsider Checks #9–#14):** Once someone *is* signed in, can they impersonate another user's email, can a personal `@gmail.com` outsider account get in, are login cookies properly locked down, and does the API expose extra developer/debugging data?",
+            ]
+        )
+    else:
+        lines.extend(
+            [
+                "While prompt-based red-team tests check whether the *AI model* can be tricked by clever questions, this suite tests the **security gates around the application itself**.",
+                "- **Phase 1 (Signed-Out Checks #1–#8):** Can someone who is *not* logged in bypass the login screen using direct API calls, fake API keys, forged digital ID badges (JWTs), tokens from a different app, fake email headers, or cross-website requests? *(Run with `--phase1-only`; signed-in and outsider checks were skipped.)*",
+            ]
+        )
+
+    lines.extend(
+        [
+            "",
+            f"**Bottom Line for This Run:** **{counts['PASS']} of {len(results)} checks passed** "
+            f"with **{counts['FAIL']} failures**, **{counts['REVIEW']} for review**, and **{counts['NOT TESTED']} not tested**.",
+        ]
+    )
     if fail_names:
         lines.append(f"- **Needs Fix ({counts['FAIL']}):** " + "; ".join(fail_names) + ".")
     if review_names:
         lines.append(f"- **For Developer Review ({counts['REVIEW']}):** " + "; ".join(review_names) + ".")
     if passed_names:
         lines.append(f"- **Passed ({counts['PASS']}):** " + "; ".join(passed_names) + ".")
+    if not_tested_names:
+        lines.append(f"- **Not Tested ({counts['NOT TESTED']}):** " + "; ".join(not_tested_names) + ".")
 
     lines.extend([
         "",
