@@ -313,6 +313,14 @@ class AnthropicVertexChatTarget(PromptTarget):
     hook. Use it as the reference when you need to wrap any other SDK as a target.
     """
 
+    _DEFAULT_CONFIGURATION = TargetConfiguration(
+        capabilities=TargetCapabilities(
+            supports_system_prompt=True,
+            supports_editable_history=True,
+            supports_multi_turn=True,
+        )
+    )
+
     def __init__(
         self,
         *,
@@ -335,12 +343,22 @@ class AnthropicVertexChatTarget(PromptTarget):
     @limit_requests_per_minute
     async def _send_prompt_to_target_async(self, *, normalized_conversation: list[Message]) -> list[Message]:
         request = normalized_conversation[-1].message_pieces[0]
+        pieces = [piece for msg in normalized_conversation for piece in msg.message_pieces]
+        system = "\n\n".join(piece.converted_value for piece in pieces if piece.api_role == "system")
+        messages = [
+            {"role": piece.api_role, "content": piece.converted_value}
+            for piece in pieces
+            if piece.api_role != "system"
+        ]
+        request_kwargs: dict = {
+            "max_tokens": self._max_tokens,
+            "messages": messages,
+            "model": self._model_name,
+        }
+        if system:
+            request_kwargs["system"] = system
 
-        message = await self._client.messages.create(
-            max_tokens=self._max_tokens,
-            messages=[{"role": "user", "content": request.converted_value}],
-            model=self._model_name,
-        )
+        message = await self._client.messages.create(**request_kwargs)
         response_text = "".join(block.text for block in message.content if block.type == "text")
 
         return [construct_response_from_request(request=request, response_text_pieces=[response_text])]
