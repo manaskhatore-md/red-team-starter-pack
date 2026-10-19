@@ -293,6 +293,29 @@ def test_phase1_checks_return_not_tested_on_network_errors():
     assert asyncio.run(check_alternate_urls(err_client, cfg)).verdict == "NOT TESTED"
 
 
+def test_404_not_treated_as_auth_refusal_on_chat_endpoint():
+    assert 404 not in access_checks.REFUSED_STATUSES
+    cfg = make_config()
+
+    # If the chat endpoint returns 404 (e.g. mistyped APP_ENDPOINT), checks return NOT TESTED rather than fake PASS
+    not_found_client = mock_client(lambda req: httpx.Response(404))
+    assert asyncio.run(check_no_credentials(not_found_client, cfg)).verdict == "NOT TESTED"
+    assert asyncio.run(check_junk_credentials(not_found_client, cfg)).verdict == "NOT TESTED"
+    assert asyncio.run(check_forged_jwt(not_found_client, cfg)).verdict == "NOT TESTED"
+    assert asyncio.run(check_unauthenticated_identity_headers(not_found_client, cfg)).verdict == "NOT TESTED"
+    assert asyncio.run(check_http_methods(not_found_client, cfg)).verdict == "NOT TESTED"
+
+    # If optional probe path /healthz returns 404 while real endpoints return 401/302, Check #1 still passes
+    def healthz_404_others_401(req: httpx.Request) -> httpx.Response:
+        if req.url.path == "/healthz":
+            return httpx.Response(404)
+        return httpx.Response(401)
+
+    res = asyncio.run(check_no_credentials(mock_client(healthz_404_others_401), cfg))
+    assert res.verdict == "PASS"
+    assert "HTTP 404 (not found)" in "\n".join(res.details)
+
+
 def test_exposed_response_fields_flags_trace_and_passes_clean_response():
     cfg = make_config(response_path="reply")
     session = SignedInSession(headers={"Cookie": "sid=1"})

@@ -92,7 +92,7 @@ DEFAULT_PROBE_PATHS = (
 )
 
 REDIRECT_STATUSES = {301, 302, 303, 307, 308}
-REFUSED_STATUSES = REDIRECT_STATUSES | {401, 403, 404}
+REFUSED_STATUSES = REDIRECT_STATUSES | {401, 403}
 
 SPOOFED_EMAIL = "unverified-header-check@example.invalid"
 SPOOFED_IDENTITY_HEADERS = {
@@ -363,6 +363,10 @@ async def check_no_credentials(client: httpx.AsyncClient, config: AccessCheckCon
         label = _status_label(resp)
         if code in REFUSED_STATUSES:
             details.append(f"`{method_used} {path}` -> {label} (blocked)")
+        elif code == 404:
+            details.append(f"`{method_used} {path}` -> HTTP 404 (not found)")
+            if path == config.chat_path:
+                errors.append(f"`{path}` (HTTP 404 not found)")
         elif code == 422:
             exposed.append(f"`{method_used} {path}` returned HTTP 422 (reached app code without login)")
             details.append(f"`{method_used} {path}` -> HTTP 422 (FAIL: reached app code without login)")
@@ -453,7 +457,9 @@ async def check_junk_credentials(client: httpx.AsyncClient, config: AccessCheckC
             continue
         status_desc = _status_label(resp)
         details.append(f"{label} on `POST {config.chat_path}` -> {status_desc}")
-        if resp.status_code not in REFUSED_STATUSES:
+        if resp.status_code == 404:
+            errors.append(f"{label} (HTTP 404 not found)")
+        elif resp.status_code not in REFUSED_STATUSES:
             failures.append(f"{label} returned HTTP {resp.status_code}")
 
     if failures:
@@ -518,7 +524,9 @@ async def check_forged_jwt(client: httpx.AsyncClient, config: AccessCheckConfig)
             continue
         status_desc = _status_label(resp)
         details.append(f"Forged badge ({kind}) on `POST {config.chat_path}` -> {status_desc}")
-        if resp.status_code not in REFUSED_STATUSES:
+        if resp.status_code == 404:
+            errors.append(f"{kind} (HTTP 404 not found)")
+        elif resp.status_code not in REFUSED_STATUSES:
             failures.append(f"Forged badge ({kind}) returned HTTP {resp.status_code}")
 
     if failures:
@@ -599,6 +607,16 @@ async def check_wrong_audience_token(client: httpx.AsyncClient, config: AccessCh
 
     status_desc = _status_label(resp)
     details.append(f"`POST {config.chat_path}` with token from `{source}` -> {status_desc}")
+    if resp.status_code == 404:
+        return CheckResult(
+            phase=phase,
+            name=name,
+            owasp=owasp,
+            verdict="NOT TESTED",
+            summary=f"`POST {config.chat_path}` returned HTTP 404 (not found); could not verify wrong-audience token rejection.",
+            what_it_tests=what_it_tests,
+            details=details,
+        )
     if resp.status_code not in REFUSED_STATUSES:
         return CheckResult(
             phase=phase,
@@ -658,7 +676,10 @@ async def check_unauthenticated_identity_headers(
             continue
         status_desc = _status_label(resp)
         details.append(f"`{label}` with fake email headers -> {status_desc}")
-        if resp.status_code not in REFUSED_STATUSES:
+        if resp.status_code == 404:
+            if url == config.chat_url:
+                errors.append(f"`{label}` (HTTP 404 not found)")
+        elif resp.status_code not in REFUSED_STATUSES:
             failures.append(f"`{label}` returned HTTP {resp.status_code}")
 
     if failures:
@@ -798,7 +819,9 @@ async def check_http_methods(client: httpx.AsyncClient, config: AccessCheckConfi
             continue
         status_desc = _status_label(resp)
         details.append(f"`{method} {config.chat_path}` -> {status_desc}")
-        if resp.status_code not in allowed_refusal:
+        if resp.status_code == 404:
+            errors.append(f"`{method}` (HTTP 404 not found)")
+        elif resp.status_code not in allowed_refusal:
             failures.append(f"`{method}` returned HTTP {resp.status_code}")
 
     if failures:
@@ -891,8 +914,12 @@ async def check_alternate_urls(client: httpx.AsyncClient, config: AccessCheckCon
             details.append(f"`{url}` -> unreachable ({type(e).__name__})")
             continue
         status_desc = _status_label(resp)
-        details.append(f"`POST {url}` -> {status_desc}")
-        if resp.status_code not in REFUSED_STATUSES:
+        if resp.status_code == 404:
+            details.append(f"`POST {url}` -> HTTP 404 (not found)")
+        elif resp.status_code in REFUSED_STATUSES:
+            details.append(f"`POST {url}` -> {status_desc} (blocked)")
+        else:
+            details.append(f"`POST {url}` -> {status_desc}")
             failures.append(f"`{url}` returned HTTP {resp.status_code}")
 
     if failures:
@@ -1658,6 +1685,17 @@ async def check_outsider_account(
         )
 
     details.append(f"Outsider `POST {config.chat_path}` -> {_status_label(chat_resp)}")
+
+    if not reached_chat_box and chat_resp.status_code == 404:
+        return CheckResult(
+            phase=phase,
+            name=name,
+            owasp=owasp,
+            verdict="NOT TESTED",
+            summary=f"Outsider `POST {config.chat_path}` returned HTTP 404 (not found); could not verify outsider API refusal.",
+            what_it_tests=what_it_tests,
+            details=details,
+        )
 
     if reached_chat_box or chat_resp.status_code not in REFUSED_STATUSES:
         return CheckResult(
