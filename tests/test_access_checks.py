@@ -237,6 +237,62 @@ def test_signed_in_header_spoofing_passes_when_gateway_preserves_real_user():
     assert SPOOFED_EMAIL in res_fail.summary
 
 
+def test_signed_in_header_spoofing_handles_missing_me_endpoint_and_errors():
+    cfg = make_config()
+    session = SignedInSession(headers={"Cookie": "__Host-GCP_IAP_AUTH_TOKEN=secret-cookie-value"})
+
+    # 1. /api/me returns 404, /api/chat returns normal reply without echoing email -> NOT TESTED (not fake PASS)
+    def no_me_normal_chat(req: httpx.Request) -> httpx.Response:
+        if req.url.path == "/api/me":
+            return httpx.Response(404)
+        return httpx.Response(200, json={"reply": "Hello! How can I help you?"})
+
+    res_not_tested = asyncio.run(check_signed_in_header_spoofing(mock_client(no_me_normal_chat), cfg, session))
+    assert res_not_tested.verdict == "NOT TESTED"
+
+    # 2. /api/me returns 404, /api/chat reflects SPOOFED_EMAIL in trace -> FAIL
+    def no_me_leaky_chat(req: httpx.Request) -> httpx.Response:
+        if req.url.path == "/api/me":
+            return httpx.Response(404)
+        return httpx.Response(200, json={"reply": "Hi", "trace": {"user": SPOOFED_EMAIL}})
+
+    res_chat_fail = asyncio.run(check_signed_in_header_spoofing(mock_client(no_me_leaky_chat), cfg, session))
+    assert res_chat_fail.verdict == "FAIL"
+
+    # 3. /api/me returns 404, /api/chat raises ReadTimeout -> NOT TESTED (does not crash)
+    def no_me_timeout_chat(req: httpx.Request) -> httpx.Response:
+        if req.url.path == "/api/me":
+            return httpx.Response(404)
+        raise httpx.ReadTimeout("chat timed out", request=req)
+
+    res_timeout = asyncio.run(check_signed_in_header_spoofing(mock_client(no_me_timeout_chat), cfg, session))
+    assert res_timeout.verdict == "NOT TESTED"
+
+    # 4. /api/me returns 200 HTML SPA shell (no user identity) -> falls back and returns NOT TESTED (not fake PASS)
+    def html_spa_fallback(req: httpx.Request) -> httpx.Response:
+        if req.url.path == "/api/me":
+            return httpx.Response(200, text="<!doctype html><html><body>SPA</body></html>")
+        return httpx.Response(200, json={"reply": "Hello"})
+
+    res_spa = asyncio.run(check_signed_in_header_spoofing(mock_client(html_spa_fallback), cfg, session))
+    assert res_spa.verdict == "NOT TESTED"
+
+
+def test_phase1_checks_return_not_tested_on_network_errors():
+    cfg = make_config(alternate_urls=["https://alt.example.test/api/chat"])
+
+    def timeout_handler(req: httpx.Request) -> httpx.Response:
+        raise httpx.ReadTimeout("timed out", request=req)
+
+    err_client = mock_client(timeout_handler)
+    assert asyncio.run(check_no_credentials(err_client, cfg)).verdict == "NOT TESTED"
+    assert asyncio.run(check_junk_credentials(err_client, cfg)).verdict == "NOT TESTED"
+    assert asyncio.run(check_forged_jwt(err_client, cfg)).verdict == "NOT TESTED"
+    assert asyncio.run(check_unauthenticated_identity_headers(err_client, cfg)).verdict == "NOT TESTED"
+    assert asyncio.run(check_http_methods(err_client, cfg)).verdict == "NOT TESTED"
+    assert asyncio.run(check_alternate_urls(err_client, cfg)).verdict == "NOT TESTED"
+
+
 def test_exposed_response_fields_flags_trace_and_passes_clean_response():
     cfg = make_config(response_path="reply")
     session = SignedInSession(headers={"Cookie": "sid=1"})
@@ -350,6 +406,10 @@ def test_signed_in_cors_and_cookie_security_flags():
     safe_cors = mock_client(lambda req: httpx.Response(200, json={"email": "user@example.test"}))
     assert asyncio.run(check_signed_in_cors(safe_cors, cfg, session_good)).verdict == "PASS"
 
+    # When /api/me is 404 and /api/chat is 401 (expired session), return NOT TESTED instead of fake PASS
+    unauth_cors = mock_client(lambda req: httpx.Response(404 if req.url.path == "/api/me" else 401))
+    assert asyncio.run(check_signed_in_cors(unauth_cors, cfg, session_good)).verdict == "NOT TESTED"
+
 
 def test_outsider_account_not_tested_when_unset():
     cfg = make_config(outsider_profile=None, outsider_email="danafi2.0@gmail.com")
@@ -402,6 +462,12 @@ def test_outsider_account_passes_when_blocked_and_fails_when_admitted(tmp_path: 
 
     res_fail = asyncio.run(check_outsider_account(mock_client(lambda r: httpx.Response(200)), cfg))
     assert res_fail.verdict == "FAIL"
+
+    def raise_timeout(req: httpx.Request) -> httpx.Response:
+        raise httpx.ReadTimeout("timeout", request=req)
+
+    res_err = asyncio.run(check_outsider_account(mock_client(raise_timeout), cfg))
+    assert res_err.verdict == "NOT TESTED"
 
 
 def test_end_to_end_main_writes_markdown_report(tmp_path: Path, clean_env, monkeypatch):
