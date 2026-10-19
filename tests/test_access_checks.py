@@ -316,6 +316,25 @@ def test_404_not_treated_as_auth_refusal_on_chat_endpoint():
     assert "HTTP 404 (not found)" in "\n".join(res.details)
 
 
+def test_5xx_server_errors_return_not_tested_rather_than_pass_or_fail(monkeypatch):
+    cfg = make_config(alternate_urls=["https://alt.example.test/api/chat"])
+    monkeypatch.setattr(
+        access_checks,
+        "resolve_wrong_audience_token",
+        lambda configured="": ("eyJhbGciOiJSUzI1NiJ9.eyJhdWQiOiJotherIn0.sig", "APP_WRONG_TOKEN"),
+    )
+    server_err_client = mock_client(lambda req: httpx.Response(500, text="Internal Server Error"))
+
+    assert asyncio.run(check_no_credentials(server_err_client, cfg)).verdict == "NOT TESTED"
+    assert asyncio.run(check_junk_credentials(server_err_client, cfg)).verdict == "NOT TESTED"
+    assert asyncio.run(check_forged_jwt(server_err_client, cfg)).verdict == "NOT TESTED"
+    assert asyncio.run(check_wrong_audience_token(server_err_client, cfg)).verdict == "NOT TESTED"
+    assert asyncio.run(check_unauthenticated_identity_headers(server_err_client, cfg)).verdict == "NOT TESTED"
+    assert asyncio.run(check_cors_preflight(server_err_client, cfg)).verdict == "NOT TESTED"
+    assert asyncio.run(check_http_methods(server_err_client, cfg)).verdict == "NOT TESTED"
+    assert asyncio.run(check_alternate_urls(server_err_client, cfg)).verdict == "NOT TESTED"
+
+
 def test_exposed_response_fields_flags_trace_and_passes_clean_response():
     cfg = make_config(response_path="reply")
     session = SignedInSession(headers={"Cookie": "sid=1"})
@@ -333,11 +352,19 @@ def test_exposed_response_fields_flags_trace_and_passes_clean_response():
             },
         )
     )
+    html_client = mock_client(
+        lambda req: httpx.Response(
+            200,
+            headers={"content-type": "text/html"},
+            text="<!doctype html><html><body>Sign in</body></html>",
+        )
+    )
 
     assert asyncio.run(check_exposed_response_fields(clean_client, cfg, session)).verdict == "PASS"
     res_trace = asyncio.run(check_exposed_response_fields(trace_client, cfg, session))
     assert res_trace.verdict == "REVIEW"
     assert "trace" in res_trace.summary
+    assert asyncio.run(check_exposed_response_fields(html_client, cfg, session)).verdict == "NOT TESTED"
 
 
 def test_openapi_docs_exposed_reviews_signed_in_docs_and_fails_on_unauth_route():
@@ -364,6 +391,20 @@ def test_openapi_docs_exposed_reviews_signed_in_docs_and_fails_on_unauth_route()
     )
     assert res_review.verdict == "REVIEW"
     assert "/openapi.json" in res_review.summary
+    assert "all blocked when logged out" in res_review.summary
+
+    # Discovered route returning 404 or 500 or network error when logged out is treated as "not verified" (REVIEW), not FAIL
+    def signed_out_404_on_route(req: httpx.Request) -> httpx.Response:
+        if req.url.path == "/api/debug_dump":
+            return httpx.Response(404)
+        return httpx.Response(302)
+
+    res_unverified = asyncio.run(
+        check_openapi_docs_exposed(mock_client(signed_in_handler), mock_client(signed_out_404_on_route), cfg, session)
+    )
+    assert res_unverified.verdict == "REVIEW"
+    assert "could not be verified when logged out" in res_unverified.summary
+    assert "not verified" in "\n".join(res_unverified.details)
 
     def signed_out_leaky(req: httpx.Request) -> httpx.Response:
         if req.url.path == "/api/debug_dump":
@@ -486,11 +527,48 @@ def test_outsider_account_passes_when_blocked_and_fails_when_admitted(tmp_path: 
     res_fail = asyncio.run(check_outsider_account(mock_client(lambda r: httpx.Response(200)), cfg))
     assert res_fail.verdict == "FAIL"
 
+    res_500 = asyncio.run(check_outsider_account(mock_client(lambda r: httpx.Response(500)), cfg))
+    assert res_500.verdict == "NOT TESTED"
+
     def raise_timeout(req: httpx.Request) -> httpx.Response:
         raise httpx.ReadTimeout("timeout", request=req)
 
     res_err = asyncio.run(check_outsider_account(mock_client(raise_timeout), cfg))
     assert res_err.verdict == "NOT TESTED"
+
+    async def broken_launch(channel, profile, headless):
+        raise RuntimeError("browser profile locked")
+
+    monkeypatch.setattr(access_checks, "launch_browser", broken_launch)
+    res_launch_err = asyncio.run(check_outsider_account(mock_client(lambda r: httpx.Response(403)), cfg))
+    assert res_launch_err.verdict == "NOT TESTED"
+    assert "RuntimeError" in res_launch_err.summary
+
+
+def test_run_all_checks_preserves_phase1_results_when_browser_signin_fails(monkeypatch):
+    cfg = make_config()
+    monkeypatch.setattr(access_checks, "resolve_wrong_audience_token", lambda configured="": ("", ""))
+
+    orig_client = httpx.AsyncClient
+    monkeypatch.setattr(
+        access_checks.httpx,
+        "AsyncClient",
+        lambda **kw: orig_client(transport=httpx.MockTransport(lambda r: httpx.Response(401)), follow_redirects=False),
+    )
+
+    async def failing_session_getter(config):
+        raise TimeoutError("Sign-in timed out after 300s")
+
+    results = asyncio.run(access_checks.run_all_checks(cfg, session_getter=failing_session_getter))
+    assert len(results) == 14
+    # Phase 1 results (first 8 checks) are preserved intact
+    assert results[0].verdict == "PASS"
+    assert results[1].verdict == "PASS"
+    assert results[2].verdict == "PASS"
+    # Phase 2 session checks (#9-#13) record the browser sign-in error as NOT TESTED
+    for res in results[8:13]:
+        assert res.verdict == "NOT TESTED"
+        assert "Browser sign-in failed (TimeoutError" in res.summary
 
 
 def test_end_to_end_main_writes_markdown_report(tmp_path: Path, clean_env, monkeypatch):

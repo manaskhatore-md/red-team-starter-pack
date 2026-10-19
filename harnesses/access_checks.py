@@ -341,6 +341,7 @@ async def check_no_credentials(client: httpx.AsyncClient, config: AccessCheckCon
     errors: list[str] = []
     chat_body = config.build_chat_body("Hello")
 
+    refused_count = 0
     for path in config.probe_paths():
         url = urljoin(config.base_url + "/", path.lstrip("/"))
         try:
@@ -362,6 +363,7 @@ async def check_no_credentials(client: httpx.AsyncClient, config: AccessCheckCon
         code = resp.status_code
         label = _status_label(resp)
         if code in REFUSED_STATUSES:
+            refused_count += 1
             details.append(f"`{method_used} {path}` -> {label} (blocked)")
         elif code == 404:
             details.append(f"`{method_used} {path}` -> HTTP 404 (not found)")
@@ -378,7 +380,8 @@ async def check_no_credentials(client: httpx.AsyncClient, config: AccessCheckCon
                 exposed.append(f"`{method_used} {path}` returned HTTP {code}")
                 details.append(f"`{method_used} {path}` -> HTTP {code} (FAIL: reachable without login)")
         else:
-            details.append(f"`{method_used} {path}` -> {label}")
+            errors.append(f"`{path}` (HTTP {code})")
+            details.append(f"`{method_used} {path}` -> {label} (unverified)")
 
     if exposed:
         return CheckResult(
@@ -393,6 +396,16 @@ async def check_no_credentials(client: httpx.AsyncClient, config: AccessCheckCon
                 "Require login at the front gate (IAP / API Gateway) or in the app before processing requests."
             ),
         )
+    if errors:
+        return CheckResult(
+            phase=phase,
+            name=name,
+            owasp=owasp,
+            verdict="NOT TESTED",
+            summary=f"Could not complete logged-out check on {len(errors)} path(s): {', '.join(errors)}.",
+            what_it_tests=what_it_tests,
+            details=details,
+        )
     if review_paths:
         return CheckResult(
             phase=phase,
@@ -404,13 +417,13 @@ async def check_no_credentials(client: httpx.AsyncClient, config: AccessCheckCon
             details=details,
             remediation="Confirm whether `/healthz` is intentionally public for server health checks.",
         )
-    if errors:
+    if refused_count == 0:
         return CheckResult(
             phase=phase,
             name=name,
             owasp=owasp,
             verdict="NOT TESTED",
-            summary=f"Could not complete logged-out check on {len(errors)} path(s): {', '.join(errors)}.",
+            summary="No tested URLs returned an authentication refusal (all returned HTTP 404).",
             what_it_tests=what_it_tests,
             details=details,
         )
@@ -457,10 +470,12 @@ async def check_junk_credentials(client: httpx.AsyncClient, config: AccessCheckC
             continue
         status_desc = _status_label(resp)
         details.append(f"{label} on `POST {config.chat_path}` -> {status_desc}")
-        if resp.status_code == 404:
-            errors.append(f"{label} (HTTP 404 not found)")
-        elif resp.status_code not in REFUSED_STATUSES:
+        if resp.status_code in REFUSED_STATUSES:
+            continue
+        if 200 <= resp.status_code < 300 or resp.status_code == 422:
             failures.append(f"{label} returned HTTP {resp.status_code}")
+        else:
+            errors.append(f"{label} (HTTP {resp.status_code})")
 
     if failures:
         return CheckResult(
@@ -524,10 +539,12 @@ async def check_forged_jwt(client: httpx.AsyncClient, config: AccessCheckConfig)
             continue
         status_desc = _status_label(resp)
         details.append(f"Forged badge ({kind}) on `POST {config.chat_path}` -> {status_desc}")
-        if resp.status_code == 404:
-            errors.append(f"{kind} (HTTP 404 not found)")
-        elif resp.status_code not in REFUSED_STATUSES:
+        if resp.status_code in REFUSED_STATUSES:
+            continue
+        if 200 <= resp.status_code < 300 or resp.status_code == 422:
             failures.append(f"Forged badge ({kind}) returned HTTP {resp.status_code}")
+        else:
+            errors.append(f"{kind} (HTTP {resp.status_code})")
 
     if failures:
         return CheckResult(
@@ -607,17 +624,17 @@ async def check_wrong_audience_token(client: httpx.AsyncClient, config: AccessCh
 
     status_desc = _status_label(resp)
     details.append(f"`POST {config.chat_path}` with token from `{source}` -> {status_desc}")
-    if resp.status_code == 404:
+    if resp.status_code in REFUSED_STATUSES:
         return CheckResult(
             phase=phase,
             name=name,
             owasp=owasp,
-            verdict="NOT TESTED",
-            summary=f"`POST {config.chat_path}` returned HTTP 404 (not found); could not verify wrong-audience token rejection.",
+            verdict="PASS",
+            summary=f"Real token meant for another service (`{source}`) was rejected ({status_desc}).",
             what_it_tests=what_it_tests,
             details=details,
         )
-    if resp.status_code not in REFUSED_STATUSES:
+    if 200 <= resp.status_code < 300 or resp.status_code == 422:
         return CheckResult(
             phase=phase,
             name=name,
@@ -635,8 +652,8 @@ async def check_wrong_audience_token(client: httpx.AsyncClient, config: AccessCh
         phase=phase,
         name=name,
         owasp=owasp,
-        verdict="PASS",
-        summary=f"Real token meant for another service (`{source}`) was rejected ({status_desc}).",
+        verdict="NOT TESTED",
+        summary=f"`POST {config.chat_path}` returned HTTP {resp.status_code}; could not verify wrong-audience token rejection.",
         what_it_tests=what_it_tests,
         details=details,
     )
@@ -676,11 +693,14 @@ async def check_unauthenticated_identity_headers(
             continue
         status_desc = _status_label(resp)
         details.append(f"`{label}` with fake email headers -> {status_desc}")
-        if resp.status_code == 404:
-            if url == config.chat_url:
-                errors.append(f"`{label}` (HTTP 404 not found)")
-        elif resp.status_code not in REFUSED_STATUSES:
+        if resp.status_code in REFUSED_STATUSES:
+            continue
+        if resp.status_code == 404 and url != config.chat_url:
+            continue
+        if 200 <= resp.status_code < 300 or resp.status_code == 422:
             failures.append(f"`{label}` returned HTTP {resp.status_code}")
+        else:
+            errors.append(f"`{label}` (HTTP {resp.status_code})")
 
     if failures:
         return CheckResult(
@@ -774,7 +794,7 @@ async def check_cors_preflight(client: httpx.AsyncClient, config: AccessCheckCon
             details=details,
         )
 
-    if acao == EVIL_ORIGIN or (acao == "*" and acac.lower() == "true"):
+    if (acao == EVIL_ORIGIN or (acao == "*" and acac.lower() == "true")) and 200 <= resp.status_code < 300:
         return CheckResult(
             phase=phase,
             name=name,
@@ -785,6 +805,18 @@ async def check_cors_preflight(client: httpx.AsyncClient, config: AccessCheckCon
             details=details,
             remediation="Restrict `Access-Control-Allow-Origin` to trusted domains only and never echo arbitrary `Origin` headers.",
         )
+
+    if not (200 <= resp.status_code < 300 or resp.status_code == 405):
+        return CheckResult(
+            phase=phase,
+            name=name,
+            owasp=owasp,
+            verdict="NOT TESTED",
+            summary=f"`OPTIONS {config.chat_path}` returned {status_desc}; could not verify CORS preflight policy.",
+            what_it_tests=what_it_tests,
+            details=details,
+        )
+
     return CheckResult(
         phase=phase,
         name=name,
@@ -819,10 +851,12 @@ async def check_http_methods(client: httpx.AsyncClient, config: AccessCheckConfi
             continue
         status_desc = _status_label(resp)
         details.append(f"`{method} {config.chat_path}` -> {status_desc}")
-        if resp.status_code == 404:
-            errors.append(f"`{method}` (HTTP 404 not found)")
-        elif resp.status_code not in allowed_refusal:
+        if resp.status_code in allowed_refusal:
+            continue
+        if 200 <= resp.status_code < 300 or resp.status_code == 422:
             failures.append(f"`{method}` returned HTTP {resp.status_code}")
+        else:
+            errors.append(f"`{method}` (HTTP {resp.status_code})")
 
     if failures:
         return CheckResult(
@@ -903,6 +937,7 @@ async def check_alternate_urls(client: httpx.AsyncClient, config: AccessCheckCon
         )
 
     chat_body = config.build_chat_body("Hello")
+    configured_set = set(config.alternate_urls)
     details: list[str] = []
     failures: list[str] = []
     errors: list[str] = []
@@ -914,13 +949,16 @@ async def check_alternate_urls(client: httpx.AsyncClient, config: AccessCheckCon
             details.append(f"`{url}` -> unreachable ({type(e).__name__})")
             continue
         status_desc = _status_label(resp)
-        if resp.status_code == 404:
-            details.append(f"`POST {url}` -> HTTP 404 (not found)")
-        elif resp.status_code in REFUSED_STATUSES:
+        if resp.status_code in REFUSED_STATUSES:
             details.append(f"`POST {url}` -> {status_desc} (blocked)")
-        else:
-            details.append(f"`POST {url}` -> {status_desc}")
+        elif 200 <= resp.status_code < 300 or resp.status_code == 422:
+            details.append(f"`POST {url}` -> {status_desc} (FAIL: reachable without login)")
             failures.append(f"`{url}` returned HTTP {resp.status_code}")
+        elif resp.status_code == 404 and url not in configured_set:
+            details.append(f"`POST {url}` -> HTTP 404 (not found)")
+        else:
+            details.append(f"`POST {url}` -> {status_desc} (unverified)")
+            errors.append(f"`{url}` (HTTP {resp.status_code})")
 
     if failures:
         return CheckResult(
@@ -939,7 +977,7 @@ async def check_alternate_urls(client: httpx.AsyncClient, config: AccessCheckCon
             name=name,
             owasp=owasp,
             verdict="NOT TESTED",
-            summary=f"Could not reach {len(errors)} of {len(urls)} alternate URL(s): {'; '.join(errors)}.",
+            summary=f"Could not verify {len(errors)} of {len(urls)} alternate URL(s): {'; '.join(errors)}.",
             what_it_tests=what_it_tests,
             details=details,
         )
@@ -998,8 +1036,10 @@ async def acquire_signed_in_session(config: AccessCheckConfig) -> SignedInSessio
                 source=f"browser profile ({config.profile or (DEFAULT_PROFILE / (config.channel or 'chrome'))})",
             )
         finally:
-            await context.close()
-            await playwright.stop()
+            try:
+                await context.close()
+            finally:
+                await playwright.stop()
 
     if config.api_key or config.token:
         headers = {}
@@ -1067,7 +1107,7 @@ async def check_signed_in_header_spoofing(
             what_it_tests=what_it_tests,
         )
 
-    if SPOOFED_EMAIL.lower() in spoof_resp.text.lower():
+    if 200 <= spoof_resp.status_code < 300 and SPOOFED_EMAIL.lower() in spoof_resp.text.lower():
         details.append(
             f"Normal `GET /api/me` (your real login) -> HTTP {base_resp.status_code} (`{base_resp.text.strip()[:120]}`)"
         )
@@ -1129,7 +1169,7 @@ async def check_signed_in_header_spoofing(
     details.append(
         f"`GET /api/me` returned {_status_label(base_resp)}; tested `POST {config.chat_path}` -> {_status_label(chat_resp)}"
     )
-    if SPOOFED_EMAIL.lower() in chat_resp.text.lower():
+    if 200 <= chat_resp.status_code < 300 and SPOOFED_EMAIL.lower() in chat_resp.text.lower():
         return CheckResult(
             phase=phase,
             name=name,
@@ -1190,6 +1230,19 @@ async def check_exposed_response_fields(
             summary=f"Signed-in chat request returned {_status_label(resp)}; could not inspect response fields.",
             what_it_tests=what_it_tests,
             details=[f"`POST {config.chat_path}` -> {_status_label(resp)}: `{resp.text[:160]}`"],
+        )
+
+    content_type = resp.headers.get("content-type", "").lower()
+    body_prefix = resp.text.lstrip()[:32].lower()
+    if "text/html" in content_type or body_prefix.startswith(("<!doctype html", "<html")):
+        return CheckResult(
+            phase=phase,
+            name=name,
+            owasp=owasp,
+            verdict="NOT TESTED",
+            summary="Signed-in chat request returned an HTML page instead of an API response; could not inspect response fields.",
+            what_it_tests=what_it_tests,
+            details=[f"`POST {config.chat_path}` returned HTML (`{resp.text.strip()[:120]}`)."],
         )
 
     try:
@@ -1292,10 +1345,13 @@ async def check_openapi_docs_exposed(
             continue
         details.append(f"`GET {doc_path}` (signed in) -> {_status_label(resp)}")
         if resp.status_code == 200:
-            exposed_docs.append(doc_path)
             if doc_path == "/openapi.json":
                 try:
                     spec = json.loads(resp.text)
+                except ValueError:
+                    spec = None
+                if isinstance(spec, dict) and ("paths" in spec or "openapi" in spec or "swagger" in spec):
+                    exposed_docs.append(doc_path)
                     paths_obj = spec.get("paths", {})
                     if isinstance(paths_obj, dict):
                         for route_path, methods_obj in paths_obj.items():
@@ -1303,10 +1359,13 @@ async def check_openapi_docs_exposed(
                                 for m in methods_obj.keys():
                                     if m.upper() in {"GET", "POST", "PUT", "DELETE", "PATCH"}:
                                         discovered_routes.append((m.upper(), route_path))
-                except ValueError:
-                    pass
+            else:
+                exposed_docs.append(doc_path)
+        elif resp.status_code != 404:
+            doc_errors.append(f"`{doc_path}` (HTTP {resp.status_code})")
 
     unauth_leaks: list[str] = []
+    unverified_routes: list[str] = []
     if discovered_routes:
         route_list = ", ".join(f"`{m} {p}`" for m, p in discovered_routes)
         details.append(f"API routes listed in `/openapi.json`: {route_list}")
@@ -1316,11 +1375,27 @@ async def check_openapi_docs_exposed(
             url = urljoin(config.base_url + "/", route_path.lstrip("/"))
             try:
                 resp = await signed_out_client.request(method, url)
-            except httpx.HTTPError:
+            except httpx.HTTPError as e:
+                unverified_routes.append(f"`{method} {route_path}` ({type(e).__name__})")
+                details.append(
+                    f"Logged-out test of discovered route `{method} {route_path}` -> network error ({type(e).__name__}, not verified)"
+                )
                 continue
-            if resp.status_code not in REFUSED_STATUSES:
-                unauth_leaks.append(f"`{method} {route_path}` (HTTP {resp.status_code})")
-                details.append(f"Logged-out test of discovered route `{method} {route_path}` -> HTTP {resp.status_code} (FAIL)")
+            code = resp.status_code
+            if code in REFUSED_STATUSES:
+                details.append(
+                    f"Logged-out test of discovered route `{method} {route_path}` -> {_status_label(resp)} (blocked)"
+                )
+            elif 200 <= code < 300 or code == 422:
+                unauth_leaks.append(f"`{method} {route_path}` (HTTP {code})")
+                details.append(
+                    f"Logged-out test of discovered route `{method} {route_path}` -> HTTP {code} (FAIL: reachable without login)"
+                )
+            else:
+                unverified_routes.append(f"`{method} {route_path}` (HTTP {code})")
+                details.append(
+                    f"Logged-out test of discovered route `{method} {route_path}` -> HTTP {code} (not verified)"
+                )
 
     if unauth_leaks:
         return CheckResult(
@@ -1335,15 +1410,19 @@ async def check_openapi_docs_exposed(
         )
 
     if exposed_docs:
+        if unverified_routes:
+            route_status = (
+                f"{len(discovered_routes)} API route(s) listed; "
+                f"{len(unverified_routes)} could not be verified when logged out: {', '.join(unverified_routes)}"
+            )
+        else:
+            route_status = f"{len(discovered_routes)} API route(s) listed; all blocked when logged out"
         return CheckResult(
             phase=phase,
             name=name,
             owasp=owasp,
             verdict="REVIEW",
-            summary=(
-                f"Developer docs (`{', '.join(exposed_docs)}`) are turned on for logged-in users "
-                f"({len(discovered_routes)} API route(s) listed; all blocked when logged out)."
-            ),
+            summary=f"Developer docs (`{', '.join(exposed_docs)}`) are turned on for logged-in users ({route_status}).",
             what_it_tests=what_it_tests,
             details=details,
             remediation=(
@@ -1434,7 +1513,7 @@ async def check_signed_in_cors(
             f"`Access-Control-Allow-Credentials`: `{acac or '(absent)'}`",
         ]
     )
-    if (acao == EVIL_ORIGIN or (acao == "*" and acac.lower() == "true")) and resp.status_code not in REFUSED_STATUSES:
+    if (acao == EVIL_ORIGIN or (acao == "*" and acac.lower() == "true")) and 200 <= resp.status_code < 300:
         return CheckResult(
             phase=phase,
             name=name,
@@ -1504,7 +1583,7 @@ def check_cookie_security_flags(config: AccessCheckConfig, session: SignedInSess
             f"Cookie `{c_name}` (domain `{domain}`): `Secure={secure}`, `HttpOnly={http_only}`, `SameSite={same_site}`"
         )
         is_auth_like = any(
-            token in c_name.upper() for token in ("IAP", "AUTH", "SESSION", "TOKEN", "SID", "__HOST-")
+            token in c_name.upper() for token in ("IAP", "AUTH", "SESSION", "TOKEN", "SID", "__HOST-", "JWT", "LOGIN", "SSO")
         )
         if is_https and is_auth_like and not secure:
             insecure_cookies.append(c_name)
@@ -1622,7 +1701,20 @@ async def check_outsider_account(
             what_it_tests=what_it_tests,
         )
 
-    playwright, context = await launch_browser(config.channel, config.outsider_profile, config.headless)
+    outsider_label = config.outsider_email or str(config.outsider_profile)
+    try:
+        playwright, context = await launch_browser(config.channel, config.outsider_profile, config.headless)
+    except Exception as e:
+        return CheckResult(
+            phase=phase,
+            name=name,
+            owasp=owasp,
+            verdict="NOT TESTED",
+            summary=f"Could not launch outsider browser session ({type(e).__name__}: {e}).",
+            what_it_tests=what_it_tests,
+            details=[f"Outsider account configured: `{outsider_label}`"],
+        )
+
     try:
         page = context.pages[0] if context.pages else await context.new_page()
         nav_response = await page.goto(config.page_url)
@@ -1642,11 +1734,22 @@ async def check_outsider_account(
         if not cookies:
             cookies = await context.cookies()
         cookie_header = "; ".join(f"{c['name']}={c['value']}" for c in cookies if c.get("name"))
+    except Exception as e:
+        return CheckResult(
+            phase=phase,
+            name=name,
+            owasp=owasp,
+            verdict="NOT TESTED",
+            summary=f"Outsider browser sign-in did not complete ({type(e).__name__}: {e}).",
+            what_it_tests=what_it_tests,
+            details=[f"Outsider account configured: `{outsider_label}`"],
+        )
     finally:
-        await context.close()
-        await playwright.stop()
+        try:
+            await context.close()
+        finally:
+            await playwright.stop()
 
-    outsider_label = config.outsider_email or str(config.outsider_profile)
     details = [
         f"Outsider account tested: `{outsider_label}`",
         f"Browser navigation to `{config.page_url}` -> HTTP {nav_status}, chat box visible: `{reached_chat_box}`",
@@ -1686,18 +1789,7 @@ async def check_outsider_account(
 
     details.append(f"Outsider `POST {config.chat_path}` -> {_status_label(chat_resp)}")
 
-    if not reached_chat_box and chat_resp.status_code == 404:
-        return CheckResult(
-            phase=phase,
-            name=name,
-            owasp=owasp,
-            verdict="NOT TESTED",
-            summary=f"Outsider `POST {config.chat_path}` returned HTTP 404 (not found); could not verify outsider API refusal.",
-            what_it_tests=what_it_tests,
-            details=details,
-        )
-
-    if reached_chat_box or chat_resp.status_code not in REFUSED_STATUSES:
+    if reached_chat_box or 200 <= chat_resp.status_code < 300 or chat_resp.status_code == 422:
         return CheckResult(
             phase=phase,
             name=name,
@@ -1712,12 +1804,23 @@ async def check_outsider_account(
             ),
         )
 
+    if chat_resp.status_code in REFUSED_STATUSES:
+        return CheckResult(
+            phase=phase,
+            name=name,
+            owasp=owasp,
+            verdict="PASS",
+            summary=f"Outsider account (`{outsider_label}`) was blocked ({_status_label(chat_resp)}).",
+            what_it_tests=what_it_tests,
+            details=details,
+        )
+
     return CheckResult(
         phase=phase,
         name=name,
         owasp=owasp,
-        verdict="PASS",
-        summary=f"Outsider account (`{outsider_label}`) was blocked ({_status_label(chat_resp)}).",
+        verdict="NOT TESTED",
+        summary=f"Outsider `POST {config.chat_path}` returned {_status_label(chat_resp)}; could not verify outsider API refusal.",
         what_it_tests=what_it_tests,
         details=details,
     )
@@ -1728,6 +1831,23 @@ async def check_outsider_account(
 # ---------------------------------------------------------------------------
 
 
+async def _run_check_safely(phase: str, name: str, owasp: str, fn, *args) -> CheckResult:
+    """Run a single check function and convert any unexpected exception into a NOT TESTED CheckResult."""
+    try:
+        res = fn(*args)
+        if asyncio.iscoroutine(res):
+            res = await res
+        return res
+    except Exception as e:
+        return CheckResult(
+            phase=phase,
+            name=name,
+            owasp=owasp,
+            verdict="NOT TESTED",
+            summary=f"Check could not be completed due to an unexpected error ({type(e).__name__}: {e}).",
+        )
+
+
 async def run_all_checks(
     config: AccessCheckConfig,
     *,
@@ -1735,22 +1855,66 @@ async def run_all_checks(
     session_getter=acquire_signed_in_session,
 ) -> list[CheckResult]:
     """Execute Phase 1 and Phase 2 checks and return their CheckResults in order."""
+    p1 = "Phase 1: Signed-Out Checks (No Login)"
+    p2 = "Phase 2: Signed-In & Session Checks (Logged In)"
     results: list[CheckResult] = []
     async with httpx.AsyncClient(timeout=config.timeout, follow_redirects=False) as client:
-        results.append(await check_no_credentials(client, config))
-        results.append(await check_junk_credentials(client, config))
-        results.append(await check_forged_jwt(client, config))
-        results.append(await check_wrong_audience_token(client, config))
-        results.append(await check_unauthenticated_identity_headers(client, config))
-        results.append(await check_cors_preflight(client, config))
-        results.append(await check_http_methods(client, config))
-        results.append(await check_alternate_urls(client, config))
+        results.append(
+            await _run_check_safely(
+                p1, "Logged-out access to app pages & APIs", "API2:2023 Broken Authentication", check_no_credentials, client, config
+            )
+        )
+        results.append(
+            await _run_check_safely(
+                p1, "Fake API key & fake login token rejection", "API2:2023 Broken Authentication", check_junk_credentials, client, config
+            )
+        )
+        results.append(
+            await _run_check_safely(
+                p1, "Tampered / forged digital ID badge (JWT) rejection", "API2:2023 Broken Authentication", check_forged_jwt, client, config
+            )
+        )
+        results.append(
+            await _run_check_safely(
+                p1, "Login token meant for a different app (wrong audience)", "API2:2023 Broken Authentication", check_wrong_audience_token, client, config
+            )
+        )
+        results.append(
+            await _run_check_safely(
+                p1, "Faking 'who I am' headers while logged out", "API2:2023 Broken Authentication", check_unauthenticated_identity_headers, client, config
+            )
+        )
+        results.append(
+            await _run_check_safely(
+                p1, "Cross-website request check (CORS, logged out)", "API8:2023 Security Misconfiguration", check_cors_preflight, client, config
+            )
+        )
+        results.append(
+            await _run_check_safely(
+                p1, "Other request types (GET, PUT, DELETE) on chat API", "API8:2023 Security Misconfiguration", check_http_methods, client, config
+            )
+        )
+        results.append(
+            await _run_check_safely(
+                p1, "Alternate / backdoor server URLs", "API9:2023 Improper Inventory Management", check_alternate_urls, client, config
+            )
+        )
 
         if phase1_only:
             return results
 
-        session = await session_getter(config)
+        session_error = ""
+        try:
+            session = await session_getter(config)
+        except Exception as e:
+            session = None
+            session_error = f"Browser sign-in failed ({type(e).__name__}: {e})."
+
         if session is None:
+            missing_summary = (
+                session_error
+                or "No signed-in session available (no auth cookies, `APP_API_KEY`, or `APP_TOKEN`)."
+            )
             for name, owasp in [
                 ("Impersonating another user while logged in (header spoofing)", "API2:2023 Broken Authentication"),
                 ("Behind-the-scenes debug data (`trace`) in chat replies", "API3:2023 Broken Object Property Level Authorization"),
@@ -1760,22 +1924,50 @@ async def run_all_checks(
             ]:
                 results.append(
                     CheckResult(
-                        phase="Phase 2: Signed-In & Session Checks (Logged In)",
+                        phase=p2,
                         name=name,
                         owasp=owasp,
                         verdict="NOT TESTED",
-                        summary="No signed-in session available (no auth cookies, `APP_API_KEY`, or `APP_TOKEN`).",
+                        summary=missing_summary,
                     )
                 )
-            results.append(await check_outsider_account(client, config))
+            results.append(
+                await _run_check_safely(
+                    p2, "Outsider Google account access (non-organization user)", "API5:2023 Broken Function Level Authorization", check_outsider_account, client, config
+                )
+            )
             return results
 
-        results.append(await check_signed_in_header_spoofing(client, config, session))
-        results.append(await check_exposed_response_fields(client, config, session))
-        results.append(await check_openapi_docs_exposed(client, client, config, session))
-        results.append(await check_signed_in_cors(client, config, session))
-        results.append(check_cookie_security_flags(config, session))
-        results.append(await check_outsider_account(client, config))
+        results.append(
+            await _run_check_safely(
+                p2, "Impersonating another user while logged in (header spoofing)", "API2:2023 Broken Authentication", check_signed_in_header_spoofing, client, config, session
+            )
+        )
+        results.append(
+            await _run_check_safely(
+                p2, "Behind-the-scenes debug data (`trace`) in chat replies", "API3:2023 Broken Object Property Level Authorization", check_exposed_response_fields, client, config, session
+            )
+        )
+        results.append(
+            await _run_check_safely(
+                p2, "Developer API documentation pages (`/docs`, `/openapi.json`)", "API9:2023 Improper Inventory Management", check_openapi_docs_exposed, client, client, config, session
+            )
+        )
+        results.append(
+            await _run_check_safely(
+                p2, "Cross-website data access while logged in (CORS)", "API8:2023 Security Misconfiguration", check_signed_in_cors, client, config, session
+            )
+        )
+        results.append(
+            await _run_check_safely(
+                p2, "Login cookie safety locks (`Secure` & `HttpOnly`)", "API2:2023 Broken Authentication", check_cookie_security_flags, config, session
+            )
+        )
+        results.append(
+            await _run_check_safely(
+                p2, "Outsider Google account access (non-organization user)", "API5:2023 Broken Function Level Authorization", check_outsider_account, client, config
+            )
+        )
 
     return results
 
@@ -1819,7 +2011,7 @@ def render_report(config: AccessCheckConfig, results: list[CheckResult], timesta
         "- **PASS:** The security lock worked as expected—unauthorized requests were blocked.",
         "- **FAIL:** A security lock is missing or misconfigured and needs to be fixed.",
         "- **REVIEW:** Not a broken lock, but the app exposes extra developer/debugging details to logged-in users. Ask the developer if this is intentional for production.",
-        "- **NOT TESTED:** An optional check was skipped because an optional setting wasn't provided.",
+        "- **NOT TESTED:** An optional check was skipped because an optional setting wasn't provided, or a check could not be verified due to a connection, sign-in, or server error.",
         "",
         "## Summary Table",
         "",
@@ -1850,8 +2042,10 @@ def render_report(config: AccessCheckConfig, results: list[CheckResult], timesta
             meaning = res.remediation or "A security lock is missing or misconfigured and should be fixed by the developer."
         elif res.verdict == "REVIEW":
             meaning = res.remediation or "Not a broken lock, but worth asking the developer if this is intentional for production."
-        else:
+        elif res.summary.startswith("Skipped"):
             meaning = "Optional check skipped—no issue found, just not applicable or not configured."
+        else:
+            meaning = "Check could not be verified—see details above."
         lines.append(f"- **What it means:** {meaning}")
         lines.append(f"- **OWASP Category:** `{res.owasp}`")
         if res.details:
