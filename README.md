@@ -7,10 +7,11 @@ Model-agnostic — Anthropic, OpenAI, and Gemini are each selected with one envi
 variable — and `RT_PROVIDER=app` sends the same probes to your own deployment, over its
 API or through its web page.
 
-Built on [PyRIT](https://github.com/Azure/PyRIT), with two passes over the system:
+Built on [PyRIT](https://github.com/Azure/PyRIT), with two AI passes over the system plus a standalone HTTP/OAuth access-control check:
 
 | Pass | What it does | Where |
 |---|---|---|
+| **Access-control & OAuth checks** | Plain HTTP + browser session checks that verify logged-out users, fake/wrong-app tokens, spoofed headers, and outsider Google accounts are blocked (no AI/LLM needed) | `harnesses/access_checks.py` |
 | **Single-turn scan** | Every probe in the profile's datasets, graded by your rubrics | `harnesses/pyrit_campaigns/single_turn_scan.py` |
 | **Multi-turn campaigns** | Attacks that escalate over a conversation | `harnesses/pyrit_campaigns/multi_turn_crescendo.py`, `harnesses/pyrit_campaigns/multi_turn_red_team.py` |
 
@@ -68,6 +69,7 @@ profile](#pick-your-deployment-profile)) and run the single-turn scan:
 RT_PROFILE=public_conversational python -m harnesses.pyrit_campaigns.single_turn_scan
 ```
 
+- **Want to verify OAuth login gates and API access controls first?** Run `python -m harnesses.access_checks` — see [Access-control & OAuth/API checks](#access-control--oauthapi-checks).
 - **No callable API?** Drive the app's web page instead — see [Testing your app in
   depth](#testing-your-app-in-depth).
 - **No app endpoint yet?** Set `RT_PROVIDER=gemini` (or another provider) to try the whole
@@ -98,6 +100,7 @@ RT_PROFILE=public_conversational python -m harnesses.pyrit_campaigns.multi_turn_
 
 The rest of this README is reference — reach for a section when you need it:
 
+- **[Access-control & OAuth/API checks](#access-control--oauthapi-checks)** — verify login gates, OAuth tokens, headers, cookies, and outsider account blocking
 - **[Testing your app in depth](#testing-your-app-in-depth)** — browser transport, system-prompt-leak detection, fixed replies, which campaigns fit an app
 - **[Choosing a target](#choosing-a-target)** — other providers, and pinning the judge and attacker models
 - **[Running on Bedrock](#running-on-bedrock)** — AWS credentials and model access
@@ -222,6 +225,42 @@ app covers; `RT_SKIP_CALIBRATION=1` skips the check.
 
 > Non-production instance, synthetic data, and written authorization before pointing
 > any of this at a real system.
+
+## Access-control & OAuth/API checks
+
+Before testing the AI model's replies, verify that the application's front door and HTTP
+API cannot be reached by unauthorized users, forged tokens, or outside websites.
+`harnesses/access_checks.py` runs 14 plain-HTTP and browser-session checks mapped to the
+**OWASP API Security Top 10 (2023)**—no PyRIT or LLM judge required—and writes a
+plain-English Markdown report to `findings/<date>_access_checks_<host>.md`.
+
+```bash
+python -m harnesses.access_checks                # runs Phase 1 (logged out) + Phase 2 (logged in)
+python -m harnesses.access_checks --outsider     # also tests a separate non-organization Google account
+python -m harnesses.access_checks --phase1-only  # runs only Phase 1 (logged-out HTTP checks, no browser)
+```
+
+It automatically reuses `APP_ENDPOINT`, `APP_BROWSER_URL`, `APP_BROWSER_INPUT`,
+`APP_BROWSER_PROFILE`, `APP_REQUEST_TEMPLATE`, and `APP_RESPONSE_PATH` from `.env`.
+
+### What it tests
+
+- **Phase 1 — Logged-Out Checks (Checks #1–#8):**
+  1. **Logged-out access:** Probes `/`, `/api/chat`, `/api/me`, `/api/event`, `/docs`, `/openapi.json`, and `/healthz` with no login cookies or tokens.
+  2. **Fake API keys & tokens:** Sends bogus `Authorization: Bearer` tokens and `x-api-key` headers.
+  3. **Forged digital ID badges (JWTs):** Sends unsigned (`alg: none`) and fake-signature JWTs.
+  4. **Wrong-app login token (wrong audience):** Sends a real, unexpired Google token minted for a different service (`gcloud auth print-identity-token` or `APP_WRONG_TOKEN`) to verify the app checks the token's intended `aud` (audience). Run `gcloud auth login` once on your machine to enable this check automatically.
+  5. **Fake "who I am" headers while logged out:** Sends `X-Goog-Authenticated-User-Email`, `X-Forwarded-User`, etc. without logging in.
+  6. **Cross-website request check (CORS preflight):** Sends an `OPTIONS` preflight from `Origin: https://evil.example`.
+  7. **Unexpected HTTP verbs:** Sends `GET`, `PUT`, and `DELETE` to the chat endpoint.
+  8. **Alternate / backdoor server URLs:** Optional check for apps that have both a custom front-door domain and a separate direct backend URL (set `APP_ALTERNATE_URLS` in `.env`), or AWS API Gateway URLs with sibling stages (`/dev`, `/staging`, `/prod`).
+- **Phase 2 — Logged-In & Session Checks (Checks #9–#14):**
+  9. **Impersonating another user while logged in:** Sends a fake `X-Goog-Authenticated-User-Email` header inside your real signed-in session and verifies the app keeps your true email.
+  10. **Behind-the-scenes debug data (`trace`) in chat replies:** Checks whether `POST /api/chat` sends internal fields like `trace`, `system_instruction`, or `tool_declarations` to the browser.
+  11. **Developer API documentation pages (`/docs`, `/openapi.json`, `/redoc`):** Checks if auto-generated FastAPI docs are enabled for signed-in users, and automatically probes every route listed in `/openapi.json` while logged out.
+  12. **Cross-website data access while logged in (CORS):** Verifies `Origin: https://evil.example` is not granted read access on authenticated requests.
+  13. **Login cookie safety locks:** Verifies auth/IAP cookies set `Secure` and `HttpOnly` (never logs cookie values).
+  14. **Outsider Google account access (`--outsider`):** Opens a separate browser profile (`~/.rt_outsider_profile` or `APP_OUTSIDER_PROFILE`) signed in as a non-permitted user (such as a personal `@gmail.com` account) and verifies the app blocks them.
 
 ## Running on Bedrock
 
@@ -376,6 +415,7 @@ red-team-starter-pack/
 │   └── synthetic_documents/            # TODO: only a README so far - how to build indirect injection documents
 │
 ├── harnesses/
+│   ├── access_checks.py                # Standalone HTTP/OAuth access-control & API configuration checks
 │   └── pyrit_campaigns/                # The campaigns and their judges (PyRIT)
 │       ├── profiles.py                 # Deployment-type profiles: threat model, datasets, rubrics
 │       ├── target_factory.py           # Unified provider factory (Gemini, Claude, OpenAI, Bedrock, Vertex, an app)
@@ -547,6 +587,7 @@ Spanish and Chinese version before you rely on a result.
 
 | Playbook section | Covered by | Status |
 |---|---|---|
+| Access control, OAuth & API authentication | `harnesses/access_checks.py` | Working |
 | Prompt injection | `attack_suites/01_prompt_injection/prompt_injection.yaml` | Working |
 | Indirect prompt injection | `data_fixtures/synthetic_documents/` | TODO: instructions only, no payloads |
 | Single-turn scan across all of the above | `harnesses/pyrit_campaigns/single_turn_scan.py` | Working |
