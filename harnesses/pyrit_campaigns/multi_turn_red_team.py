@@ -268,6 +268,7 @@ async def main() -> int:
         "rt_placeholders": ", ".join(placeholders),
         # Which objectives file the attacks came from, so the report can say what was tested.
         "rt_objectives_file": profile.objectives_file,
+        "rt_trace_path": os.getenv("APP_TRACE_PATH", "").strip(),
     }
 
     attacks = len(objectives) * repeats
