@@ -548,6 +548,8 @@ def build_summary(results, memory, run_id: str) -> str:
         lines.append(f"| Attacker | {labels['rt_adversarial']} (RT_ADVERSARIAL_PROVIDER={recorded(labels.get('rt_adversarial_provider'))}) |")
     if labels.get("rt_objectives_file"):
         lines.append(f"| Objectives | from `{labels['rt_objectives_file']}` |")
+    if labels.get("rt_probes"):
+        lines.append(f"| Probe filter | `{labels['rt_probes']}` |")
     if started:
         local = started.astimezone()
         lines.append(f"| Run started | {local:%Y-%m-%d %H:%M} {local.tzname()} ({started:%H:%M} UTC) |")
