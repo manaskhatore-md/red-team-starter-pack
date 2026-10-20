@@ -569,7 +569,9 @@ def test_outsider_account_not_tested_when_outsider_never_signs_in(tmp_path: Path
             return SimpleNamespace(status=200)
 
         async def content(self):
-            return "<html><body>Sign in with your Google Account</body></html>"
+            # Even if the login page HTML contains "403" (e.g. asset hash or pixel width) or
+            # "access denied" in script text, HTTP 200 is not treated as browser_denied.
+            return "<html><script src='app-403.js'></script><body>Sign in (403px access denied strings in JS)</body></html>"
 
         def locator(self, selector):
             return FakeLocator()

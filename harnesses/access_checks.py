@@ -1695,36 +1695,51 @@ def check_cookie_security_flags(config: AccessCheckConfig, session: SignedInSess
     )
 
 
-async def _wait_for_outsider_outcome(
-    page, config: AccessCheckConfig, nav_status: int = 0
-) -> tuple[bool, bool]:
-    """Wait until the outsider browser either lands on the target origin or hits an explicit
-    access-denied screen. Returns (on_target_origin, browser_denied)."""
-    target_origin = (urlparse(config.base_url).scheme, urlparse(config.base_url).netloc)
-    denied_phrases = (
-        "don't have access",
-        "do not have access",
-        "access denied",
-        "not authorized",
-        "permission denied",
-        "403",
+def _is_oauth_error_url(url: str) -> bool:
+    """Return True if the browser landed on an explicit OAuth/SSO error redirect URL."""
+    lower = url.lower()
+    return (
+        "/signin/oauth/error" in lower
+        or "error=access_denied" in lower
+        or "error=org_internal" in lower
+        or "error=unauthorized_client" in lower
     )
 
-    async def inspect_state() -> tuple[bool, bool]:
-        parsed = urlparse(getattr(page, "url", "") or "")
-        on_target = (parsed.scheme, parsed.netloc) == target_origin
-        denied = nav_status in REFUSED_STATUSES
-        if not denied and hasattr(page, "content"):
-            try:
-                body_lower = (await page.content()).lower()
-                denied = any(p in body_lower for p in denied_phrases)
-            except Exception:
-                pass
-        return on_target, denied
 
-    on_target, denied = await inspect_state()
+async def _wait_for_outsider_outcome(
+    page, config: AccessCheckConfig, nav_status: int = 0
+) -> tuple[bool, bool, int]:
+    """Wait until the outsider browser either lands on the target origin or receives an
+    HTTP 401/403 navigation status (or OAuth error redirect). Returns (on_target_origin, browser_denied, final_nav_status)."""
+    target_origin = (urlparse(config.base_url).scheme, urlparse(config.base_url).netloc)
+    doc_status = {"value": nav_status}
+
+    def _on_response(resp) -> None:
+        try:
+            req = getattr(resp, "request", None)
+            is_doc = getattr(req, "resource_type", None) == "document" or getattr(
+                req, "is_navigation_request", lambda: False
+            )()
+            is_main = getattr(req, "frame", None) in (None, getattr(page, "main_frame", None))
+            if is_doc and is_main and isinstance(getattr(resp, "status", None), int):
+                doc_status["value"] = resp.status
+        except Exception:
+            pass
+
+    if hasattr(page, "on"):
+        page.on("response", _on_response)
+
+    async def inspect_state() -> tuple[bool, bool, int]:
+        raw_url = getattr(page, "url", "") or ""
+        parsed = urlparse(raw_url)
+        on_target = (parsed.scheme, parsed.netloc) == target_origin
+        status = doc_status["value"]
+        denied = status in REFUSED_STATUSES or _is_oauth_error_url(raw_url)
+        return on_target, denied, status
+
+    on_target, denied, final_status = await inspect_state()
     if on_target or denied or config.headless:
-        return on_target, denied
+        return on_target, denied, final_status
 
     email_hint = f" ({config.outsider_email})" if config.outsider_email else ""
     print(
@@ -1733,9 +1748,9 @@ async def _wait_for_outsider_outcome(
     )
     deadline = time.monotonic() + config.sign_in_timeout
     while time.monotonic() < deadline:
-        on_target, denied = await inspect_state()
+        on_target, denied, final_status = await inspect_state()
         if on_target or denied:
-            return on_target, denied
+            return on_target, denied, final_status
         await asyncio.sleep(POLL_SECONDS)
     return await inspect_state()
 
@@ -1794,9 +1809,11 @@ async def check_outsider_account(
     try:
         page = context.pages[0] if context.pages else await context.new_page()
         nav_response = await page.goto(config.page_url)
-        nav_status = nav_response.status if nav_response else 0
+        initial_nav_status = nav_response.status if nav_response else 0
 
-        on_target_origin, browser_denied = await _wait_for_outsider_outcome(page, config, nav_status)
+        on_target_origin, browser_denied, nav_status = await _wait_for_outsider_outcome(
+            page, config, initial_nav_status
+        )
 
         reached_chat_box = False
         if config.ready_selector:
