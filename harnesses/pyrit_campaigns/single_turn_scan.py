@@ -44,6 +44,18 @@ send, without calling any model:
 
     python -m harnesses.pyrit_campaigns.single_turn_scan --list-probes
 
+PROBE SELECTION: by default every probe in the profile runs. Pass `--probes <spec>`
+(or set `RT_PROBES=<spec>` in .env) with one or more comma-separated selectors to run
+a subset:
+  - Category keywords: `general` (non-bias probes), `core` (general + inline bias pairs,
+    skipping fixture-expanded bias templates), `bias` (all bias probes), `bias-core`
+    (inline bias pairs only), `bias-templated` (fixture-expanded bias pairs only).
+  - 1-based probe numbers or ranges from `--list-probes`: e.g. `1`, `1-15`, `16-25`.
+  - Dataset, probe, template, or pair names: e.g. `prompt_injection`, `override_simple`,
+    `scenario_spanish`, `dialect_01`.
+If a selected probe belongs to a matched pair (`pair_id`), its partner probe is
+automatically included in file order so a half-pair is never run alone.
+
 THE SYSTEM PROMPT: each probe is sent after a system prompt, as a deployed app would
 send it - by default the stand-in in config/system_prompts/ for the profile, or the file
 RT_SYSTEM_PROMPT_FILE names (RT_SYSTEM_PROMPT_FILE=none for no system prompt). It
@@ -101,6 +113,7 @@ from harnesses.pyrit_campaigns import calibration
 from harnesses.pyrit_campaigns.probe_templates import expand, fill, load_dataset
 from harnesses.pyrit_campaigns.profiles import (
     PAIR_RUBRICS,
+    PROFILES,
     Profile,
     dataset_path,
     describe,
@@ -327,6 +340,118 @@ def load_probes(profile: Profile) -> list[Probe]:
                     )
                 )
     return probes
+
+
+BIAS_DATASET = "algorithmic_bias"
+
+PROBE_CATEGORIES = {
+    "general": lambda p: p.dataset != BIAS_DATASET,
+    "core": lambda p: p.dataset != BIAS_DATASET or not p.template,
+    "bias": lambda p: p.dataset == BIAS_DATASET,
+    "bias-core": lambda p: p.dataset == BIAS_DATASET and not p.template,
+    "bias-templated": lambda p: p.dataset == BIAS_DATASET and bool(p.template),
+}
+
+RANGE_TOKEN = re.compile(r"^(-?\d+)(?:\s*-\s*(-?\d+))?$")
+
+
+def get_probes_spec(cli_value: str | None = None) -> str:
+    """Return the probe selector string from --probes (CLI) or RT_PROBES (.env)."""
+    if cli_value is not None:
+        return cli_value.strip()
+    return os.getenv("RT_PROBES", "").strip()
+
+
+def select_probes(probes: list[Probe], spec: str = "") -> list[Probe]:
+    """Filter `probes` by a comma-separated selector string, keeping matched pairs intact.
+
+    Each comma-separated token may be:
+      - `all` (or an empty `spec`): every probe in `probes`
+      - A category keyword in PROBE_CATEGORIES: `general`, `core`, `bias`, `bias-core`, `bias-templated`
+      - A 1-based probe number (`k`) or inclusive range (`m-n`)
+      - A dataset name (`probe.dataset`), probe name (`probe.name`), template name
+        (`probe.template`), or matched-pair id (`probe.pair_id`)
+
+    Whenever a selected probe belongs to a matched pair (`probe.pair_id`), its partner
+    probe is automatically included and the result is returned in original file order
+    so `compare_pairs()` always receives complete `(a, b)` pairs.
+    """
+    spec = spec.strip()
+    if not spec or spec.lower() == "all":
+        return list(probes)
+
+    tokens = [t.strip() for t in spec.split(",") if t.strip()]
+    if not tokens:
+        raise SystemExit(f"Empty probe selector {spec!r}.")
+    if not probes:
+        raise SystemExit("Profile has no probes to select from.")
+
+    total = len(probes)
+    known_datasets = {d for prof in PROFILES.values() for d in prof.datasets}
+    directly_selected: set[int] = set()
+
+    for token in tokens:
+        cat_key = token.lower().replace("_", "-")
+        if cat_key == "all":
+            directly_selected.update(range(total))
+            continue
+        if cat_key in PROBE_CATEGORIES:
+            pred = PROBE_CATEGORIES[cat_key]
+            matched = [i for i, p in enumerate(probes) if pred(p)]
+            if not matched:
+                datasets = ", ".join(sorted({p.dataset for p in probes}))
+                raise SystemExit(
+                    f"Probe selector {token!r} matched 0 probes in this profile (datasets: {datasets})."
+                )
+            directly_selected.update(matched)
+            continue
+
+        matched = [i for i, p in enumerate(probes) if token in (p.name, p.pair_id, p.template, p.dataset)]
+        if matched:
+            directly_selected.update(matched)
+            continue
+
+        range_match = RANGE_TOKEN.fullmatch(token)
+        if range_match:
+            start = int(range_match.group(1))
+            end = int(range_match.group(2)) if range_match.group(2) is not None else start
+            if start < 1 or end < 1 or start > total or end > total:
+                raise SystemExit(
+                    f"Probe selector {token!r} is out of range: this profile has {total} probe(s) (1-{total})."
+                )
+            if start > end:
+                raise SystemExit(
+                    f"Probe range {token!r} has start > end: write {end}-{start} instead."
+                )
+            directly_selected.update(range(start - 1, end))
+            continue
+
+        if token in known_datasets:
+            datasets = ", ".join(sorted({p.dataset for p in probes}))
+            raise SystemExit(
+                f"Dataset {token!r} is not in this profile (datasets: {datasets})."
+            )
+
+        categories = ", ".join(PROBE_CATEGORIES)
+        raise SystemExit(
+            f"Unknown probe selector {token!r}. Use a category ({categories}), a 1-{total} number or m-n range, "
+            "or a dataset, probe, template, or pair name from --list-probes."
+        )
+
+    selected_pair_ids = {probes[i].pair_id for i in directly_selected if probes[i].pair_id}
+    auto_included = [
+        probes[i]
+        for i in range(total)
+        if probes[i].pair_id in selected_pair_ids and i not in directly_selected
+    ]
+    if auto_included:
+        shown = ", ".join(f"{p.name} (pair: {p.pair_id})" for p in auto_included)
+        print(f"Note: auto-included {len(auto_included)} partner probe(s) to keep matched pairs intact: {shown}")
+
+    all_selected = directly_selected | {
+        i for i, p in enumerate(probes) if p.pair_id in selected_pair_ids
+    }
+    return [probes[i] for i in range(total) if i in all_selected]
 
 
 def load_rubrics() -> dict:
@@ -635,14 +760,19 @@ def check_placeholders(profile: Profile, probes: list[Probe], system_prompt: str
     return [env_var(key) for key in unfilled]
 
 
-def list_probes(profile: Profile) -> int:
+def list_probes(profile: Profile, probes_spec: str | None = None) -> int:
     """Print every probe the profile would send, and what grades it, without calling any model.
 
     For reviewing a dataset before a run, above all one with templates: the probes
     a template makes are not written out anywhere else.
     """
     print(describe(profile))
-    probes = load_probes(profile)
+    all_probes = load_probes(profile)
+    numbers = {(p.dataset, p.name): i for i, p in enumerate(all_probes, start=1)}
+    spec = get_probes_spec(probes_spec)
+    probes = select_probes(all_probes, spec)
+    if spec and spec.lower() != "all":
+        print(f"\nProbe filter ({spec}): {len(probes)} of {len(all_probes)} probe(s) selected.")
     check_placeholders(profile, probes)
     rubrics = [key for key in profile.rubrics if key not in PAIR_RUBRICS]
     compare = "disparate_treatment" in profile.rubrics and any(p.pair_id for p in probes)
@@ -652,7 +782,9 @@ def list_probes(profile: Profile) -> int:
     for probe in probes:
         keys = graded_by.get((probe.dataset, probe.name))
         grading = " + ".join(keys) if keys else ("pair comparison only" if keys is not None else "NOT SENT: no rubric grades it")
-        print(f"\n{probe.dataset} / {probe.name}  [{grading}]")
+        num = numbers[(probe.dataset, probe.name)]
+        pair_info = f"  (pair: {probe.pair_id})" if probe.pair_id else ""
+        print(f"\n[{num}] {probe.dataset} / {probe.name}  [{grading}]{pair_info}")
         if probe.fixture:
             print(f"    template {probe.template!r}, filled from {probe.fixture}")
         print("    " + probe.prompt.strip().replace("\n", "\n    "))
@@ -664,10 +796,11 @@ def list_probes(profile: Profile) -> int:
     return 0
 
 
-async def main() -> int:
+async def main(probes_spec: str | None = None) -> int:
     started = time.monotonic()
     profile = get_profile()
     repeats = get_repeats()
+    spec = get_probes_spec(probes_spec)
 
     # SQLITE so the transcript and scores survive the run - they are the evidence
     # for the finding report. Writes to PyRIT's data folder, and inherits the
@@ -676,7 +809,10 @@ async def main() -> int:
 
     print(describe(profile))
 
-    probes = load_probes(profile)
+    all_probes = load_probes(profile)
+    probes = select_probes(all_probes, spec)
+    if spec and spec.lower() != "all":
+        print(f"\nProbe filter ({spec}): {len(probes)} of {len(all_probes)} probe(s) selected.")
     records = records_for(profile)
     system_prompt = load_system_prompt(
         profile.key, profile.placeholders, new_canary(), records_section(records) if records else ""
@@ -754,6 +890,7 @@ async def main() -> int:
         # Ties a run's results together - the report uses it to find a pair's partner.
         "rt_run_id": str(uuid.uuid4()),
         "rt_profile": profile.key,
+        "rt_probes": spec if spec.lower() != "all" else "",
         "rt_provider": resolve_provider("target"),
         "rt_target": model_name(target),
         "rt_judge_provider": resolve_provider("judge"),
@@ -925,6 +1062,18 @@ if __name__ == "__main__":
         action="store_true",
         help="print the probes RT_PROFILE would send, and what grades each, then stop without calling any model",
     )
-    if parser.parse_args().list_probes:
-        sys.exit(list_probes(get_profile()))
-    sys.exit(asyncio.run(main()))
+    parser.add_argument(
+        "--probes",
+        default=None,
+        metavar="SPEC",
+        help=(
+            "comma-separated probe selectors (overrides RT_PROBES): "
+            "categories (general, core, bias, bias-core, bias-templated), "
+            "1-based numbers or m-n ranges (e.g. 1-15), or dataset/probe/template/pair names. "
+            "Paired probes automatically include their partner."
+        ),
+    )
+    args = parser.parse_args()
+    if args.list_probes:
+        sys.exit(list_probes(get_profile(), args.probes))
+    sys.exit(asyncio.run(main(args.probes)))

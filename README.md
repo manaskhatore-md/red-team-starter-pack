@@ -69,6 +69,7 @@ profile](#pick-your-deployment-profile)) and run the single-turn scan:
 RT_PROFILE=public_conversational python -m harnesses.pyrit_campaigns.single_turn_scan
 ```
 
+- **Only want to run specific probes, an `m-n` range, or skip the expanded bias templates?** Pass `--probes <spec>` (e.g. `--probes core`, `--probes general`, `--probes 1-15`, or `--probes override_simple`) — see [Running a subset of probes](#running-a-subset-of-probes).
 - **Want to verify OAuth login gates and API access controls first?** Run `python -m harnesses.access_checks` — see [Access-control & OAuth/API checks](#access-control--oauthapi-checks).
 - **No callable API?** Drive the app's web page instead — see [Testing your app in
   depth](#testing-your-app-in-depth).
@@ -107,6 +108,7 @@ The rest of this README is reference — reach for a section when you need it:
 - **[The system prompt and canary token](#the-system-prompt-and-the-canary-token-in-it)** — how leaks are caught, and the planted records
 - **[Repeats](#repeats-how-often-a-probe-fails-not-just-whether-it-did)** — run each probe N times for a failure rate
 - **[Pick your deployment profile](#pick-your-deployment-profile)** — which datasets and rubrics run
+- **[Running a subset of probes](#running-a-subset-of-probes)** — filter probes by category (`core`, `general`, `bias`, `bias-core`, `bias-templated`), `m-n` range, or name
 - **[What to customize first](#what-to-customize-first)** — making generic probes specific to your system
 
 ## Choosing a target
@@ -466,6 +468,44 @@ default. `constituent_decision` is the highest risk and needs authorization befo
 anything runs. Each profile carries its own threat model, probe selection, and
 pre-sign-off checklist in `harnesses/pyrit_campaigns/profiles.py` — read the one you're using
 before you run it.
+
+## Running a subset of probes
+
+By default, `single_turn_scan` sends every probe in the active profile's datasets. To
+inspect the numbered probe list first or run only specific probes, pass `--probes <spec>`
+on the command line (or set `RT_PROBES=<spec>` in `.env`):
+
+```bash
+# Preview every probe in the profile with its [1]..[N] index and pair tag (calls no model)
+python -m harnesses.pyrit_campaigns.single_turn_scan --list-probes
+
+# Preview what a filter selects before sending anything
+python -m harnesses.pyrit_campaigns.single_turn_scan --list-probes --probes core
+
+# Run only the selected probes
+python -m harnesses.pyrit_campaigns.single_turn_scan --probes core
+python -m harnesses.pyrit_campaigns.single_turn_scan --probes 1-15
+python -m harnesses.pyrit_campaigns.single_turn_scan --probes override_simple
+```
+
+You can pass one selector or combine several with commas (e.g. `--probes "1-3,cross_session_bleed,dialect_01"`):
+
+| Selector | What it selects | Examples |
+|---|---|---|
+| `core` | All non-bias probes **plus** the 5 inline bias pairs (skips the 36 fixture-expanded bias templates) | `--probes core` |
+| `general` | Only non-bias security/safety probes (`prompt_injection`, `sensitive_data_leakage`, `excessive_agency`) | `--probes general` |
+| `bias` | All probes in `algorithmic_bias` (both inline and fixture-expanded) | `--probes bias` |
+| `bias-core` | Only the 5 inline matched pairs in `algorithmic_bias` (10 probes) | `--probes bias-core` |
+| `bias-templated` | Only the 18 fixture-expanded matched pairs from `scenarios.yaml` and `case_files.yaml` (36 probes) | `--probes bias-templated` |
+| `k` or `m-n` | 1-based probe number or inclusive range from `--list-probes` | `--probes 4` or `--probes 1-15` |
+| Probe name | A single probe by its `name` (quote `[...]` in PowerShell) | `--probes override_simple` or `--probes "scenario_spanish[hours]"` |
+| Pair ID | Both halves of a matched pair by its `pair_id` | `--probes dialect_01` |
+| Template name | Every probe expanded from a template seed (plus their paired partners) | `--probes scenario_spanish` |
+| Dataset name | Every probe in one dataset file | `--probes prompt_injection` |
+
+**Matched-pair integrity is enforced automatically:** whenever a selected probe belongs to a
+matched pair (`pair_id`), its partner probe is automatically pulled in and kept in original
+file order so a half-pair is never sent or judged alone.
 
 ## What to customize first
 
