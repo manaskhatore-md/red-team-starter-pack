@@ -405,6 +405,53 @@ def _holds_whole_value(value, slot: str) -> bool:
     return value == slot
 
 
+# Stored on the assistant MessagePiece's prompt_metadata when APP_TRACE_PATH is set,
+# so the judge and reports see what tools or sources the app used without putting raw
+# JSON traces into converted_value (where {HISTORY}, the attacker, and regex checks read).
+TRACE_METADATA_KEY = "rt_trace"
+MAX_TOOL_RESULT_CHARS = 4000
+MAX_TRACE_CHARS = 40000
+_TOOL_OUTPUT_KEYS = frozenset({"response", "result", "output"})
+# Static configuration or repeated conversation fields some agent trace objects include on
+# every turn (e.g. a 37 KB system_instruction, tool schema dump, or full prior history).
+# Stripped when extracting a trace object so per-turn tool calls are not pushed past truncation.
+_STRIP_TRACE_KEYS = frozenset({
+    "system_instruction",
+    "system_prompt",
+    "tool_declarations",
+    "tools_schema",
+    "history",
+    "request_message",
+    "followup_prompt",
+    "followup_raw_response",
+})
+
+
+def _strip_static_trace_fields(value):
+    """Remove bulky top-level config/history fields from a trace dict without touching nested tool outputs."""
+    if isinstance(value, dict):
+        return {k: v for k, v in value.items() if k not in _STRIP_TRACE_KEYS}
+    return value
+
+
+def _trim_tool_results(value, *, max_result_chars: int = MAX_TOOL_RESULT_CHARS):
+    """Cap individual tool outputs so one huge report cannot crowd out other tool calls or rounds."""
+    if isinstance(value, list):
+        return [_trim_tool_results(item, max_result_chars=max_result_chars) for item in value]
+    if isinstance(value, dict):
+        is_tool_call = any(k in value for k in ("name", "tool", "function", "arguments", "args"))
+        out = {}
+        for k, v in value.items():
+            if is_tool_call and k in _TOOL_OUTPUT_KEYS and v is not None:
+                serialized = v if isinstance(v, str) else json.dumps(v)
+                if len(serialized) > max_result_chars:
+                    out[k] = serialized[:max_result_chars] + "... [truncated]"
+                    continue
+            out[k] = _trim_tool_results(v, max_result_chars=max_result_chars)
+        return out
+    return value
+
+
 class AppChatTarget(PromptTarget):
     """Your own deployed chat application, over HTTP.
 
@@ -423,6 +470,11 @@ class AppChatTarget(PromptTarget):
                               order. Default: user,assistant
         APP_RESPONSE_PATH     where the reply is in the response, dotted, e.g. answer
                               or choices.0.message.content. Unset: the whole body.
+        APP_TRACE_PATH        optional: where tool calls, retrieved sources, or citations
+                              are in the response, dotted (or comma-separated paths), e.g.
+                              trace.rounds or citations. Shown to the judge in
+                              <response_trace> and included in reports, without being
+                              sent back in {HISTORY} or scanned as user-visible reply text.
         APP_API_KEY           sent as the x-api-key header (API Gateway API keys)
         APP_TOKEN             sent as Authorization: Bearer <token>
         APP_TIMEOUT           seconds to wait for a reply. Default 60.
@@ -449,6 +501,7 @@ class AppChatTarget(PromptTarget):
         history_turn: str = DEFAULT_HISTORY_TURN,
         history_roles: str = "user,assistant",
         response_path: str = "",
+        trace_path: str = "",
         headers: dict[str, str] | None = None,
         timeout: float = 60.0,
         max_requests_per_minute: int | None = None,
@@ -495,6 +548,7 @@ class AppChatTarget(PromptTarget):
             ) if self._history_turn is not None else None,
         )
         self._response_path = response_path.strip()
+        self._trace_path = trace_path.strip()
         self._headers = {"Content-Type": "application/json", **(headers or {})}
         self._timeout = timeout
         self._client = None
@@ -514,6 +568,7 @@ class AppChatTarget(PromptTarget):
             history_turn=os.getenv("APP_HISTORY_TURN") or DEFAULT_HISTORY_TURN,
             history_roles=os.getenv("APP_HISTORY_ROLES") or "user,assistant",
             response_path=os.getenv("APP_RESPONSE_PATH", ""),
+            trace_path=os.getenv("APP_TRACE_PATH", ""),
             headers=headers,
             timeout=float(os.getenv("APP_TIMEOUT") or 60),
             max_requests_per_minute=int(rpm) if rpm else None,
@@ -581,6 +636,67 @@ class AppChatTarget(PromptTarget):
             return ""
         return value if isinstance(value, str) else json.dumps(value)
 
+    def trace_text(self, body: str) -> str:
+        """The response trace, read from APP_TRACE_PATH in the response body ("" if unset or absent).
+
+        Supports one dotted path (e.g. trace.rounds or citations) or several
+        comma-separated paths. Stepping by field name into a list of dicts collects that
+        field across the list (so trace.rounds.tool_calls collects tool_calls from every
+        round). Unlike APP_RESPONSE_PATH, a missing or empty trace on a turn is normal
+        (for example, a turn that called no tools) and returns "".
+        """
+        if not self._trace_path:
+            return ""
+        try:
+            root = json.loads(body)
+        except ValueError:
+            return ""
+        paths = [p.strip() for p in self._trace_path.split(",") if p.strip()]
+        extracted: dict[str, object] = {}
+        for path in paths:
+            value = root
+            found = True
+            for step in path.split("."):
+                if isinstance(value, list) and step.lstrip("-").isdigit() and -len(value) <= int(step) < len(value):
+                    value = value[int(step)]
+                elif isinstance(value, list):
+                    projected = []
+                    for item in value:
+                        if isinstance(item, dict) and step in item:
+                            sub = item[step]
+                            if isinstance(sub, list):
+                                projected.extend(sub)
+                            elif sub is not None:
+                                projected.append(sub)
+                    if not projected:
+                        found = False
+                        break
+                    value = projected
+                elif isinstance(value, dict) and step in value:
+                    value = value[step]
+                else:
+                    found = False
+                    break
+            if not found:
+                continue
+            cleaned = _trim_tool_results(_strip_static_trace_fields(value))
+            if cleaned in (None, "", [], {}):
+                continue
+            extracted[path] = cleaned
+        if not extracted:
+            return ""
+        if len(paths) == 1:
+            only = next(iter(extracted.values()))
+            text = only if isinstance(only, str) else json.dumps(only)
+        else:
+            text = json.dumps(extracted)
+        max_chars = int(os.getenv("APP_TRACE_MAX_CHARS") or MAX_TRACE_CHARS)
+        if len(text) > max_chars:
+            head = max_chars // 3
+            tail = max_chars - head
+            return text[:head] + " ... [truncated] ... " + text[-tail:]
+        return text
+
     async def _post(self, body: str) -> tuple[int, str]:
         """Send one request body to APP_ENDPOINT; return the status and the response body."""
         import httpx
@@ -605,7 +721,9 @@ class AppChatTarget(PromptTarget):
             raise RuntimeError(f"The app returned HTTP {status}: {body[:300]}")
 
         text = self.reply_text(body)
-        return [construct_response_from_request(request=request, response_text_pieces=[text])]
+        trace = self.trace_text(body)
+        metadata = {TRACE_METADATA_KEY: trace} if trace else None
+        return [construct_response_from_request(request=request, response_text_pieces=[text], prompt_metadata=metadata)]
 
     async def cleanup_target_async(self) -> None:
         if self._client is not None:

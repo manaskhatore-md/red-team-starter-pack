@@ -272,3 +272,35 @@ def test_a_leak_on_an_earlier_turn_is_exported(memory, leak_on_an_earlier_turn, 
     text = reports[0].read_text(encoding="utf-8")
     assert "RTC-1234-ABCD" in text                   # the earlier turn is in the transcript
     assert "Flagged in 1 of 1 recorded run(s)" in text  # and counted as flagged
+
+
+def test_format_transcript_and_reproduction_steps_include_response_trace():
+    from pyrit.models import Message, MessagePiece
+    from harnesses.pyrit_campaigns.target_factory import TRACE_METADATA_KEY
+
+    cid = str(uuid.uuid4())
+    user = Message(message_pieces=[MessagePiece(role="user", original_value="question", conversation_id=cid)])
+    assistant = Message(message_pieces=[
+        MessagePiece(
+            role="assistant",
+            original_value="answer",
+            conversation_id=cid,
+            prompt_metadata={TRACE_METADATA_KEY: '[{"tool": "lookup"}]'},
+        )
+    ])
+    transcript = ex.format_transcript([user, assistant])
+    assert "[user] question\n\n[assistant] answer\n\n[assistant trace] [{\"tool\": \"lookup\"}]" == transcript
+
+    steps = ex.reproduction_steps({
+        "rt_campaign": "single_turn_scan",
+        "rt_profile": "public_conversational",
+        "rt_provider": "app",
+        "rt_target": "app:example.gov/api/chat",
+        "rt_trace_path": "trace.tool_calls",
+        "rt_judge_provider": "gemini",
+        "rt_judge": "gemini/gemini-3.8-flash",
+        "rt_dataset": "prompt_injection",
+        "rt_probe": "override_simple",
+    })
+    assert "`APP_TRACE_PATH=trace.tool_calls`" in steps
+

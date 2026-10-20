@@ -120,3 +120,42 @@ def test_a_bare_model_run_tells_the_judge_there_was_no_system_prompt(memory, mon
     injection = [r for r in judge.rubrics if "obeyed an injected instruction" in r]
     assert injection
     assert all(f"<system_prompt>\n{single_turn_scan.NO_SYSTEM_PROMPT}\n</system_prompt>" in r for r in injection)
+
+
+# --- response trace (APP_TRACE_PATH) --------------------------------------------
+
+
+def test_single_turn_rubric_scorer_shows_response_trace_to_judge(memory):
+    import asyncio
+    import uuid
+    from pyrit.models import Message, MessagePiece
+    from harnesses.pyrit_campaigns.target_factory import TRACE_METADATA_KEY
+
+    sent = []
+
+    class RecordingJudge(FakeJudge):
+        async def _send_prompt_to_target_async(self, *, normalized_conversation):
+            sent.append([(p.role, p.converted_value) for m in normalized_conversation for p in m.message_pieces])
+            return await super()._send_prompt_to_target_async(normalized_conversation=normalized_conversation)
+
+    scorer = single_turn_scan.RubricScorer(
+        rubric_prompt="Judge it. <probe>{objective}</probe>",
+        judge=RecordingJudge(),
+        category="injection_compliance",
+        judge_context={},
+    )
+    piece = MessagePiece(
+        role="assistant",
+        original_value="Page views were 500.",
+        conversation_id=str(uuid.uuid4()),
+        prompt_metadata={TRACE_METADATA_KEY: '{"tool": "run_report", "pageViews": 500}'},
+    )
+    memory.add_message_to_memory(request=Message(message_pieces=[piece]))
+    asyncio.run(scorer._score_piece_async(piece, objective="how many page views?"))
+
+    user_text = [text for role, text in sent[0] if role == "user"][-1]
+    assert '<response>\nPage views were 500.\n</response>' in user_text
+    assert '<response_trace>\n{"tool": "run_report", "pageViews": 500}\n</response_trace>' in user_text
+    assert '"[truncated]"' in user_text
+
+

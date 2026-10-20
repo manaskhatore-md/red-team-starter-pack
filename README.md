@@ -58,6 +58,7 @@ RT_PROVIDER=app
 APP_ENDPOINT=https://your-app.example.gov/chat
 APP_REQUEST_TEMPLATE={"query": "{PROMPT}"}  # the app's request body; the probe goes in {PROMPT}
 APP_RESPONSE_PATH=answer                    # where the reply is, dotted: e.g. choices.0.message.content
+APP_TRACE_PATH=                             # optional: tool calls or retrieved sources, e.g. trace.rounds or citations
 APP_API_KEY=...                             # sent as x-api-key; or APP_TOKEN, sent as a Bearer token
 RT_JUDGE_PROVIDER=gemini                    # the key you added in step 1
 ```
@@ -199,6 +200,26 @@ APP_RESPONSE_PATH=reply
 
 If the sign-in lapses mid-run, the page is reloaded once so you can sign in again. Every
 setting is documented in `BrowserApiTarget`, in `browser_target.py`.
+
+**Tool calls and retrieved sources (`APP_TRACE_PATH`).** If the app's JSON response
+includes what happened behind the scenes alongside the reply — such as an agent's per-turn
+rounds and tool calls (`trace.rounds` or `trace.rounds.tool_calls`) or a RAG pipeline's
+retrieved chunks (`citations` or `sources`) — point `APP_TRACE_PATH` at the narrowest
+field holding that evidence (or comma-separated fields):
+
+```bash
+APP_RESPONSE_PATH=reply
+APP_TRACE_PATH=trace.rounds                      # or trace.rounds.tool_calls, citations, etc.
+```
+
+Pointing at the narrowest field keeps the trace focused on what tools ran and what they
+returned (large individual tool outputs are trimmed so every tool call's name and
+arguments stay visible). The kit keeps the user-visible reply clean (so `{HISTORY}`,
+the attacker model, and regex/prompt-leak checks only see what the user sees), while
+passing the trace to the judge in `<response_trace>` tags and recording it under
+`[assistant trace]` in the run summary and finding reports. That lets the judge verify
+whether figures in a reply came from real tool results or retrieved sources rather than
+guessing.
 
 **System-prompt leaks.** The app keeps its own system prompt, so the scan sends none.
 How a leak is caught depends on what you can supply:

@@ -597,3 +597,164 @@ def test_app_history_settings_that_cannot_work_stop_before_any_request(fake_app,
     with pytest.raises(SystemExit, match=re.escape(message)):
         build_target()
     assert fake_app["requests"] == []
+
+
+# --- Response trace (APP_TRACE_PATH) -----------------------------------------------
+
+
+def test_app_trace_path_stores_trace_in_metadata_and_keeps_reply_and_history_clean(fake_app, clean_env, memory):
+    import json
+
+    _use_history(clean_env)
+    clean_env.setenv("APP_TRACE_PATH", "trace.tool_calls")
+    tool_calls = [{"name": "run_report", "args": {"metric": "activeUsers"}, "result": {"rows": 42}}]
+    fake_app["replies"] = [
+        (200, json.dumps({"answer": "There were 42 active users.", "trace": {"tool_calls": tool_calls}})),
+        (200, json.dumps({"answer": "Follow-up answer.", "trace": {"tool_calls": []}})),
+    ]
+    target = build_target()
+    conversation = str(uuid.uuid4())
+    turn1 = Message(message_pieces=[MessagePiece(role="user", original_value="how many users?", conversation_id=conversation)])
+    try:
+        reply1 = asyncio.run(target.send_prompt_async(message=turn1))[0]
+        piece1 = reply1.message_pieces[0]
+        assert piece1.converted_value == "There were 42 active users."
+        assert json.loads(piece1.prompt_metadata[target_factory.TRACE_METADATA_KEY]) == tool_calls
+
+        # When the conversation continues, {HISTORY} sends only the user-visible reply, not the trace.
+        memory.add_message_to_memory(request=turn1)
+        memory.add_message_to_memory(request=reply1)
+        turn2 = Message(message_pieces=[MessagePiece(role="user", original_value="and yesterday?", conversation_id=conversation)])
+        reply2 = asyncio.run(target.send_prompt_async(message=turn2))[0]
+        piece2 = reply2.message_pieces[0]
+        assert piece2.converted_value == "Follow-up answer."
+        # Empty tool_calls list produces no trace metadata on turn 2.
+        assert target_factory.TRACE_METADATA_KEY not in (piece2.prompt_metadata or {})
+    finally:
+        asyncio.run(target_factory.close_target(target))
+
+    sent_turn2 = json.loads(fake_app["requests"][1]["body"])
+    assert sent_turn2["history"] == [
+        {"role": "user", "text": "how many users?"},
+        {"role": "model", "text": "There were 42 active users."},
+    ]
+
+
+def test_app_trace_path_supports_multiple_comma_separated_paths(fake_app, clean_env):
+    import json
+
+    clean_env.setenv("APP_TRACE_PATH", "trace.tool_calls, citations.0.source")
+    body = {
+        "answer": "According to policy...",
+        "trace": {"tool_calls": [{"name": "search_docs"}]},
+        "citations": [{"source": "COMAR 07.03.17"}],
+    }
+    fake_app["replies"] = [(200, json.dumps(body))]
+    target = build_target()
+    message = Message(message_pieces=[MessagePiece(role="user", original_value="hi", conversation_id=str(uuid.uuid4()))])
+    try:
+        reply = asyncio.run(target.send_prompt_async(message=message))[0]
+    finally:
+        asyncio.run(target_factory.close_target(target))
+    trace = json.loads(reply.message_pieces[0].prompt_metadata[target_factory.TRACE_METADATA_KEY])
+    assert trace == {
+        "trace.tool_calls": [{"name": "search_docs"}],
+        "citations.0.source": "COMAR 07.03.17",
+    }
+
+
+def test_app_trace_path_strips_static_and_history_bloat_and_trims_per_tool_result():
+    import json
+
+    target = target_factory.AppChatTarget(
+        endpoint="https://example.test/chat",
+        response_path="reply",
+        trace_path="trace",
+    )
+    huge_prompt = "You are an analytics agent. " * 1500
+    huge_history = [{"role": "user", "text": "prior turn " * 500} for _ in range(6)]
+    body = json.dumps({
+        "reply": "Done.",
+        "trace": {
+            "system_instruction": huge_prompt,
+            "request_message": "current turn",
+            "history": huge_history,
+            "tool_declarations": [{"name": "query_ga4", "parameters": {}}],
+            "rounds": [
+                {
+                    "round": 1,
+                    "tool_calls": [
+                        {
+                            "name": "get_account_changes",
+                            "arguments": {"account_id": "123"},
+                            "response": {"history": ["change1", "change2", "change3"]},
+                            "output": "x" * (target_factory.MAX_TOOL_RESULT_CHARS + 5000),
+                        }
+                    ],
+                },
+                {
+                    "round": 2,
+                    "tool_calls": [
+                        {
+                            "name": "middle_round_report",
+                            "arguments": {"host": "mva.maryland.gov"},
+                            "output": "y" * (target_factory.MAX_TOOL_RESULT_CHARS + 5000),
+                        }
+                    ],
+                },
+                {
+                    "round": 3,
+                    "tool_calls": [{"name": "final_round_report", "response": {"pageViews": 47706}}],
+                },
+            ],
+            "followup_prompt": "suggest 3 followups",
+            "followup_raw_response": "1. Foo\n2. Bar",
+        },
+    })
+    trace = target.trace_text(body)
+    parsed = json.loads(trace)
+    for stripped in ("system_instruction", "tool_declarations", "request_message", "followup_prompt", "followup_raw_response"):
+        assert stripped not in parsed
+    assert "prior turn" not in trace
+    # Every round (1, 2, and 3) and every tool call's name and arguments remain intact.
+    assert len(parsed["rounds"]) == 3
+    round1_call = parsed["rounds"][0]["tool_calls"][0]
+    assert round1_call["name"] == "get_account_changes"
+    assert round1_call["arguments"] == {"account_id": "123"}
+    # Nested "history" inside a small tool response is preserved untouched.
+    assert round1_call["response"] == {"history": ["change1", "change2", "change3"]}
+    # Oversized tool outputs are trimmed individually so they cannot crowd out middle or final rounds.
+    assert round1_call["output"].endswith("... [truncated]")
+    assert len(round1_call["output"]) == target_factory.MAX_TOOL_RESULT_CHARS + len("... [truncated]")
+    assert parsed["rounds"][1]["tool_calls"][0]["name"] == "middle_round_report"
+    assert parsed["rounds"][1]["tool_calls"][0]["output"].endswith("... [truncated]")
+    assert parsed["rounds"][2]["tool_calls"][0] == {"name": "final_round_report", "response": {"pageViews": 47706}}
+
+
+def test_app_trace_path_projects_field_across_list_of_rounds():
+    import json
+
+    target = target_factory.AppChatTarget(
+        endpoint="https://example.test/chat",
+        response_path="reply",
+        trace_path="trace.rounds.tool_calls",
+    )
+    body = json.dumps({
+        "reply": "Desktop had 800 sessions.",
+        "trace": {
+            "rounds": [
+                {"round": 1, "tool_calls": [{"name": "list_metrics", "result": ["sessions"]}]},
+                {"round": 2, "tool_calls": [{"name": "run_report", "result": {"desktop": 800}}]},
+                {"round": 3, "tool_calls": []},
+            ]
+        },
+    })
+    assert json.loads(target.trace_text(body)) == [
+        {"name": "list_metrics", "result": ["sessions"]},
+        {"name": "run_report", "result": {"desktop": 800}},
+    ]
+    # When no round called a tool, projecting tool_calls returns "".
+    no_tools_body = json.dumps({"reply": "Hello!", "trace": {"rounds": [{"round": 1, "tool_calls": []}]}})
+    assert target.trace_text(no_tools_body) == ""
+
+

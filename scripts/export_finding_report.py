@@ -58,6 +58,7 @@ from pyrit.setup import SQLITE, initialize_pyrit_async
 
 from harnesses.pyrit_campaigns.profiles import PROFILES, REPO_ROOT, dataset_path
 from harnesses.pyrit_campaigns.code_checks import CODE_CHECKS
+from harnesses.pyrit_campaigns.target_factory import TRACE_METADATA_KEY
 
 TEMPLATE = Path(__file__).resolve().parents[1] / "templates" / "finding_report_template.md"
 RUBRIC_FILE = Path(__file__).resolve().parents[1] / "harnesses" / "pyrit_campaigns" / "state_policy_rubric.yaml"
@@ -107,6 +108,9 @@ def format_transcript(messages) -> str:
     for message in messages:
         for piece in message.message_pieces:
             lines.append(f"[{piece.role}] {piece.converted_value}")
+            trace = (piece.prompt_metadata or {}).get(TRACE_METADATA_KEY)
+            if piece.role == "assistant" and trace:
+                lines.append(f"[assistant trace] {trace}")
     return "\n\n".join(lines) if lines else "(no messages found for this conversation)"
 
 
@@ -198,6 +202,8 @@ def probe_step(labels: dict) -> str:
 def reproduction_steps(labels: dict) -> str:
     """How to re-run the test, from the settings the campaign recorded."""
     target = f"`RT_PROVIDER={labels.get('rt_provider')}` and `RT_MODEL={labels.get('rt_target')}`"
+    if labels.get("rt_trace_path"):
+        target += f", `APP_TRACE_PATH={labels['rt_trace_path']}`"
     # Set the judge's model explicitly: it no longer follows RT_MODEL, and the
     # provider's default can change between releases. Runs recorded before the
     # provider labels only have the judge's model name.
