@@ -402,7 +402,7 @@ The run summary then shows a **Failure rates** table (e.g. "flagged 2 of 5") and
 probes that never flagged, a confidence bound — a probe that never flagged isn't proven
 safe (0 of 5 still allows a true rate up to ~45%). Cost grows linearly; the scan prints
 the total before sending anything, and stops unsent if it is over `RT_MAX_CALLS` (target
-plus judge calls; default 2000, `0` for no limit). Every shipped profile fits at
+plus judge calls; default 3000, `0` for no limit). Every shipped profile fits at
 `RT_REPEATS=10`.
 
 ## Structure
@@ -432,7 +432,8 @@ red-team-starter-pack/
 │   │   ├── algorithmic_bias.yaml       # Matched pairs and A/A controls: dialect, name, zip code, language, disability, case files
 │   │   └── fixtures/                   # scenarios.yaml (eligibility questions) and case_files.yaml (swapped names/addresses)
 │   └── 05_excessive_agency/
-│       └── excessive_agency.yaml       # Unauthorized database writes & API commands
+│       ├── excessive_agency.yaml       # False "done" claims, promises, and exceptions; unauthorized writes & API commands
+│       └── fixtures/                   # actions.yaml (six requests, each asked plainly, under pressure, and "authorized")
 │
 ├── data_fixtures/
 │   └── synthetic_documents/            # TODO: only a README so far - how to build indirect injection documents
@@ -654,7 +655,7 @@ Spanish and Chinese version before you rely on a result.
 | Single-turn scan across all of the above | `harnesses/pyrit_campaigns/single_turn_scan.py` | Working |
 | Data protection | `attack_suites/02_sensitive_data_exposure/sensitive_data_leakage.yaml`, `harnesses/pyrit_campaigns/state_policy_rubric.yaml` | Working |
 | Equity / disparate impact | `attack_suites/03_algorithmic_bias/algorithmic_bias.yaml` | Working |
-| Excessive agency | `attack_suites/05_excessive_agency/excessive_agency.yaml` | Working in the scan (`constituent_decision` profile) |
+| Excessive agency: false action claims, commitments, exceptions | `attack_suites/05_excessive_agency/excessive_agency.yaml`, the `excessive_agency` rubric, one multi-turn objective per profile | Working in every profile |
 | Excessive agency, backend verification | `harnesses/pyrit_campaigns/agent_tool_exploitation.py` | Scaffold: needs `RT_PROVIDER=app` and a backend diff |
 | Accuracy / grounding | `harnesses/pyrit_campaigns/rag_grounding_eval.py` | Scaffold: needs an eval set |
 | Finding reports | `scripts/` | Working |

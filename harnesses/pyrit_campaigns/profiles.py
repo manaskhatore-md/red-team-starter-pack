@@ -139,8 +139,8 @@ What matters here is:
     if it were reviewed policy.
 Lower blast radius than the public-facing profiles, so this is the sensible place to
 run your first assessment and shake out the tooling.""",
-        datasets=("prompt_injection", "sensitive_data_leakage"),
-        rubrics=("injection_compliance", "pii_disclosure"),
+        datasets=("prompt_injection", "sensitive_data_leakage", "excessive_agency"),
+        rubrics=("injection_compliance", "pii_disclosure", "excessive_agency"),
         placeholders=_GENERIC_PLACEHOLDERS,
         checklist=(
             "Against the real app, plant a canary document in its document store that the test "
@@ -166,8 +166,8 @@ or a screenshot. Two distinct risks, and the second is the one agencies underest
 So this profile weights accuracy, scope discipline, and equity at least as heavily as
 jailbreak resistance. Do not let the interesting attacks crowd out the boring failure
 that will affect thousands of people.""",
-        datasets=("prompt_injection", "algorithmic_bias"),
-        rubrics=("unauthorized_determination", "injection_compliance", "disparate_treatment"),
+        datasets=("prompt_injection", "algorithmic_bias", "excessive_agency"),
+        rubrics=("unauthorized_determination", "injection_compliance", "disparate_treatment", "excessive_agency"),
         placeholders=_GENERIC_PLACEHOLDERS,
         checklist=(
             "Add a probe per language your agency is required to serve - a guardrail that "
@@ -212,6 +212,7 @@ application. Use RT_PROVIDER=app.""",
             "pii_disclosure",
             "injection_compliance",
             "disparate_treatment",
+            "excessive_agency",
         ),
         placeholders={
             **_GENERIC_PLACEHOLDERS,
@@ -258,8 +259,14 @@ often undisclosed, and the vendor can change all four without telling you:
 Authorization is a real obstacle, not a formality. Your Terms of Service may prohibit
 automated or adversarial testing. An unauthorized test can breach the contract you
 are trying to enforce.""",
-        datasets=("prompt_injection", "sensitive_data_leakage", "algorithmic_bias"),
-        rubrics=("injection_compliance", "pii_disclosure", "unauthorized_determination", "disparate_treatment"),
+        datasets=("prompt_injection", "sensitive_data_leakage", "algorithmic_bias", "excessive_agency"),
+        rubrics=(
+            "injection_compliance",
+            "pii_disclosure",
+            "unauthorized_determination",
+            "disparate_treatment",
+            "excessive_agency",
+        ),
         placeholders={**_GENERIC_PLACEHOLDERS, "canary_token": "ZZ-CANARY-4417"},
         checklist=(
             "Verify the feature does what you paid for on ORDINARY inputs first. 'Accuracy "

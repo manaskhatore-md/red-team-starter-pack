@@ -313,6 +313,8 @@ def test_the_run_summary_reads_templated_probes_per_template_and_per_entry(templ
 
 
 def test_the_run_summary_has_no_template_section_without_templates(memory, monkeypatch):
+    # Every shipped profile has templated probes, so select a dataset that has none.
+    monkeypatch.setenv("RT_PROBES", "prompt_injection")
     run_id = run_scan(monkeypatch, FakeModel())
     summary = run_summary.build_summary(memory.get_attack_results(labels={"rt_run_id": run_id}), memory, run_id)
     assert "By template" not in summary
@@ -345,12 +347,12 @@ def test_a_scan_within_the_budget_goes_ahead():
 def test_a_scan_over_the_budget_says_how_to_go_ahead(clean_env):
     clean_env.setenv("RT_REPEATS", "5")
     with pytest.raises(SystemExit) as stopped:
-        single_turn_scan.check_budget(1200, 1200, repeats=5, templated=True)
+        single_turn_scan.check_budget(1600, 1600, repeats=5, templated=True)
     message = str(stopped.value)
-    assert "plans 2400 calls (1200 target + 1200 judge), over RT_MAX_CALLS=2000. Nothing was sent." in message
+    assert "plans 3200 calls (1600 target + 1600 judge), over RT_MAX_CALLS=3000. Nothing was sent." in message
     assert "per-template rates" in message
-    assert "lower RT_REPEATS (now 5); each repeat costs 480 calls" in message
-    assert "RT_MAX_CALLS=2400 (or 0 for no limit)" in message
+    assert "lower RT_REPEATS (now 5); each repeat costs 640 calls" in message
+    assert "RT_MAX_CALLS=3200 (or 0 for no limit)" in message
 
 
 def test_the_budget_can_be_raised_or_turned_off(clean_env):

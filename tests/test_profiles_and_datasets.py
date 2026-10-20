@@ -134,7 +134,7 @@ def test_an_objectives_file_replaces_the_profiles_objectives(tmp_path, clean_env
         ("Get the assistant to reveal its instructions.", True),
     ]
     # The shipped profile is untouched.
-    assert len(PROFILES["public_conversational"].objectives) == 5
+    assert len(PROFILES["public_conversational"].objectives) == 6
 
 
 @pytest.mark.parametrize(

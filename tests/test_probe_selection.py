@@ -12,7 +12,7 @@ from test_bias_pairs import PairJudge
 
 def test_category_keywords_partition_probes_cleanly():
     probes = scan.load_probes(get_profile("constituent_decision"))
-    assert len(probes) == 69
+    assert len(probes) == 94
 
     general = scan.select_probes(probes, "general")
     core = scan.select_probes(probes, "core")
@@ -20,8 +20,8 @@ def test_category_keywords_partition_probes_cleanly():
     bias_core = scan.select_probes(probes, "bias-core")
     bias_templated = scan.select_probes(probes, "bias-templated")
 
-    # general (23) = prompt_injection (7) + sensitive_data_leakage (8) + excessive_agency (8)
-    assert len(general) == 23
+    # general (48) = prompt_injection (7) + sensitive_data_leakage (8) + excessive_agency (33)
+    assert len(general) == 48
     assert all(p.dataset != "algorithmic_bias" for p in general)
 
     # bias-core (10) = 5 inline bias pairs; bias-templated (36) = 18 fixture-expanded bias pairs
@@ -33,14 +33,14 @@ def test_category_keywords_partition_probes_cleanly():
     # bias (46) = bias-core (10) + bias-templated (36)
     assert bias == bias_core + bias_templated
 
-    # core (33 on constituent_decision; 17 on public_conversational) = general + bias-core
-    assert len(core) == 33
+    # core (58 on constituent_decision; 50 on public_conversational) = general + bias-core
+    assert len(core) == 58
     assert all(p.dataset != "algorithmic_bias" or not p.template for p in core)
     assert set(core) == set(general) | set(bias_core)
 
     pub_probes = scan.load_probes(get_profile("public_conversational"))
-    assert len(pub_probes) == 53
-    assert len(scan.select_probes(pub_probes, "core")) == 17
+    assert len(pub_probes) == 86
+    assert len(scan.select_probes(pub_probes, "core")) == 50
 
     # Underscore aliases and 'all' / empty spec also work.
     assert scan.select_probes(probes, "bias_core") == bias_core
@@ -123,14 +123,14 @@ def test_selecting_half_of_a_templated_pair_auto_includes_non_adjacent_partner_i
     "profile_key, spec, match",
     [
         ("constituent_decision", "no_such_probe", "Unknown probe selector 'no_such_probe'"),
-        ("constituent_decision", "0", "out of range: this profile has 69 probe\\(s\\) \\(1-69\\)"),
-        ("constituent_decision", "70", "out of range: this profile has 69 probe\\(s\\) \\(1-69\\)"),
-        ("constituent_decision", "1-999", "out of range: this profile has 69 probe\\(s\\) \\(1-69\\)"),
+        ("constituent_decision", "0", "out of range: this profile has 94 probe\\(s\\) \\(1-94\\)"),
+        ("constituent_decision", "95", "out of range: this profile has 94 probe\\(s\\) \\(1-94\\)"),
+        ("constituent_decision", "1-999", "out of range: this profile has 94 probe\\(s\\) \\(1-94\\)"),
         ("constituent_decision", "10-5", "has start > end: write 5-10 instead"),
         ("constituent_decision", " , ", "Empty probe selector"),
         ("internal_productivity", "bias", "matched 0 probes in this profile"),
         ("internal_productivity", "bias-templated", "matched 0 probes in this profile"),
-        ("public_conversational", "excessive_agency", "Dataset 'excessive_agency' is not in this profile"),
+        ("internal_productivity", "algorithmic_bias", "Dataset 'algorithmic_bias' is not in this profile"),
     ],
 )
 def test_invalid_or_empty_probe_selectors_fail_fast(profile_key, spec, match):
@@ -144,7 +144,7 @@ def test_list_probes_shows_original_numbers_and_supports_filtering(capsys):
     scan.list_probes(profile, "dialect_sae")
     out = capsys.readouterr().out
 
-    assert "Probe filter (dialect_sae): 2 of 53 probe(s) selected." in out
+    assert "Probe filter (dialect_sae): 2 of 86 probe(s) selected." in out
     assert "[8] algorithmic_bias / dialect_aave  [unauthorized_determination]  (pair: dialect_01)" in out
     assert "[9] algorithmic_bias / dialect_sae  [unauthorized_determination]  (pair: dialect_01)" in out
     assert "2 of 2 probe(s) would be sent" in out
@@ -160,7 +160,7 @@ def test_scan_main_respects_rt_probes_and_records_filter_in_summary(memory, monk
     out = capsys.readouterr().out
 
     assert exit_code == 0
-    assert "Probe filter (dialect_sae): 2 of 53 probe(s) selected." in out
+    assert "Probe filter (dialect_sae): 2 of 86 probe(s) selected." in out
     assert "Sending 2 probes: 2 graded by unauthorized_determination; then 1 matched pairs compared." in out
     assert len(target.seen) == 2
 
