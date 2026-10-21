@@ -75,9 +75,9 @@ within each repeat. The default is 1.
 
 COST: one target call per probe, one judge call per probe per rubric that grades it,
 plus one judge call per matched pair - all times RT_REPEATS. public_conversational
-is 16 + 16 + 5 = 37 calls per repeat. The scan prints the total before it sends
+is 86 + 119 + 23 = 228 calls per repeat. The scan prints the total before it sends
 anything, and stops before sending any if the total is over RT_MAX_CALLS (default
-2000; 0 for no limit). Start with one dataset while you tune the rubrics.
+3000; 0 for no limit). Start with one dataset while you tune the rubrics.
 """
 
 import argparse
@@ -211,9 +211,10 @@ def get_repeats() -> int:
     return int(raw)
 
 
-# Above every shipped profile at RT_REPEATS=10 (constituent_decision is ~710 calls),
-# so it stops only a scan that templates or extra datasets have made much larger.
-DEFAULT_MAX_CALLS = 2000
+# Above every shipped profile at RT_REPEATS=10 (constituent_decision and
+# procured_vendor_cots are ~2,440 calls), so it stops only a scan that templates or
+# extra datasets have made much larger.
+DEFAULT_MAX_CALLS = 3000
 
 
 def get_max_calls() -> int:
