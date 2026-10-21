@@ -211,9 +211,9 @@ def get_repeats() -> int:
     return int(raw)
 
 
-# Above every shipped profile at RT_REPEATS=10 (constituent_decision and
-# procured_vendor_cots are ~2,440 calls), so it stops only a scan that templates or
-# extra datasets have made much larger.
+# Above every shipped profile at RT_REPEATS=10 (constituent_decision is ~2,440
+# calls), so it stops only a scan that templates or extra datasets have made much
+# larger.
 DEFAULT_MAX_CALLS = 3000
 
 

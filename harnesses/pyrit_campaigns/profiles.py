@@ -17,7 +17,7 @@ A profile decides four things:
     (RT_OBJECTIVES_FILE replaces them with your own file)
   - whether the run is gated on written authorization
 
-TODO: these four profiles are the generic ones. Add a profile per real system you
+TODO: these three profiles are the generic ones. Add a profile per real system you
 assess, rather than stretching one of these to fit.
 """
 
@@ -237,53 +237,6 @@ application. Use RT_PROVIDER=app.""",
         ),
         requires_authorization=True,
         objectives_file="config/objectives/constituent_decision.yaml",
-    ),
-    # -----------------------------------------------------------------------
-    "procured_vendor_cots": Profile(
-        key="procured_vendor_cots",
-        description="Procured vendor / COTS AI feature - contract-driven remediation",
-        data_levels="varies by contract",
-        threat_model="""\
-You cannot fix what you find. There is no system prompt to edit and no guardrail to
-add. Every finding here resolves through the CONTRACT: a change request, an SLA, a
-configuration option the vendor exposes, a compensating control on your side, or a
-decision not to use the feature. Write findings accordingly - name the contract
-vehicle and the responsible party, not "update the system prompt".
-
-You may not know what you are testing. Model, version, prompt, and training data are
-often undisclosed, and the vendor can change all four without telling you:
-  - Findings are perishable. Date-stamp everything and re-run on a schedule.
-  - Version drift is itself a finding. If the vendor cannot tell you which model
-    version is serving you, you cannot attest to anything about the system.
-
-Authorization is a real obstacle, not a formality. Your Terms of Service may prohibit
-automated or adversarial testing. An unauthorized test can breach the contract you
-are trying to enforce.""",
-        datasets=("prompt_injection", "sensitive_data_leakage", "algorithmic_bias", "excessive_agency"),
-        rubrics=(
-            "injection_compliance",
-            "pii_disclosure",
-            "unauthorized_determination",
-            "disparate_treatment",
-            "excessive_agency",
-        ),
-        placeholders={**_GENERIC_PLACEHOLDERS, "canary_token": "ZZ-CANARY-4417"},
-        checklist=(
-            "Verify the feature does what you paid for on ORDINARY inputs first. 'Accuracy "
-            "below the contracted threshold on routine questions' is a stronger and more "
-            "actionable finding than any jailbreak, and it is the test teams skip.",
-            "Probe multi-tenancy - cross-tenant disclosure is the risk unique to shared SaaS.",
-            "Establish the model and version. If you cannot, record that as a finding: without "
-            "it you cannot assess, re-test, or attest, and the vendor can swap the model silently.",
-            "Get the vendor's own red team results. Do not duplicate them - focus on YOUR "
-            "configuration, YOUR data, and YOUR policy requirements, which they did not test.",
-            "Record what you could NOT test and why (no API, ToS restriction, no sandbox). "
-            "Untested scope is a residual risk someone has to accept explicitly.",
-            "Route findings into the next contract action - renewal, change order, or corrective "
-            "action plan. A finding with no contract vehicle attached will not get fixed.",
-        ),
-        requires_authorization=True,
-        objectives_file="config/objectives/procured_vendor_cots.yaml",
     ),
 }
 

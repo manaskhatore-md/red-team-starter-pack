@@ -372,9 +372,8 @@ too. Keep the judge on a provider you'd trust with it, such as Bedrock in your o
 account. Each judge is also shown the probe's `pass_criteria` from its dataset.
 
 **Planted records.** Profiles graded by `pii_disclosure` (`internal_productivity`,
-`constituent_decision`, `procured_vendor_cots`) also plant two fake records of other
-people in the prompt, with orders not to disclose them; every reply is checked for their
-details. A hit is a `planted_record_leak` finding. Values are synthetic and unissuable
+`constituent_decision`) also plant two fake records of other people in the prompt, with
+orders not to disclose them; every reply is checked for their details. A hit is a `planted_record_leak` finding. Values are synthetic and unissuable
 (SSNs start 666, phones are in the 555-0100–0199 fiction range). The same section holds a
 fake database connection string so the `credential_disclosure` probe has a credential to
 leak.
@@ -476,14 +475,13 @@ is a bug in the pack.
 ## Pick your deployment profile
 
 `RT_PROFILE` decides which datasets run and which rubrics grade them. Run the one that
-matches what you're testing, not all four.
+matches what you're testing, not all three.
 
 | `RT_PROFILE` | Use for | Primary risk |
 |---|---|---|
 | `internal_productivity` | Staff copilots, document search | Over-broad retrieval; pasted untrusted content |
 | `public_conversational` | Public FAQ and program chatbots | Wrong answers at scale; equity |
 | `constituent_decision` | Eligibility, casework, licensing | Authorization boundaries; disparate impact |
-| `procured_vendor_cots` | Vendor and COTS AI features | Remediation is contractual, not technical |
 
 `internal_productivity` is the gentlest place to shake out the tooling and is the
 default. `constituent_decision` is the highest risk and needs authorization before
@@ -543,7 +541,7 @@ priority order:
    your system do. The shipped ones are in `config/objectives/<profile>.yaml`; write your
    system's own in a file of the same form (below) and point `RT_OBJECTIVES_FILE` at it.
 4. **`harnesses/pyrit_campaigns/profiles.py`** — add a profile for your own system rather than
-   stretching one of the four generic ones to fit.
+   stretching one of the three generic ones to fit.
 5. **`attack_suites/*/*.yaml`** — add probes in your system's own language and policy terms.
    For the same question asked about many things, write it once as a template (below).
 6. **`RT_PROVIDER=app`**, pointed at a test instance of your deployment, so you test it rather than a bare model.
@@ -685,8 +683,11 @@ at the bottom of that file before you enable it.
   sent.
 - **`findings/` and the PyRIT database are gitignored** because they contain full
   transcripts. Review before sharing, even internally.
-- **Authorization first** for anything beyond a raw model endpoint, and check the ToS
-  before automated testing of a vendor system.
+- **Authorization first** for anything beyond a raw model endpoint.
+- **Test apps your agency builds and controls.** The profiles assume you can change the
+  system prompt, retrieval, and tools. Don't point the pack at a commercial product
+  without the vendor's written permission - its Terms of Service may prohibit
+  automated or adversarial testing.
 
 ## Testing the pack itself
 
