@@ -609,6 +609,45 @@ def test_outsider_account_not_tested_when_outsider_never_signs_in(tmp_path: Path
     assert "Outsider sign-in did not complete" in res.summary
 
 
+def test_outsider_401_without_a_refusal_in_the_browser_is_not_a_pass(tmp_path: Path, monkeypatch):
+    # The outsider's browser loads the app's own page (HTTP 200, no access-denied page)
+    # and holds a cookie, and no chat-box selector is set. The API's 401 says only that
+    # it did not recognize the request's sign-in: the outsider may well have been let in.
+    class AppPage:
+        url = "https://app.example.test/"
+
+        async def goto(self, url):
+            return SimpleNamespace(status=200)
+
+    class SignedInContext:
+        pages = [AppPage()]
+
+        async def cookies(self, urls=None):
+            return [{"name": "SESSION", "value": "redacted"}]
+
+        async def close(self):
+            pass
+
+    class FakePlaywright:
+        async def stop(self):
+            pass
+
+    async def fake_launch(channel, profile, headless):
+        return FakePlaywright(), SignedInContext()
+
+    monkeypatch.setattr(access_checks, "launch_browser", fake_launch)
+    cfg = make_config(outsider_profile=tmp_path / "outsider", outsider_email="danafi2.0@gmail.com", ready_selector="")
+
+    for refused in (httpx.Response(401), httpx.Response(302, headers={"Location": "https://accounts.google.com/o/oauth2/v2/auth"})):
+        res = asyncio.run(check_outsider_account(mock_client(lambda r, refused=refused: refused), cfg))
+        assert res.verdict == "NOT TESTED", refused.status_code
+        assert any("did not recognize the outsider's sign-in" in d for d in res.details)
+
+    # A 403 is the app knowing who asked and saying no: that is a refusal of the outsider.
+    res_403 = asyncio.run(check_outsider_account(mock_client(lambda r: httpx.Response(403)), cfg))
+    assert res_403.verdict == "PASS"
+
+
 def test_non_login_redirects_return_not_tested_instead_of_false_pass(monkeypatch):
     cfg = make_config(alternate_urls=["https://alt.example.test/api/chat"])
     monkeypatch.setattr(

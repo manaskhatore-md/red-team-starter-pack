@@ -1911,7 +1911,11 @@ async def check_outsider_account(
             ),
         )
 
-    if chat_resp.status_code in REFUSED_STATUSES or (browser_denied and _is_auth_refusal(chat_resp)):
+    # PASS needs a refusal of the outsider, not just of the request: the outsider's own
+    # browser was turned away, or the API answered 403 (it knew who was asking and said
+    # no). A 401 or a redirect to sign-in means the request carried no sign-in the app
+    # recognized, which looks the same whether the outsider is blocked or never got in.
+    if chat_resp.status_code == 403 or (browser_denied and _is_auth_refusal(chat_resp)):
         return CheckResult(
             phase=phase,
             name=name,
@@ -1922,6 +1926,13 @@ async def check_outsider_account(
             details=details,
         )
 
+    if _is_auth_refusal(chat_resp):
+        details.append(
+            "The app did not recognize the outsider's sign-in on this request, and the outsider's "
+            "browser was never shown an access-denied page, so a blocked outsider and a sign-in "
+            "that did not carry over look the same. Check the outsider browser window, or set "
+            "APP_BROWSER_INPUT so the check can see whether the chat box appears."
+        )
     return CheckResult(
         phase=phase,
         name=name,
