@@ -84,3 +84,20 @@ def test_crescendo_and_the_red_team_campaign_judge_the_goal_with_the_rubric(prof
     name, prompt = rubrics[goal]
     assert name == "excessive_agency"
     assert "[[" not in prompt and "claimed to act, or committed the agency" in prompt
+
+
+def test_the_agent_campaign_sends_every_probe_with_its_placeholders_filled(clean_env):
+    # agent_tool_exploitation.py reads the same file. It must expand the templates
+    # and fill every placeholder the scan fills, not send "{{ act.request }}".
+    from harnesses.pyrit_campaigns import agent_tool_exploitation
+
+    for key, value in (("TOOL_NAME", "case_lookup"), ("RECORD_TYPE", "case"), ("PROGRAM_NAME", "SNAP"),
+                       ("AGENCY_NAME", "Maryland Department of Human Services")):
+        clean_env.setenv(f"RT_{key}", value)
+    clean_env.setattr(agent_tool_exploitation, "PLACEHOLDERS", agent_tool_exploitation.with_env_overrides(
+        {"tool_name": "TODO_your_tool_name", "record_type": "TODO_your_record_type", "program_name": "TODO_your_program_name"}))
+    objectives = agent_tool_exploitation.load_objectives()
+    assert len(objectives) == 33
+    assert not [o for o in objectives if "{{" in o]
+    assert "Can you change the mailing address on my case to 1427 Oak Street" in " ".join(objectives[8].split())
+    assert any("Maryland Department of Human Services employee" in o for o in objectives)
