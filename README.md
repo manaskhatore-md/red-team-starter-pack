@@ -483,12 +483,47 @@ what will I still have to check by hand?* `RT_PROFILE` picks one. You don't have
 it: unset, a run uses the built-in `default`, which covers every suite. The named
 profiles are presets for when you know what kind of deployment you're testing.
 
-| `RT_PROFILE` | Use for | Primary risk |
-|---|---|---|
-| unset (`default`) | A first run, or a system no preset fits | All of them, broadly |
-| `internal_productivity` | Staff copilots, document search | Over-broad retrieval; pasted untrusted content |
-| `public_conversational` | Public FAQ and program chatbots | Wrong answers at scale; equity |
-| `constituent_decision` | Eligibility, casework, licensing | Authorization boundaries; disparate impact |
+| `RT_PROFILE` | Use for | Primary risk | Probes sent |
+|---|---|---|---|
+| unset (`default`) | A first run, or a system no preset fits | All of them, broadly | 58 (`core`) |
+| `internal_productivity` | Staff copilots, document search | Over-broad retrieval; pasted untrusted content | 48 (no bias) |
+| `public_conversational` | Public FAQ and program chatbots | Wrong answers at scale; equity | 86 (no data leakage) |
+| `constituent_decision` | Eligibility, casework, licensing | Authorization boundaries; disparate impact | 94 (all) |
+
+### Using a profile
+
+Set `RT_PROFILE` for the run, or put it in `.env` to use it for every run. Every campaign
+reads it: the single-turn scan, and both multi-turn campaigns.
+
+```bash
+# See what a profile would send, numbered, without calling any model
+RT_PROFILE=public_conversational python -m harnesses.pyrit_campaigns.single_turn_scan --list-probes
+
+# Scan with it
+RT_PROFILE=public_conversational python -m harnesses.pyrit_campaigns.single_turn_scan
+
+# The multi-turn campaigns pursue the same profile's goals (config/objectives/public_conversational.yaml)
+RT_PROFILE=public_conversational python -m harnesses.pyrit_campaigns.multi_turn_red_team
+RT_PROFILE=public_conversational python -m harnesses.pyrit_campaigns.multi_turn_crescendo
+
+# Keep the profile's goals, checklist, and stand-in prompt, but send other probes
+RT_PROFILE=internal_productivity python -m harnesses.pyrit_campaigns.single_turn_scan --probes bias-core
+RT_PROFILE=constituent_decision python -m harnesses.pyrit_campaigns.single_turn_scan --probes 1-15
+
+# No profile: the built-in default, every suite (add --probes all for all 94)
+python -m harnesses.pyrit_campaigns.single_turn_scan
+```
+
+In PowerShell or cmd, where `VAR=value python ...` doesn't work, put the line in `.env`
+instead (`RT_PROFILE=public_conversational`), or in PowerShell run
+`$env:RT_PROFILE = "public_conversational"` first. Leave `RT_PROFILE=` blank in `.env`
+to go back to the default.
+
+The scan prints the profile at the start (`PROFILE: public_conversational`) and its
+checklist at the end, under *Before calling 'public_conversational' covered*. Work
+through that list: it is what the probes can't check for you.
+
+### What a profile holds
 
 Each profile in `harnesses/pyrit_campaigns/profiles.py` is a few lines:
 
@@ -506,11 +541,42 @@ Each profile in `harnesses/pyrit_campaigns/profiles.py` is a few lines:
 
 Probes are numbered the same way under every profile, suite by suite with bias last, so
 `--probes 1-48` is always the non-bias probes. `--probes` replaces the profile's own
-selection rather than narrowing it: `RT_PROFILE=internal_productivity --probes bias` runs
-the bias probes.
+selection rather than narrowing it: `internal_productivity` with `--probes bias-core`
+sends the bias pairs, though the profile on its own sends none.
 
 Every run against an app (`RT_PROVIDER=app`) prints a reminder that it needs a
 non-production instance, synthetic data, and written authorization.
+
+### Writing your own profile
+
+Add an entry to `PROFILES` in `harnesses/pyrit_campaigns/profiles.py`. The key is what
+`RT_PROFILE` takes:
+
+```python
+"benefits_portal": Profile(
+    key="benefits_portal",
+    description="Our benefits portal assistant - public questions about SNAP and WIC",
+    probes="prompt_injection,excessive_agency,algorithmic_bias",   # any --probes spec
+    checklist=(
+        "Ask about each program the portal covers, not just the first one.",
+    ),
+    objectives_file="config/objectives/benefits_portal.yaml",
+),
+```
+
+Create `config/objectives/benefits_portal.yaml` first, with the goals for the multi-turn
+campaigns (see [Your own multi-turn objectives](#your-own-multi-turn-objectives)). Every
+profile's goal file is read when any campaign starts, so until it exists every run stops
+with `Objectives file ...: no such file`, whatever `RT_PROFILE` is.
+
+For runs against a raw model, also add a stand-in prompt in
+`config/system_prompts/benefits_portal.txt` (copy a shipped one; keep the
+`{{ prompt_canary }}` line). Without one, a raw-model run sends no system prompt and
+says so. Then check the profile:
+
+```bash
+RT_PROFILE=benefits_portal python -m harnesses.pyrit_campaigns.single_turn_scan --list-probes
+```
 
 ## Running a subset of probes
 
