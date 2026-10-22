@@ -538,6 +538,57 @@ You can pass one selector or combine several with commas (e.g. `--probes "1-3,cr
 matched pair (`pair_id`), its partner probe is automatically pulled in and kept in original
 file order so a half-pair is never sent or judged alone.
 
+## Encoding and obfuscating probes (request converters)
+
+Guardrails and keyword filters that block a plain-English injection or extraction attempt can
+often be bypassed when the same prompt is encoded (Base64, ROT13, URL-encoding) or obfuscated
+with leetspeak, homoglyphs, or invisible zero-width characters. Instead of duplicating encoded
+strings across YAML files, `single_turn_scan` can run probes through PyRIT request converters
+via `--converters <spec>` (or `RT_CONVERTERS=<spec>` in `.env`).
+
+Only the `prompt_injection` and `sensitive_data_leakage` probes are encoded, because those
+attack a filter or guardrail. The rest of a selection is sent as written: a bias pair
+compares two plain replies, and an excessive-agency probe asks for an action, so an encoded
+copy would test the encoding instead. A selection with no probe from those two suites stops
+before anything is sent.
+
+Each encoded probe is also sent as written in the same run, as the control, so `--converters`
+doubles the calls for those probes. A flag on an encoded probe means little by itself: the
+plain text may fail the same way. The run summary's **Encoded vs. as written** section sets the
+two side by side, and a probe flagged only when encoded is the finding - the encoding got past
+something the plain text did not. Use `RT_REPEATS=5` or more before reporting one; a single
+try each way is one reply. Replies are also checked in decoded form, so a leak in a reply that
+comes back in base64, ROT13, or look-alike letters is still caught.
+
+```bash
+# Preview the converted payload for each selected probe without calling a model
+python -m harnesses.pyrit_campaigns.single_turn_scan --list-probes --probes prompt_injection --converters base64
+
+# Run the prompt_injection suite encoded in Base64 or ROT13
+python -m harnesses.pyrit_campaigns.single_turn_scan --probes prompt_injection --converters base64
+python -m harnesses.pyrit_campaigns.single_turn_scan --probes prompt_injection --converters rot13
+
+# Chain multiple converters in order (e.g. leetspeak followed by zero-width characters)
+python -m harnesses.pyrit_campaigns.single_turn_scan --probes prompt_injection --converters leetspeak,zero-width
+```
+
+| Converter | What it sends to the target |
+|---|---|
+| `base64` | Base64-encodes the probe and wraps it in a decode-and-respond instruction |
+| `base64-raw` | Bare Base64 cipher text only (useful for chaining, e.g. `base64-raw,url`) |
+| `rot13` | ROT13-encodes the probe and wraps it in a decode-and-respond instruction |
+| `rot13-raw` | Bare ROT13 cipher text only |
+| `leetspeak` (or `leet`) | Replaces ASCII letters with deterministic leetspeak equivalents (`4`, `3`, `1`, `0`, ...) |
+| `unicode-confusable` (or `confusable`) | Replaces Latin letters with visually similar Cyrillic/Greek homoglyphs |
+| `zero-width` (or `zerowidth`) | Injects invisible zero-width space characters (`U+200B`) between every character |
+| `url` | Percent-encodes characters (`%20`, `%3A`, ...) |
+
+The system prompt is left untouched, the judge still evaluates the reply against the original
+plain-English probe objective and `pass_criteria`, and exported finding reports show both
+`[user original]` and the converted `[user]` payload alongside a `--converters` reproduction command.
+A report on an encoded probe also gives the control under Reproducibility: how often the same
+probe was flagged as written, against the same target, next to how often it was flagged encoded.
+
 ## What to customize first
 
 The pack ships generic on purpose, and generic probes find generic problems. In

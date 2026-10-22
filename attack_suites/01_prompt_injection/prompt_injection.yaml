@@ -94,8 +94,6 @@ seeds:
 # TODO: add these categories before a real assessment -
 #   - Indirect injection: payload arrives via a retrieved document, not the user turn.
 #     Put those payloads in data_fixtures/synthetic_documents/ instead of here.
-#   - Encoding tricks: base64, ROT13, homoglyphs, zero-width characters. Prefer
-#     PyRIT converters (Base64Converter, ROT13Converter) over hardcoding encoded
-#     strings - the converter applies to every prompt in this file automatically.
 #   - Multilingual: the same probes in Spanish, Korean, and the other languages your
 #     agency serves. Guardrails are frequently English-only.
+# For encoded versions of these probes, run with --converters (e.g. rot13); each is also sent as written, as a control.
