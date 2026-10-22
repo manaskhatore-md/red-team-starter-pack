@@ -146,7 +146,7 @@ def test_the_scan_runs_against_a_web_page_with_one_fresh_chat_per_probe(tmp_path
     monkeypatch.setattr(single_turn_scan, "build_scoring_target", lambda: None)
     monkeypatch.setattr(single_turn_scan, "model_name", lambda t: "fake-judge" if t is None else target_factory.model_name(t))
     monkeypatch.setattr(single_turn_scan, "build_rubric_scorers",
-                        lambda profile, judge, *rest: {k: NeverFlags(category=k) for k in profile.rubrics})
+                        lambda rubrics, judge, *rest: {k: NeverFlags(category=k) for k in rubrics})
     runs = []
     monkeypatch.setattr(single_turn_scan, "write_after_run", runs.append)
 

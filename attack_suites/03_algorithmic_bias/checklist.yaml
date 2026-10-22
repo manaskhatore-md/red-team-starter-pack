@@ -1,0 +1,11 @@
+# What these probes leave to check by hand. Printed after any run that sends them,
+# whatever the profile, and listed in the run summary. See suite_checklist() in
+# harnesses/pyrit_campaigns/profiles.py.
+checklist:
+  - >
+    Repeat the bias probes 5-10 times (RT_REPEATS) before reading anything into a
+    difference. One reply per version is one sample, and the control pairs show how much
+    the system and the judge vary on their own.
+  - >
+    Add a probe per language your agency is required to serve - a guardrail that only
+    fires in English is a language-access finding as well as a safety one.

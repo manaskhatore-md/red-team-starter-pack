@@ -59,15 +59,16 @@ def write_dataset(root, dataset=TEMPLATE, fixtures=FIXTURES):
 
 @pytest.fixture
 def templated(tmp_path, monkeypatch):
-    """A profile whose only dataset is a template over a two-entry fixture file, in tmp_path."""
+    """A profile over one suite, a template over a two-entry fixture file, in tmp_path."""
     monkeypatch.setattr(profiles, "DATASETS_DIR", tmp_path)
-    profile = replace(get_profile("internal_productivity"), datasets=("templated",))
-    profile.placeholders["program_name"] = "Energy Assistance"
+    monkeypatch.setattr(profiles, "SUITES", ("templated",))
+    monkeypatch.setenv("RT_PROGRAM_NAME", "Energy Assistance")
+    profile = replace(get_profile("internal_productivity"), probes="all", checklist=())
     return tmp_path, profile
 
 
 def probes_by_name(profile):
-    return {p.name: p for p in single_turn_scan.load_probes(profile)}
+    return {p.name: p for p in single_turn_scan.profile_probes(profile)}
 
 
 # --- expansion ------------------------------------------------------------------
@@ -138,7 +139,7 @@ def test_a_broken_template_or_fixture_stops_the_load_and_says_why(templated, dat
     root, profile = templated
     write_dataset(root, dataset, fixtures)
     with pytest.raises(SystemExit, match=message):
-        single_turn_scan.load_probes(profile)
+        single_turn_scan.profile_probes(profile)
 
 
 def test_shipped_probes_with_the_same_text_are_judged_with_the_same_facts():
@@ -148,7 +149,7 @@ def test_shipped_probes_with_the_same_text_are_judged_with_the_same_facts():
     # they are judged with the same facts. Nothing else repeats.
     for key in profiles.PROFILES:
         by_text = {}
-        for probe in single_turn_scan.load_probes(get_profile(key)):
+        for probe in single_turn_scan.profile_probes(get_profile(key)):
             by_text.setdefault(probe.prompt, []).append(probe)
         for text, probes in by_text.items():
             if len(probes) > 1:
@@ -244,8 +245,7 @@ def scan_templated(templated, monkeypatch, judge, target=None):
     # which scores are rubric verdicts.
     monkeypatch.setattr(run_summary, "load_rubrics", lambda: rubrics)
     monkeypatch.setattr(export_finding_report, "rubric_names", lambda: set(rubrics) | set(CODE_CHECKS))
-    monkeypatch.setitem(profiles.PROFILES, "internal_productivity", replace(profile, rubrics=("fact_rubric",)))
-    monkeypatch.setenv("RT_PROGRAM_NAME", "Energy Assistance")
+    monkeypatch.setitem(profiles.PROFILES, "internal_productivity", profile)
     return run_scan(monkeypatch, target or AnswersEachProbe(), judge=judge)
 
 
@@ -254,7 +254,7 @@ def test_the_scan_shows_each_templated_probe_its_own_facts_and_records_its_fixtu
     judge = FakeJudge()
     run_id = scan_templated(templated, monkeypatch, judge)
 
-    for probe in single_turn_scan.load_probes(profile):
+    for probe in single_turn_scan.profile_probes(profile):
         [rubric] = [r for r in judge.rubrics if probe.prompt in r]
         facts = dict(probe.judge_context).get("REFERENCE_FACTS", single_turn_scan.NO_JUDGE_CONTEXT)
         assert f"<facts>\n{facts}\n</facts>" in rubric, probe.name
@@ -281,7 +281,7 @@ def test_the_finding_report_names_the_template_and_the_fixture_entry():
 def test_list_probes_shows_what_would_be_sent_without_calling_a_model(templated, capsys):
     root, profile = templated
     write_dataset(root)
-    single_turn_scan.list_probes(replace(profile, rubrics=("injection_compliance",)))
+    single_turn_scan.list_probes(profile)
     out = capsys.readouterr().out
     assert "templated / premise[vehicle]  [NOT SENT: no rubric grades it]" in out
     assert "template 'premise', filled from" in out
@@ -368,9 +368,10 @@ def test_the_budget_can_be_raised_or_turned_off(clean_env):
 def test_every_shipped_profile_fits_the_default_budget_at_ten_repeats():
     for key in profiles.PROFILES:
         profile = get_profile(key)
-        probes = single_turn_scan.load_probes(profile)
-        rubrics = [k for k in profile.rubrics if k not in profiles.PAIR_RUBRICS]
-        compare = "disparate_treatment" in profile.rubrics and any(p.pair_id for p in probes)
+        probes = single_turn_scan.profile_probes(profile)
+        rubrics = single_turn_scan.rubrics_for(probes)
+        compare = "disparate_treatment" in rubrics and any(p.pair_id for p in probes)
+        rubrics = [k for k in rubrics if k not in profiles.PAIR_RUBRICS]
         groups = single_turn_scan.group_by_rubrics(probes, rubrics, compare)
         pairs = len({p.pair_id for group in groups.values() for p in group if p.pair_id}) if compare else 0
         assert sum(single_turn_scan.planned_calls(groups, pairs, 10)) <= single_turn_scan.DEFAULT_MAX_CALLS, key
@@ -390,5 +391,5 @@ def test_loading_a_template_logs_no_rendering_error(templated, caplog):
     root, profile = templated
     write_dataset(root)
     with caplog.at_level("ERROR"):
-        single_turn_scan.load_probes(profile)
+        single_turn_scan.profile_probes(profile)
     assert "Error rendering template" not in caplog.text

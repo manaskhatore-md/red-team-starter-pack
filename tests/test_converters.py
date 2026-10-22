@@ -205,7 +205,7 @@ def test_scan_main_converts_user_probe_keeps_system_prompt_plain_and_grades_orig
     # Judge still receives the unencoded probe in <probe> and its matching [[PASS_CRITERIA]]
     assert judge.rubrics
     assert all(user_orig in r for r in judge.rubrics)
-    probes = {p.name: p for p in scan.load_probes(get_profile("internal_productivity"))}
+    probes = {p.name: p for p in scan.profile_probes(get_profile("internal_productivity"))}
     assert all(probes["override_simple"].pass_criteria in r for r in judge.rubrics)
 
     # Run labels and summary record rt_converters
@@ -337,7 +337,7 @@ def sent_user_messages(target) -> dict[str, str]:
 def test_only_injection_and_data_probes_are_encoded(memory, monkeypatch, capsys):
     target, results, summary_md = run_scan(memory, monkeypatch, "override_simple,destructive_action", "rot13")
     out = capsys.readouterr().out
-    probes = {p.name: p for p in scan.load_probes(get_profile("public_conversational"))}
+    probes = {p.name: p for p in scan.profile_probes(get_profile("public_conversational"))}
     sent = sent_user_messages(target)
 
     injection, agency = probes["override_simple"].prompt, probes["destructive_action"].prompt
@@ -421,7 +421,7 @@ def test_a_run_without_the_control_says_a_flag_does_not_prove_the_encoding_did_i
 
 
 def test_planned_calls_count_each_encoded_probe_twice():
-    probes = [p for p in scan.load_probes(get_profile("public_conversational")) if p.name in ("override_simple", "destructive_action")]
+    probes = [p for p in scan.profile_probes(get_profile("public_conversational")) if p.name in ("override_simple", "destructive_action")]
     groups = {("injection_compliance",): [probes[0]], ("excessive_agency",): [probes[1]]}
     assert scan.planned_calls(groups, 0, 3) == (6, 6)
     assert scan.planned_calls(groups, 0, 3, converted=[p for p in probes if p.name == "override_simple"]) == (9, 9)

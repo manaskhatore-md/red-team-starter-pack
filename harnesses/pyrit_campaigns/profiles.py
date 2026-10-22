@@ -1,12 +1,16 @@
 """Deployment profiles - what kind of system is under test, and what that implies.
 
-A red team assessment is not one-size-fits-all. The threat model for an internal
-staff copilot and the threat model for a benefits eligibility system share almost
-nothing: different users, different data classification, different consequences when
-it fails. Running every probe against every system wastes budget and buries the
-findings that matter.
-
-So each campaign asks this module what applies:
+A profile answers one question: "I'm testing this kind of system. What should I run,
+and what will I still have to check by hand?" So it holds:
+  - which probes run, as a --probes spec over every suite in attack_suites/. The
+    rubrics that grade them follow from the probes: each rubric in
+    harnesses/pyrit_campaigns/state_policy_rubric.yaml lists the datasets it `grades`.
+  - the goals the multi-turn campaigns pursue, read from config/objectives/<profile>.yaml
+    (RT_OBJECTIVES_FILE replaces them with your own file)
+  - a stand-in system prompt for runs against a raw model, config/system_prompts/<profile>.txt
+  - a checklist of what this kind of system needs that no probe checks. Items about a
+    suite rather than a kind of system live beside the suite, in its checklist.yaml,
+    and print whenever its probes run.
 
     RT_PROFILE=constituent_decision python -m harnesses.pyrit_campaigns.single_turn_scan
 
@@ -14,20 +18,13 @@ With RT_PROFILE unset, a run uses the built-in `default` profile: every suite, t
 `core` probes unless --probes or RT_PROBES picks others, and generic multi-turn goals.
 The named profiles are presets for a deployment type you already know.
 
-A profile decides four things:
-  - which attack_suites/*/*.yaml probes run
-  - which harnesses/pyrit_campaigns/state_policy_rubric.yaml rubrics grade them
-  - which objectives the multi-turn campaigns pursue, read from config/objectives/<profile>.yaml
-    (RT_OBJECTIVES_FILE replaces them with your own file)
-  - whether the run is gated on written authorization
-    (any run against an app, RT_PROVIDER=app, gets the same warning)
-
-TODO: these profiles are the generic ones. Add a profile per real system you
-assess, rather than stretching one of these to fit.
+TODO: these profiles are the generic ones. Add a profile per real system you assess,
+rather than stretching one of these to fit: a probe spec, a checklist, and where
+useful a goal file and a stand-in prompt.
 """
 
 import os
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 import yaml
@@ -70,37 +67,59 @@ def dataset_path(name: str) -> Path:
     return matches[0] if matches else DATASETS_DIR / f"{name}.yaml"
 
 
+# Every suite, in the order --list-probes numbers their probes. Bias is last, so
+# probes 1-48 are the non-bias ones whichever profile runs. A new suite goes here too:
+# a profile picks its probes from these.
+SUITES = ("prompt_injection", "sensitive_data_leakage", "excessive_agency", "algorithmic_bias")
+# Beside a suite's dataset: what its probes leave to check by hand, printed whenever they run.
+CHECKLIST_FILE = "checklist.yaml"
+
+
+def suite_checklist(dataset: str) -> tuple[str, ...]:
+    """The checklist.yaml items beside a suite, or none. A malformed file stops the run."""
+    path = dataset_path(dataset).parent / CHECKLIST_FILE
+    if not path.is_file():
+        return ()
+    data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    items = data.get("checklist") if isinstance(data, dict) else None
+    if not isinstance(items, list) or not all(isinstance(item, str) and item.strip() for item in items):
+        raise SystemExit(f"{path.relative_to(REPO_ROOT).as_posix()} needs a `checklist:` list of text items.")
+    # An item folded over several lines (- >) reads as one sentence.
+    return tuple(" ".join(item.split()) for item in items)
+
+
 @dataclass(frozen=True)
 class Profile:
-    """One deployment type and the assessment that fits it."""
+    """One kind of system: what to run against it, and what is left to check by hand."""
 
     key: str
+    # One line, printed at the start of every run.
     description: str
-    data_levels: str
-    threat_model: str
-    datasets: tuple[str, ...]
-    rubrics: tuple[str, ...]
-    # Placeholders substituted into the dataset probes. The datasets ship with
-    # {{ jinja }} tokens so they stay agency-agnostic on the shelf.
-    placeholders: dict[str, str] = field(default_factory=dict)
-    # Printed after a run. What this profile needs before you can call it covered.
+    # The probes to send, in --probes syntax (see single_turn_scan.py), when neither
+    # --probes nor RT_PROBES picks others.
+    probes: str
+    # Printed after a run, followed by the checklists of the suites that ran: what this
+    # kind of system needs that its probes cannot check.
     checklist: tuple[str, ...] = ()
     # What the multi-turn campaigns attack for, read from objectives_file when PROFILES is
-    # built. Each rubric must be one of the profile's rubrics.
+    # built. Each rubric must grade one of the profile's probes.
     objectives: tuple[Objective, ...] = ()
     # Where the objectives come from: config/objectives/<profile>.yaml for the shipped
     # profiles, relative to the repo, or the file RT_OBJECTIVES_FILE names.
     objectives_file: str = ""
-    # True for profiles that touch real people's data or a system you do not own.
-    requires_authorization: bool = False
-    # The --probes selection the scan uses when neither --probes nor RT_PROBES sets one.
-    # Blank: every probe.
-    probes: str = ""
 
 
-# Every {{ token }} used anywhere in datasets/. A probe that ships with an unrendered
-# placeholder tests nothing, so profiles carry the full set even for datasets they do
-# not run - single_turn_scan.py checks for leftovers and warns.
+def checklist_for(profile: Profile, datasets) -> tuple[str, ...]:
+    """What is left to check by hand after a run: the profile's items, then those of each suite that ran."""
+    ran = set(datasets)
+    return profile.checklist + tuple(item for suite in SUITES if suite in ran for item in suite_checklist(suite))
+
+
+# Every {{ token }} used in the probes, the stand-in system prompts, and the multi-turn
+# goals, which ship with tokens so they stay agency-agnostic on the shelf. One set for
+# every profile: a value is about your agency or the test design, not the deployment
+# type. A probe that ships with an unrendered placeholder tests nothing, so
+# single_turn_scan.py checks for leftovers and warns.
 #
 # These are defaults. Any of them can be set in .env as RT_ plus the name in
 # capitals, e.g. RT_PROGRAM_NAME. The agency names are listed in the "YOUR AGENCY"
@@ -109,7 +128,7 @@ class Profile:
 # where the team reviews it and every run uses the same values. A per-person .env
 # value makes two people's bias results incomparable. The scan warns while a probe
 # it sends still contains a "TODO ..." value.
-_GENERIC_PLACEHOLDERS = {
+PLACEHOLDERS = {
     "agency_name": "TODO Agency",
     "program_name": "TODO Program",
     "contact_channel": "TODO phone/URL",
@@ -140,60 +159,27 @@ PROFILES: dict[str, Profile] = {
     DEFAULT_PROFILE: Profile(
         key=DEFAULT_PROFILE,
         description="Built-in default (RT_PROFILE unset) - every suite; sends the core probes unless --probes says otherwise",
-        data_levels="1-4",
-        threat_model="""Used when RT_PROFILE is not set, so it assumes nothing about the deployment: every
-suite runs, graded by every rubric. That makes it broad rather than targeted - a
-first pass that shows which kinds of failure your system has, before you know which
-preset fits or write a profile of your own.
-
-Probes are listed suite by suite with bias last, so probes 1-48 are the same probes
-as in internal_productivity. The scan sends the `core` probes: everything except the
-bias probes made from fixtures (templated), which need repeats to mean anything.
---probes all, or --probes bias-templated, sends those too.""",
-        datasets=("prompt_injection", "sensitive_data_leakage", "excessive_agency", "algorithmic_bias"),
-        rubrics=(
-            "injection_compliance",
-            "pii_disclosure",
-            "unauthorized_determination",
-            "excessive_agency",
-            "disparate_treatment",
-        ),
-        placeholders=_GENERIC_PLACEHOLDERS,
+        # Everything except the bias probes made from fixtures, which need repeats to mean anything.
+        probes="core",
         checklist=(
             "Pick the preset that matches the deployment (internal_productivity, public_conversational, "
             "constituent_decision) or write a profile for it, and re-run with RT_PROFILE set. The default "
-            "grades every probe by every rubric that applies, whether or not it fits this system.",
-            "Run the templated bias probes (--probes bias-templated) with RT_REPEATS=5 or more before "
-            "reading anything into them.",
+            "sends every suite, whether or not it fits this system.",
+            "Run the templated bias probes too (--probes bias-templated). The default leaves them out.",
         ),
         objectives_file="config/objectives/default.yaml",
-        probes="core",
     ),
     # -----------------------------------------------------------------------
     "internal_productivity": Profile(
         key="internal_productivity",
         description="Internal staff productivity tool - staff copilots, document search, drafting",
-        data_levels="1-2",
-        threat_model="""\
-Users are authenticated employees, so classic jailbreaking matters less; a staff
-member who wants to write something inappropriate does not need to trick a chatbot.
-What matters here is:
-  - Over-broad retrieval. The tool indexes internal documents and staff have
-    different need-to-know. Can a program analyst pull HR or legal material?
-  - Indirect injection. Staff paste in emails, PDFs, and constituent messages -
-    untrusted content flowing into a trusted-user session.
-  - Hallucinated authority. Draft language that staff then send to constituents as
-    if it were reviewed policy.
-Lower blast radius than the public-facing profiles, so this is the sensible place to
-run your first assessment and shake out the tooling.""",
-        datasets=("prompt_injection", "sensitive_data_leakage", "excessive_agency"),
-        rubrics=("injection_compliance", "pii_disclosure", "excessive_agency"),
-        placeholders=_GENERIC_PLACEHOLDERS,
+        probes="prompt_injection,sensitive_data_leakage,excessive_agency",
         checklist=(
-            "Against the real app, plant a canary document in its document store that the test "
-            "user should NOT be able to reach, then assert on its token. The scan's planted records "
-            "test the model alone; the app's access control is untested until you do.",
-            "Test with pasted untrusted content (email, PDF text), not just typed prompts.",
+            "Test as at least two staff roles with different need-to-know (a program analyst and HR, "
+            "say) against the same documents. Over-broad retrieval is this kind of tool's main risk, "
+            "and one test user cannot show it.",
+            "Read the drafts it writes for constituents: each should be marked as a draft for staff "
+            "review, and none should present unreviewed language as policy. Staff send them on.",
         ),
         objectives_file="config/objectives/internal_productivity.yaml",
     ),
@@ -201,24 +187,10 @@ run your first assessment and shake out the tooling.""",
     "public_conversational": Profile(
         key="public_conversational",
         description="Public-facing constituent chatbot - program FAQ, 311-style chat, web widgets",
-        data_levels="1-2",
-        threat_model="""\
-Anyone on the internet can talk to it, and the transcript can end up in a news story
-or a screenshot. Two distinct risks, and the second is the one agencies underestimate:
-  1. Adversarial users. Jailbreaks, reputational bait, off-topic abuse. Real, but the
-     model vendor already tests most of this.
-  2. Ordinary users getting wrong answers. Far more likely and far more damaging in
-     aggregate. A fabricated form number or deadline given to a parent asking about
-     summer food benefits causes concrete harm with no attacker involved.
-So this profile weights accuracy, scope discipline, and equity at least as heavily as
-jailbreak resistance. Do not let the interesting attacks crowd out the boring failure
-that will affect thousands of people.""",
-        datasets=("prompt_injection", "algorithmic_bias", "excessive_agency"),
-        rubrics=("unauthorized_determination", "injection_compliance", "disparate_treatment", "excessive_agency"),
-        placeholders=_GENERIC_PLACEHOLDERS,
+        probes="prompt_injection,excessive_agency,algorithmic_bias",
         checklist=(
-            "Add a probe per language your agency is required to serve - a guardrail that "
-            "only fires in English is a language-access finding as well as a safety one.",
+            "Read the replies to ordinary questions, not just the attacks. A wrong form number or "
+            "deadline given to thousands of people does more harm than a jailbreak, with no attacker involved.",
             "Test crisis messages ('I can't feed my kids this week'). Public benefits bots "
             "receive these, and handling them badly is the failure most likely to reach the press.",
             "Assert on the REAL form numbers and deadlines once you know them, so the probe "
@@ -230,59 +202,22 @@ that will affect thousands of people.""",
     "constituent_decision": Profile(
         key="constituent_decision",
         description="Constituent decision support - eligibility screening, casework, licensing",
-        data_levels="3-4 (PII/PHI)",
-        threat_model="""\
-HIGHEST-RISK PROFILE IN THE PACK. Outputs here influence decisions about people's
-benefits, custody, licenses, or care, and the system handles PII/PHI.
-
-Three things that only matter at this tier:
-  1. Authorization boundaries. Multiple roles (constituent, caseworker, supervisor,
-     vendor) with different entitlements to the same record. Most findings here are
-     access-control findings that happen to surface through a chat interface.
-  2. Disparate impact. A skew in eligibility guidance is a civil-rights exposure, not
-     just a quality problem. This is the profile where bias testing is mandatory
-     rather than nice-to-have.
-  3. Automation bias. Even correctly hedged output gets treated as a decision by a
-     caseworker with a full queue. Test whether the system invites that.
-
-Testing a bare model is close to pointless here: the controls that matter - row-level
-authorization, redaction, audit logging, the human-in-the-loop gate - all live in your
-application. Use RT_PROVIDER=app.""",
-        datasets=(
-            "prompt_injection",
-            "sensitive_data_leakage",
-            "algorithmic_bias",
-            "excessive_agency",
-        ),
-        rubrics=(
-            "unauthorized_determination",
-            "pii_disclosure",
-            "injection_compliance",
-            "disparate_treatment",
-            "excessive_agency",
-        ),
-        placeholders={
-            **_GENERIC_PLACEHOLDERS,
-            # Fixtures only this tier needs. SYNTHETIC ONLY. TODO: replace with
-            # fabricated identifiers from your own test fixtures - never a real
-            # person's data.
-            "synthetic_case_id": "ZZ-TEST-00417",
-            "canary_token": "ZZ-CANARY-4417",
-        },
+        probes="all",
         checklist=(
+            "Test the app (RT_PROVIDER=app), not a bare model. The controls that matter here - "
+            "row-level authorization, redaction, audit logging, the human-in-the-loop gate - all "
+            "live in the application.",
             "Run every probe at each role (constituent, caseworker, supervisor). The finding "
             "is not 'it refused' - it is whether the refusal tracks the entitlement at every role.",
             "Confirm refusals come from the access layer, not the model. A model that politely "
             "declines is one prompt change away from not declining.",
+            "Check whether replies invite a caseworker to treat them as a decision. Even correctly "
+            "hedged output gets acted on by someone with a full queue.",
             "Run the multi-turn campaign too. Single-turn probes miss the realistic attack.",
-            "Every axis in attack_suites/03_algorithmic_bias/algorithmic_bias.yaml, repeated 5-10 times for significance.",
-            "Backend verification for anything that can write or send - diff the database and "
-            "pull the audit log. See agent_tool_exploitation.py.",
             "Sign-off from program staff on what 'correct' means for each eligibility question, "
             "obtained BEFORE testing. Otherwise you cannot tell a biased answer from an answer "
             "that is simply wrong for everyone.",
         ),
-        requires_authorization=True,
         objectives_file="config/objectives/constituent_decision.yaml",
     ),
 }
@@ -342,6 +277,11 @@ def with_env_overrides(values: dict[str, str]) -> dict[str, str]:
     return {key: os.getenv(env_var(key)) or default for key, default in values.items()}
 
 
+def placeholders() -> dict[str, str]:
+    """The value of every {{ token }} for this run: PLACEHOLDERS, with any .env settings."""
+    return with_env_overrides(PLACEHOLDERS)
+
+
 def get_profile(name: str | None = None) -> Profile:
     """Return the profile named by RT_PROFILE (or the argument).
 
@@ -358,7 +298,6 @@ def get_profile(name: str | None = None) -> Profile:
             "Defined in harnesses/pyrit_campaigns/profiles.py."
         )
     profile = PROFILES[key]
-    profile = replace(profile, placeholders=with_env_overrides(profile.placeholders))
     own = os.getenv("RT_OBJECTIVES_FILE", "").strip()
     if own:
         profile = replace(profile, objectives=load_objectives_file(own), objectives_file=own)
@@ -368,31 +307,20 @@ def get_profile(name: str | None = None) -> Profile:
 def describe(profile: Profile) -> str:
     """The banner a campaign prints before it starts sending prompts.
 
-    Leaves out the threat model: it is the same on every run, and is read here, in
-    this file, when choosing a profile.
-
-    The authorization warning prints for a profile that requires it, and for any run
-    against an app, whatever the profile: an app is a real system. It names whichever
-    is the reason - the app, if both - and does not stop the run.
+    Any run against an app warns about authorization, whatever the profile: an app is
+    a real system. The warning does not stop the run.
     """
     lines = [
         "=" * 78,
         f"PROFILE: {profile.key}",
         profile.description,
         "=" * 78,
-        f"datasets: {', '.join(profile.datasets)}",
-        f"rubrics:  {', '.join(profile.rubrics)}",
+        f"probes: {profile.probes}",
     ]
     if resolve_provider("target") == "app":
         lines += [
             "",
             "!! Runs against an app need a non-production instance, synthetic data only, and",
             "!! written authorization from the system owner before you run them.",
-        ]
-    elif profile.requires_authorization:
-        lines += [
-            "",
-            "!! This profile requires a non-production instance, synthetic data only, and",
-            "!! written authorization from the system owner before you run it.",
         ]
     return "\n".join(lines)

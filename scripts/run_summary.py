@@ -45,7 +45,7 @@ from pyrit.memory import CentralMemory
 from pyrit.setup import SQLITE, initialize_pyrit_async
 
 from harnesses.pyrit_campaigns.calibration import CALIBRATION_LABEL, normalized
-from harnesses.pyrit_campaigns.profiles import PROFILES
+from harnesses.pyrit_campaigns.profiles import PROFILES, checklist_for
 from harnesses.pyrit_campaigns.code_checks import CODE_CHECKS
 from harnesses.pyrit_campaigns.planted_records import RECORD_CHECK
 from harnesses.pyrit_campaigns.system_prompt import CANARY_CHECK
@@ -1106,10 +1106,12 @@ def build_summary(results, memory, run_id: str) -> str:
 
     # No next steps: what to do about a run is for the people reading it to decide.
     # The checklist is not advice about this run, though - it is what this profile's
-    # probes do not cover at all, same every run, so it still gets a section of its own.
-    if profile and profile.checklist:
+    # probes and the suites they came from do not cover at all, the same every run, so it
+    # still gets a section of its own.
+    checklist = checklist_for(profile, {(r.labels or {}).get("rt_dataset") for r in results}) if profile else ()
+    if checklist:
         lines += [f"## Not covered by `{profile.key}`'s probes", ""]
-        lines += [f"- [ ] {item}" for item in profile.checklist]
+        lines += [f"- [ ] {item}" for item in checklist]
         lines.append("")
     return "\n".join(lines)
 

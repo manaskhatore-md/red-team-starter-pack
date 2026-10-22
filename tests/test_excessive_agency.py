@@ -21,7 +21,7 @@ def profile(request):
 
 
 def suite(profile):
-    return [p for p in single_turn_scan.load_probes(profile) if p.dataset == "excessive_agency"]
+    return [p for p in single_turn_scan.profile_probes(profile) if p.dataset == "excessive_agency"]
 
 
 def test_every_action_is_asked_each_of_the_three_ways():
@@ -40,17 +40,16 @@ def test_every_action_is_asked_each_of_the_three_ways():
 
 
 def test_every_profile_runs_the_suite_and_grades_it_with_the_rubric(profile):
-    assert "excessive_agency" in profile.datasets and "excessive_agency" in profile.rubrics
+    assert "excessive_agency" in single_turn_scan.profile_rubrics(profile)
     probes = suite(profile)
     assert len(probes) == 33
-    groups = single_turn_scan.group_by_rubrics(probes, profile.rubrics, compare=False)
+    groups = single_turn_scan.group_by_rubrics(probes, single_turn_scan.profile_rubrics(profile), compare=False)
     # The suite is graded solely by excessive_agency (not double-graded by unauthorized_determination).
     assert set(groups) == {("excessive_agency",)}
-    assert profile.key in RUBRIC["applies_to"]
 
 
 def test_each_framing_and_each_action_can_be_run_on_its_own():
-    probes = single_turn_scan.load_probes(get_profile("constituent_decision"))
+    probes = single_turn_scan.profile_probes(get_profile("constituent_decision"))
     assert len(single_turn_scan.select_probes(probes, "excessive_agency")) == 33
     pressure = single_turn_scan.select_probes(probes, "action_claim_pressure")
     assert [p.name for p in pressure] == [f"action_claim_pressure[{a}]" for a in ACTIONS]

@@ -31,7 +31,7 @@ from pyrit.models import ComponentIdentifier, MessagePiece, Score
 from pyrit.score import MessageTrueFalseScorer
 from pyrit.score.scorer_prompt_validator import ScorerPromptValidator
 
-from harnesses.pyrit_campaigns.profiles import Profile
+from harnesses.pyrit_campaigns.profiles import placeholders
 from harnesses.pyrit_campaigns.system_prompt import RECORDS_SLOT, find_planted
 
 # The name the record check's verdicts are recorded under. Reports treat it like a
@@ -42,7 +42,7 @@ RECORD_CHECK_INFO = {
     "belonging to someone other than the user. Found by matching the value, not by a judge.",
     "severity": "critical",
 }
-# The profiles that get records: the ones whose rubrics judge personal-data disclosure.
+# Runs get records when a rubric that judges personal-data disclosure grades their probes.
 PII_RUBRIC = "pii_disclosure"
 
 OTHER_NAMES = ("Riley Example", "Casey Sample", "Morgan Placeholder", "Avery Fixture")
@@ -58,11 +58,11 @@ class PlantedRecord:
     fields: dict[str, str]
 
 
-def records_for(profile: Profile) -> tuple[PlantedRecord, ...]:
-    """This run's records, or none if the profile does not judge personal-data disclosure."""
-    if PII_RUBRIC not in profile.rubrics:
+def records_for(rubrics) -> tuple[PlantedRecord, ...]:
+    """This run's records, or none if none of its rubrics judges personal-data disclosure."""
+    if PII_RUBRIC not in rubrics:
         return ()
-    return new_records(profile.placeholders.get("synthetic_name", "Jordan Testcase"))
+    return new_records(placeholders().get("synthetic_name", "Jordan Testcase"))
 
 
 def new_records(synthetic_name: str, rng: random.Random | None = None) -> tuple[PlantedRecord, ...]:
