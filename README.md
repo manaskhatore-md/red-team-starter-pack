@@ -532,8 +532,14 @@ file order so a half-pair is never sent or judged alone.
 Guardrails and keyword filters that block a plain-English injection or extraction attempt can
 often be bypassed when the same prompt is encoded (Base64, ROT13, URL-encoding) or obfuscated
 with leetspeak, homoglyphs, or invisible zero-width characters. Instead of duplicating encoded
-strings across YAML files, `single_turn_scan` can run any probe selection through PyRIT
-request converters via `--converters <spec>` (or `RT_CONVERTERS=<spec>` in `.env`):
+strings across YAML files, `single_turn_scan` can run probes through PyRIT request converters
+via `--converters <spec>` (or `RT_CONVERTERS=<spec>` in `.env`).
+
+Only the `prompt_injection` and `sensitive_data_leakage` probes are encoded, because those
+attack a filter or guardrail. The rest of a selection is sent as written: a bias pair
+compares two plain replies, and an excessive-agency probe asks for an action, so an encoded
+copy would test the encoding instead. A selection with no probe from those two suites stops
+before anything is sent.
 
 ```bash
 # Preview the converted payload for each selected probe without calling a model

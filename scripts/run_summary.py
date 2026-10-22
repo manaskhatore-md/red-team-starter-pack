@@ -50,6 +50,7 @@ from harnesses.pyrit_campaigns.code_checks import CODE_CHECKS
 from harnesses.pyrit_campaigns.planted_records import RECORD_CHECK
 from harnesses.pyrit_campaigns.system_prompt import CANARY_CHECK
 from scripts.export_finding_report import (
+    encoding_label,
     flagged_rubrics,
     format_scores,
     format_transcript,
@@ -233,6 +234,17 @@ def probe_name(result) -> str:
     return (result.labels or {}).get("rt_probe") or cell(result.objective, 60)
 
 
+def encoding_of(result) -> str:
+    """The converters a probe was sent through (--converters), or "" if it was sent as written."""
+    return encoding_label(result.labels or {})
+
+
+def shown_name(result) -> str:
+    """The probe's name, marked with its converters when it was sent encoded."""
+    encoding = encoding_of(result)
+    return probe_name(result) + (f" [{encoding}]" if encoding else "")
+
+
 def fixed_replies(entries, fallbacks: set[str] = frozenset()) -> list[dict]:
     """The fixed replies in a run, most common first: {"text", "members", "probes", "fallback"}.
 
@@ -252,7 +264,7 @@ def fixed_replies(entries, fallbacks: set[str] = frozenset()) -> list[dict]:
             groups[text].append(e)
     out = []
     for text, members in groups.items():
-        probes = sorted({probe_name(e["result"]) for e in members})
+        probes = sorted({shown_name(e["result"]) for e in members})
         questions = {(e["result"].labels or {}).get("rt_pair_id") or probe_name(e["result"]) for e in members}
         if text in fallbacks or len(questions) >= FIXED_REPLY_QUESTIONS:
             out.append({"text": text, "members": members, "probes": probes, "fallback": text in fallbacks})
@@ -322,11 +334,14 @@ def no_reply_reasons(no_reply) -> str:
 
 
 def failure_rates(entries) -> list[dict]:
-    """One row per probe: how many of its repeats were flagged, passed, or have no verdict."""
+    """One row per probe: how many of its repeats were flagged, passed, or have no verdict.
+
+    A probe sent both as written and encoded gets a row for each.
+    """
     rows: dict[tuple[str, str], dict] = {}
     for e in entries:
         result_labels = e["result"].labels or {}
-        key = (result_labels.get("rt_dataset", "-"), result_labels.get("rt_probe") or cell(e["result"].objective, 60))
+        key = (result_labels.get("rt_dataset", "-"), shown_name(e["result"]))
         row = rows.setdefault(key, {"dataset": key[0], "probe": key[1], "flagged": 0, "passed": 0, "no_verdict": 0})
         if e["verdict"] in (FLAGGED, ACHIEVED):
             row["flagged"] += 1
@@ -433,7 +448,10 @@ def build_summary(results, memory, run_id: str) -> str:
         raise SystemExit(f"Run {run_id[:8]} has no probe results: the scan stopped after calibration.")
     results = sorted(
         results,
-        key=lambda r: ((r.labels or {}).get("rt_dataset", ""), (r.labels or {}).get("rt_probe", ""), r.objective, repeat_of(r)),
+        key=lambda r: (
+            (r.labels or {}).get("rt_dataset", ""), (r.labels or {}).get("rt_probe", ""), r.objective, encoding_of(r),
+            repeat_of(r),
+        ),
     )
     rubrics = load_rubrics()
     entries = []
@@ -551,7 +569,11 @@ def build_summary(results, memory, run_id: str) -> str:
     if labels.get("rt_probes"):
         lines.append(f"| Probe filter | `{labels['rt_probes']}` |")
     if labels.get("rt_converters"):
-        lines.append(f"| Converters | `{labels['rt_converters']}` |")
+        encoded_in = sorted({(e["result"].labels or {}).get("rt_dataset", "-") for e in entries if encoding_of(e["result"])})
+        lines.append(
+            f"| Converters | `{labels['rt_converters']}`, on the {' and '.join(encoded_in) or 'no'} probes "
+            "(marked with it below) |"
+        )
     if started:
         local = started.astimezone()
         lines.append(f"| Run started | {local:%Y-%m-%d %H:%M} {local.tzname()} ({started:%H:%M} UTC) |")
@@ -811,7 +833,7 @@ def build_summary(results, memory, run_id: str) -> str:
     lines += ["## Every result", "", "| # | Verdict | Dataset | Probe | Graded by |", "|---|---|---|---|---|"]
     for e in entries:
         result_labels = e["result"].labels or {}
-        probe = with_repeat(result_labels.get("rt_probe") or cell(e["result"].objective, 60), e["result"])
+        probe = with_repeat(shown_name(e["result"]), e["result"])
         checks = e["graded_by"] + {True: ["canary token LEAKED"], False: ["canary token"], None: []}[e["canary"]]
         checks += {True: ["planted records LEAKED"], False: ["planted records"], None: []}[e["records"]]
         checks += [f"{check} FLAGGED" for check, verdict in e["other_checks"].items() if verdict]
@@ -876,7 +898,7 @@ def build_summary(results, memory, run_id: str) -> str:
             "",
         ]
         for e in asked:
-            name = with_repeat(probe_name(e["result"]), e["result"])
+            name = with_repeat(shown_name(e["result"]), e["result"])
             lines += [f"**[{e['number']}](#result-{e['number']}) {name}** ({e['verdict']})", "", fence(reply_as_sent(e["messages"])), ""]
 
     if pairs:
@@ -935,13 +957,15 @@ def build_summary(results, memory, run_id: str) -> str:
     for e in entries:
         result = e["result"]
         result_labels = result.labels or {}
-        name = with_repeat(result_labels.get("rt_probe") or cell(result.objective, 60), result)
+        name = with_repeat(shown_name(result), result)
         lines += [f'<a id="result-{e["number"]}"></a>', f"### {e['number']}. {e['verdict']}: {name}", ""]
         details = []
         if result_labels.get("rt_dataset"):
             details.append(f"dataset `{result_labels['rt_dataset']}`")
         if result_labels.get("rt_pair_id"):
             details.append(f"pair `{result_labels['rt_pair_id']}`, variant `{result_labels.get('rt_variant')}`")
+        if encoding_of(result):
+            details.append(f"sent encoded with `{encoding_of(result)}`; the transcript shows the original and what was sent")
         if campaign in MULTI_TURN_CAMPAIGNS:
             details.append(f"{result.executed_turns} turn(s), outcome `{result.outcome.value}`")
         if result.outcome_reason and (campaign in MULTI_TURN_CAMPAIGNS or result.outcome.value == "error"):

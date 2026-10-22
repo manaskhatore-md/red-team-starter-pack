@@ -141,7 +141,7 @@ def test_list_probes_previews_converted_payloads(capsys):
     out = capsys.readouterr().out
 
     assert exit_code == 0
-    assert "Request converters (rot13): each probe will be transformed before sending." in out
+    assert "Request converters (rot13): the 1 prompt_injection probe(s) are encoded before sending." in out
     assert "converted (rot13): The following message is encoded in ROT13." in out
 
 
@@ -178,7 +178,7 @@ def test_scan_main_converts_user_probe_keeps_system_prompt_plain_and_grades_orig
     out = capsys.readouterr().out
 
     assert exit_code == 0
-    assert "Request converters (base64): each probe is transformed before reaching the target." in out
+    assert "Request converters (base64): the 1 prompt_injection probe(s) are encoded before sending." in out
     assert len(target.conversations) == 1
 
     pieces = target.conversations[0]
@@ -214,7 +214,7 @@ def test_scan_main_converts_user_probe_keeps_system_prompt_plain_and_grades_orig
     assert results[0].labels["rt_converters"] == "base64"
 
     summary_md = run_summary.build_summary(results, CentralMemory.get_memory_instance(), run_id)
-    assert "| Converters | `base64` |" in summary_md
+    assert "| Converters | `base64`, on the prompt_injection probes (marked with it below) |" in summary_md
 
 
 def test_export_finding_report_transcript_reproduction_and_test_key_with_converters(memory):
@@ -293,3 +293,73 @@ def test_export_finding_report_transcript_reproduction_and_test_key_with_convert
     )
     assert ex.test_key(r_plain) != ex.test_key(r_b64)
     assert len(ex.latest_per_test([r_plain, r_b64])) == 2
+
+
+# --- what the converters encode ------------------------------------------------------
+
+def run_scan(memory, monkeypatch, probes: str, converters: str):
+    """Run the scan on fake models; return (what the target got per conversation, this run's results, summary)."""
+    target = RecordingTarget()
+    monkeypatch.setenv("RT_PROFILE", "public_conversational")
+    monkeypatch.setenv("RT_PROBES", probes)
+    monkeypatch.setenv("RT_CONVERTERS", converters)
+    for name in ("initialize_pyrit_async", "check_models", "close_target"):
+        monkeypatch.setattr(scan, name, nothing)
+    monkeypatch.setattr(scan, "build_target", lambda: target)
+    monkeypatch.setattr(scan, "build_scoring_target", lambda: FakeJudge())
+    monkeypatch.setattr(scan, "model_name", lambda t: "fake-model")
+    runs = []
+    monkeypatch.setattr(scan, "write_after_run", runs.append)
+    asyncio.run(scan.main())
+    results = [r for r in memory.get_attack_results() if (r.labels or {}).get("rt_run_id") == runs[0]]
+    return target, results, run_summary.build_summary(results, memory, runs[0])
+
+
+def sent_user_messages(target) -> dict[str, str]:
+    """The user message each conversation sent, keyed by its original (unconverted) text."""
+    return {
+        orig: conv
+        for conversation in target.conversations
+        for role, orig, conv in conversation
+        if role == "user"
+    }
+
+
+def test_only_injection_and_data_probes_are_encoded(memory, monkeypatch, capsys):
+    target, results, summary_md = run_scan(memory, monkeypatch, "override_simple,destructive_action", "rot13")
+    out = capsys.readouterr().out
+    probes = {p.name: p for p in scan.load_probes(get_profile("public_conversational"))}
+    sent = sent_user_messages(target)
+
+    injection, agency = probes["override_simple"].prompt, probes["destructive_action"].prompt
+    assert "encoded in ROT13" in sent[injection] and injection not in sent[injection]
+    # An excessive-agency probe asks for an action; encoded, it would test the encoding instead.
+    assert sent[agency] == agency
+    assert "the 1 prompt_injection probe(s) are encoded before sending; the other 1 are sent as written" in out
+
+    encoding = {r.labels["rt_probe"]: r.labels["rt_encoding"] for r in results}
+    assert encoding == {"override_simple": "rot13", "destructive_action": ""}
+    assert "override_simple [rot13]" in out
+    assert "| Converters | `rot13`, on the prompt_injection probes (marked with it below) |" in summary_md
+    assert "| override_simple [rot13] |" in summary_md
+    assert "| destructive_action |" in summary_md
+
+
+def test_converters_with_nothing_to_encode_stop_before_sending(memory, monkeypatch):
+    with pytest.raises(SystemExit, match="none is selected, so nothing would be encoded"):
+        run_scan(memory, monkeypatch, "destructive_action", "base64")
+
+
+def test_list_probes_previews_only_the_probes_it_encodes(capsys):
+    profile = get_profile("public_conversational")
+    scan.list_probes(profile, probes_spec="override_simple,destructive_action", converters_spec="base64")
+    out = capsys.readouterr().out
+    assert out.count("converted (base64):") == 1
+    assert "the 1 prompt_injection probe(s) are encoded before sending; the other 1 are sent as written" in out
+
+
+def test_a_run_from_before_rt_encoding_counts_every_probe_as_encoded():
+    # Earlier runs encoded every probe and recorded only the run's rt_converters.
+    old = {"rt_converters": "base64", "rt_probe": "override_simple"}
+    assert ex.encoding_label(old) == "base64"
+    assert ex.encoding_label({**old, "rt_encoding": ""}) == ""

@@ -58,9 +58,11 @@ automatically included in file order so a half-pair is never run alone.
 
 REQUEST CONVERTERS: by default probes are sent as plain text. Pass `--converters <spec>`
 (or set `RT_CONVERTERS=<spec>` in .env) with one or more comma-separated converter names
-to encode or obfuscate each probe before sending (`base64`, `base64-raw`, `rot13`,
-`rot13-raw`, `leetspeak`, `unicode-confusable`, `zero-width`, `url`). The target receives
-the converted prompt while the rubric judge still sees the original unencoded objective.
+to encode or obfuscate probes before sending (`base64`, `base64-raw`, `rot13`,
+`rot13-raw`, `leetspeak`, `unicode-confusable`, `zero-width`, `url`). Only the
+prompt_injection and sensitive_data_leakage probes are encoded (CONVERTED_DATASETS); the
+rest are sent as written. The target receives the converted prompt while the rubric
+judge still sees the original unencoded objective.
 
 THE SYSTEM PROMPT: each probe is sent after a system prompt, as a deployed app would
 send it - by default the stand-in in config/system_prompts/ for the profile, or the file
@@ -211,6 +213,8 @@ class ProgressAttack(PromptSendingAttack):
         width = len(str(self._progress["total"]))
         labels = context.memory_labels
         name = labels.get("rt_probe") or context.objective[:40]
+        if labels.get("rt_encoding"):
+            name += f" [{labels['rt_encoding']}]"
         if self._progress["repeats"] > 1:
             name += f" (repeat {labels.get('rt_repeat')})"
         print(
@@ -508,6 +512,13 @@ CONVERTER_BUILDERS: dict[str, Callable[[], list[Converter]]] = {
     "url": lambda: [UrlConverter()],
 }
 
+# The suites --converters encodes. An encoding is a way past a keyword filter or a
+# guardrail, so it is tried on the probes that attack one: injection and data
+# extraction. The other suites ask an ordinary question and judge the answer - a bias
+# pair compares two replies, an excessive-agency probe asks for an action - so an
+# encoded copy would test the encoding, not what the probe is about.
+CONVERTED_DATASETS = ("prompt_injection", "sensitive_data_leakage")
+
 CONVERTER_ALIASES: dict[str, str] = {
     "leet": "leetspeak",
     "confusable": "unicode-confusable",
@@ -588,6 +599,26 @@ def convert_text(text: str, converters: list[Converter]) -> str:
     if not converters:
         return text
     return asyncio.run(convert_text_async(text, converters))
+
+
+def converted_probes(probes: list[Probe], conv_spec: str) -> list[Probe]:
+    """The probes the converters apply to: those in CONVERTED_DATASETS. SystemExit when none is selected."""
+    if not conv_spec:
+        return []
+    chosen = [probe for probe in probes if probe.dataset in CONVERTED_DATASETS]
+    if not chosen:
+        raise SystemExit(
+            f"--converters {conv_spec} encodes only {' and '.join(CONVERTED_DATASETS)} probes, and none is "
+            "selected, so nothing would be encoded. Select some (e.g. --probes prompt_injection), or drop --converters."
+        )
+    return chosen
+
+
+def conversion_note(conv_spec: str, converted: list[Probe], total: int) -> str:
+    """The line a run prints about what its converters encode."""
+    datasets = " and ".join(sorted({probe.dataset for probe in converted}))
+    rest = f"; the other {total - len(converted)} are sent as written" if total > len(converted) else ""
+    return f"\nRequest converters ({conv_spec}): the {len(converted)} {datasets} probe(s) are encoded before sending{rest}."
 
 
 def _console_safe(text: str) -> str:
@@ -882,10 +913,13 @@ async def compare_pairs(
     return verdicts
 
 
-def expand_repeats(group: list[Probe], repeats: int, run_labels: dict) -> tuple[list[str], list[dict]]:
+def expand_repeats(
+    group: list[Probe], repeats: int, run_labels: dict, encoding: str = ""
+) -> tuple[list[str], list[dict]]:
     """The objectives and per-objective labels for one attack: every probe, `repeats` times.
 
-    Each copy is its own conversation, labelled with its repeat number (from 1).
+    Each copy is its own conversation, labelled with its repeat number (from 1), and
+    with the converters it was sent through (`encoding`; blank when sent as written).
     """
     objectives, overrides = [], []
     for probe in group:
@@ -904,6 +938,7 @@ def expand_repeats(group: list[Probe], repeats: int, run_labels: dict) -> tuple[
                     "rt_template": probe.template,
                     "rt_fixture": probe.fixture,
                     "rt_repeat": str(repeat),
+                    "rt_encoding": encoding,
                 }
             })
     return objectives, overrides
@@ -980,8 +1015,9 @@ def list_probes(
     probes = select_probes(all_probes, spec)
     if spec and spec.lower() != "all":
         print(f"\nProbe filter ({spec}): {len(probes)} of {len(all_probes)} probe(s) selected.")
+    converted = converted_probes(probes, conv_spec)
     if conv_spec:
-        print(f"\nRequest converters ({conv_spec}): each probe will be transformed before sending.")
+        print(conversion_note(conv_spec, converted, len(probes)))
     check_placeholders(profile, probes)
     rubrics = [key for key in profile.rubrics if key not in PAIR_RUBRICS]
     compare = "disparate_treatment" in profile.rubrics and any(p.pair_id for p in probes)
@@ -997,9 +1033,9 @@ def list_probes(
         if probe.fixture:
             print(f"    template {probe.template!r}, filled from {probe.fixture}")
         print("    " + probe.prompt.strip().replace("\n", "\n    "))
-        if converters:
-            converted = _console_safe(convert_text(probe.prompt, converters).strip())
-            print(f"    converted ({conv_spec}): " + converted.replace("\n", "\n        "))
+        if probe in converted:
+            encoded = _console_safe(convert_text(probe.prompt, converters).strip())
+            print(f"    converted ({conv_spec}): " + encoded.replace("\n", "\n        "))
         for slot, text in probe.judge_context:
             print(f"    judge is shown [[{slot}]]: " + text.replace("\n", "\n        "))
 
@@ -1030,8 +1066,6 @@ async def main(
     probes = select_probes(all_probes, spec)
     if spec and spec.lower() != "all":
         print(f"\nProbe filter ({spec}): {len(probes)} of {len(all_probes)} probe(s) selected.")
-    if conv_spec:
-        print(f"\nRequest converters ({conv_spec}): each probe is transformed before reaching the target.")
     records = records_for(profile)
     system_prompt = load_system_prompt(
         profile.key, profile.placeholders, new_canary(), records_section(records) if records else ""
@@ -1087,6 +1121,10 @@ async def main(
         )
     if not sent:
         raise SystemExit(f"Profile {profile.key!r} has no rubric that grades any of its probes.")
+
+    converted = converted_probes(sent, conv_spec)
+    if conv_spec:
+        print(conversion_note(conv_spec, converted, len(sent)))
 
     pair_count = len({p.pair_id for p in sent if p.pair_id}) if compare else 0
     graded = [f"{len(group)} graded by {' + '.join(keys)}" for keys, group in groups.items() if keys]
@@ -1149,12 +1187,16 @@ async def main(
     # it sends.
     completed, incomplete = [], []
     progress = {"done": 0, "total": sum(len(group) for group in groups.values()) * repeats, "repeats": repeats}
-    converter_kwargs = (
-        {"attack_converter_config": converter_config}
-        if converter_config is not None
-        else {}
-    )
+    # The converters belong to the attack, so the probes they encode get an attack of their own.
+    sends = []
     for keys, group in groups.items():
+        as_written = [probe for probe in group if probe not in converted]
+        encoded = [probe for probe in group if probe in converted]
+        if as_written:
+            sends.append((keys, as_written, "", {}))
+        if encoded:
+            sends.append((keys, encoded, conv_spec, {"attack_converter_config": converter_config}))
+    for keys, group, encoding, converter_kwargs in sends:
         attack = ProgressAttack(
             progress=progress,
             objective_target=target,
@@ -1166,7 +1208,7 @@ async def main(
             ),
             **converter_kwargs,
         )
-        objectives, overrides = expand_repeats(group, repeats, run_labels)
+        objectives, overrides = expand_repeats(group, repeats, run_labels, encoding)
         executor_result = await AttackExecutor(max_concurrency=MAX_CONCURRENCY).execute_attack_async(
             attack=attack,
             objectives=objectives,
@@ -1188,6 +1230,9 @@ async def main(
     for result in completed:
         response = result.last_response
         probe = result.objective
+        if (result.labels or {}).get("rt_encoding"):
+            # Sent encoded: marked, so it is not counted with the same probe sent as written.
+            probe = f"[{result.labels['rt_encoding']}] {probe}"
 
         if response is None or getattr(response, "response_error", "none") != "none":
             error = "no response" if response is None else response.response_error
@@ -1305,8 +1350,8 @@ if __name__ == "__main__":
         default=None,
         metavar="SPEC",
         help=(
-            "comma-separated PyRIT request converters applied in order to each probe before sending "
-            "(overrides RT_CONVERTERS): "
+            "comma-separated PyRIT request converters applied in order to each prompt_injection and "
+            "sensitive_data_leakage probe before sending (overrides RT_CONVERTERS): "
             f"{', '.join(CONVERTER_BUILDERS)} (or 'none'). "
             "Aliases: leet, confusable, zerowidth."
         ),

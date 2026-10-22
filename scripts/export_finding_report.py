@@ -193,16 +193,29 @@ def reproducibility(result, all_results, memory) -> str:
     return text
 
 
+def encoding_label(labels: dict) -> str:
+    """The converters a result's probe was sent through (--converters), or "" if it was sent as written.
+
+    Runs from before rt_encoding was recorded encoded every probe with the run's converters.
+    """
+    return labels["rt_encoding"] if "rt_encoding" in labels else labels.get("rt_converters") or ""
+
+
 def probe_step(labels: dict) -> str:
     """Where the probe is written, as a reproduction step: its dataset, and for a template, the fixture entry."""
     dataset = dataset_path(labels.get("rt_dataset", "")).relative_to(REPO_ROOT).as_posix()
+    encoded = (
+        f" It was sent encoded with `{encoding_label(labels)}`; the transcript shows what the target received."
+        if encoding_label(labels)
+        else ""
+    )
     if labels.get("rt_template") and labels.get("rt_fixture"):
         fixture_file, _, entry = labels["rt_fixture"].partition("#")
         return (
             f"The probe is `{labels.get('rt_probe')}`: template `{labels['rt_template']}` in `{dataset}`, "
-            f"filled with entry `{entry}` of `{fixture_file}`. The text it sends is the Objective above."
+            f"filled with entry `{entry}` of `{fixture_file}`. The text it sends is the Objective above.{encoded}"
         )
-    return f"The probe is `{labels.get('rt_probe')}` in `{dataset}`. The text it sends is the Objective above."
+    return f"The probe is `{labels.get('rt_probe')}` in `{dataset}`. The text it sends is the Objective above.{encoded}"
 
 
 def reproduction_steps(labels: dict) -> str:
@@ -418,10 +431,11 @@ def test_key(result) -> tuple:
     """What makes two results runs of the same test: the probe, not only its text.
 
     Several probes can send the same words: the English baseline of each language pair,
-    and both halves of a control pair. The dataset, probe name, and converter chain keep them apart.
+    and both halves of a control pair. The dataset and probe name keep them apart, and the
+    converters keep a probe sent encoded apart from the same probe sent as written.
     """
     labels = result.labels or {}
-    return (labels.get("rt_dataset"), labels.get("rt_probe"), labels.get("rt_converters") or "", result.objective)
+    return (labels.get("rt_dataset"), labels.get("rt_probe"), encoding_label(labels), result.objective)
 
 
 def latest_per_test(results) -> list:
