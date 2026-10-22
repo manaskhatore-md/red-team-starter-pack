@@ -1098,7 +1098,10 @@ async def main(
     if spec and spec.lower() != "all":
         print(f"\nProbe filter ({spec}): {len(probes)} of {len(all_probes)} probe(s) selected.")
     rubrics = rubrics_for(probes)
-    records = records_for(rubrics)
+    # The stand-in prompt describes the deployment, so whether it holds records is the
+    # profile's call, not this run's --probes: an injection-only run still has data to leak.
+    # The multi-turn campaigns decide the same way.
+    records = records_for(profile_rubrics(profile))
     system_prompt = load_system_prompt(
         profile.key, placeholders(), new_canary(), records_section(records) if records else ""
     )

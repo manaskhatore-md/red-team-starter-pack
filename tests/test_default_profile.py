@@ -99,6 +99,12 @@ def test_a_named_profile_runs_its_own_selection(capsys):
     assert "94 of 94 probe(s) would be sent" in capsys.readouterr().out
 
 
+def test_narrowing_the_probes_keeps_the_profiles_planted_records(monkeypatch, clean_env, memory, capsys):
+    # The records belong to the deployment the prompt describes, not to this run's selection.
+    scan_until_sending(monkeypatch, "prompt_injection")
+    assert "It also holds 2 fake records of other people" in capsys.readouterr().out
+
+
 def test_a_run_against_an_app_warns_about_authorization_with_no_profile_set(monkeypatch, clean_env, memory, capsys):
     clean_env.setenv("RT_PROVIDER", "app")
     clean_env.setenv("RT_JUDGE_PROVIDER", "gemini")
