@@ -99,6 +99,7 @@ import sys
 import time
 import uuid
 from collections import Counter, defaultdict
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import NamedTuple
 from pathlib import Path
