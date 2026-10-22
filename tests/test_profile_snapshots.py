@@ -1,8 +1,7 @@
 """What each profile runs today, pinned, so making RT_PROFILE optional cannot change it by accident.
 
-RT_PROFILE is becoming optional: unset, a run will use a built-in default instead of
-internal_productivity, and the named profiles stay as presets. Each named profile has
-to keep running what it runs today: the same probes, numbered the same way for
+RT_PROFILE is optional: unset, a run uses the built-in default, and the named profiles
+are presets. Each profile has to keep running what it runs today: the same probes, numbered the same way for
 --probes 1-15, scored by the same rubrics and checks, the same pairs compared, the same
 planted records and stand-in system prompt, and the same multi-turn objectives.
 
@@ -46,7 +45,8 @@ RUBRICS = set(yaml.safe_load(
     (REPO_ROOT / "harnesses" / "pyrit_campaigns" / "state_policy_rubric.yaml").read_text(encoding="utf-8")
 )["rubrics"])
 UPDATE = os.getenv("UPDATE_PROFILE_SNAPSHOTS") == "1"
-AUTHORIZATION_BANNER = "This profile requires a non-production instance"
+# Both wordings: "Runs against an app need a ..." and "This profile requires a ...".
+AUTHORIZATION_BANNER = "non-production instance, synthetic data only"
 
 
 def digest(text: str) -> str:
@@ -200,9 +200,13 @@ def saved_scan(key: str) -> dict:
     return json.loads((SNAPSHOTS / f"{key}.json").read_text(encoding="utf-8"))["single_turn_scan"]
 
 
-def test_an_unset_rt_profile_runs_internal_productivity(monkeypatch, clean_env, memory, capsys, fixed_randomness):
-    # CHANGES ON PURPOSE when RT_PROFILE becomes optional: unset then runs the built-in default.
-    assert scan_snapshot(None, monkeypatch, clean_env, memory, capsys) == saved_scan("internal_productivity")
+def test_an_unset_rt_profile_runs_the_default(monkeypatch, clean_env, memory, capsys, fixed_randomness):
+    assert scan_snapshot(None, monkeypatch, clean_env, memory, capsys) == saved_scan("default")
+
+
+def test_a_blank_rt_profile_runs_the_default(monkeypatch, clean_env, memory, capsys, fixed_randomness):
+    # .env.example ships RT_PROFILE= blank.
+    assert scan_snapshot("", monkeypatch, clean_env, memory, capsys) == saved_scan("default")
 
 
 def test_rt_profile_is_read_in_any_case(monkeypatch, clean_env, memory, capsys, fixed_randomness):
