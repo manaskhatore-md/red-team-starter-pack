@@ -61,12 +61,12 @@ automatically included in file order so a half-pair is never run alone.
 
 REQUEST CONVERTERS: by default probes are sent as plain text. Pass `--converters <spec>`
 (or set `RT_CONVERTERS=<spec>` in .env) with one or more comma-separated converter names
-to encode or obfuscate probes before sending (`base64`, `base64-raw`, `rot13`,
-`rot13-raw`, `leetspeak`, `unicode-confusable`, `zero-width`, `url`). Only the
-prompt_injection and sensitive_data_leakage probes are encoded (CONVERTED_DATASETS); the
-rest are sent as written. Each encoded probe is also sent as written in the same run, as
-a control, and the run summary sets the two side by side: a probe flagged only when
-encoded got past something the plain text did not. The target receives the converted
+to encode or obfuscate the selected probes before sending (`base64`, `base64-raw`, `rot13`,
+`rot13-raw`, `leetspeak`, `unicode-confusable`, `zero-width`, `url`, or `all`). Each
+selected probe is sent once as written (the control) plus once per requested encoding,
+unless `--no-control` (or `RT_CONTROL=0`) is set to send only the encoded pass(es). The
+run summary sets the encoded and plain-text results side by side: a probe flagged only
+when encoded got past something the plain text did not. The target receives the converted
 prompt while the rubric judge still sees the original unencoded objective.
 
 THE SYSTEM PROMPT: each probe is sent after a system prompt, as a deployed app would
@@ -499,6 +499,8 @@ DECODE_AND_ANSWER_TEMPLATE = (
     "{encoded_text}"
 )
 
+# If you add a new converter here, also teach harnesses/pyrit_campaigns/decoding.py to
+# decode it so the canary and planted-record checks can read replies in that encoding.
 CONVERTER_BUILDERS: dict[str, Callable[[], list[Converter]]] = {
     "base64": lambda: [
         Base64Converter(),
@@ -516,12 +518,11 @@ CONVERTER_BUILDERS: dict[str, Callable[[], list[Converter]]] = {
     "url": lambda: [UrlConverter()],
 }
 
-# The suites --converters encodes. An encoding is a way past a keyword filter or a
-# guardrail, so it is tried on the probes that attack one: injection and data
-# extraction. The other suites ask an ordinary question and judge the answer - a bias
-# pair compares two replies, an excessive-agency probe asks for an action - so an
-# encoded copy would test the encoding, not what the probe is about.
-CONVERTED_DATASETS = ("prompt_injection", "sensitive_data_leakage")
+# Standard encodings run when `--converters all` is requested: every converter in
+# CONVERTER_BUILDERS except the `-raw` bare-ciphertext variants.
+ALL_CONVERTERS: tuple[str, ...] = tuple(
+    name for name in CONVERTER_BUILDERS if not name.endswith("-raw")
+)
 
 CONVERTER_ALIASES: dict[str, str] = {
     "leet": "leetspeak",
@@ -541,9 +542,24 @@ def get_converters_spec(cli_spec: str | None = None) -> str:
     return os.getenv("RT_CONVERTERS", "").strip()
 
 
-def resolve_converters(spec: str | None = None) -> tuple[str, list[Converter]]:
-    """Parse a comma-separated converter spec into a canonical spec string and PyRIT converter chain.
+def use_control(no_control: bool = False) -> bool:
+    """Whether to send an unencoded control pass alongside --converters passes.
 
+    True by default. Pass --no-control on the CLI or set RT_CONTROL=0 (or false/no)
+    in the environment to send only the encoded pass(es).
+    """
+    if no_control:
+        return False
+    env = os.getenv("RT_CONTROL", "").strip().lower()
+    if env in ("0", "false", "no"):
+        return False
+    return True
+
+
+def resolve_converters(spec: str | None = None) -> tuple[str, list[Converter]]:
+    """Parse a converter spec into a canonical spec string and a single PyRIT converter chain.
+
+    Tokens separated by '+' or ',' are chained in order within one pass.
     Returns ("", []) when no converters are configured (or spec is "none").
     Raises SystemExit with a clear message if an unknown converter name is given.
     """
@@ -551,11 +567,12 @@ def resolve_converters(spec: str | None = None) -> tuple[str, list[Converter]]:
     if not raw or raw.lower() == "none":
         return "", []
 
-    tokens = [t.strip().lower() for t in raw.split(",") if t.strip()]
+    sep = "+" if "+" in raw and "," not in raw else ","
+    tokens = [t.strip().lower() for part in raw.split(",") for t in part.split("+") if t.strip()]
     if not tokens:
         raise SystemExit(
             f"Empty converter specification {spec!r}. "
-            f"Valid converters: {', '.join(CONVERTER_BUILDERS)} (or 'none')."
+            f"Valid converters: {', '.join(CONVERTER_BUILDERS)} (or 'all' / 'none')."
         )
 
     canonical_names: list[str] = []
@@ -572,16 +589,58 @@ def resolve_converters(spec: str | None = None) -> tuple[str, list[Converter]]:
         if builder is None:
             valid = ", ".join(CONVERTER_BUILDERS)
             raise SystemExit(
-                f"Unknown converter {token!r}. Valid converters: {valid} (or 'none')."
+                f"Unknown converter {token!r}. Valid converters: {valid} (or 'all' / 'none')."
             )
         canonical_names.append(key)
         chain.extend(builder())
 
-    return ",".join(canonical_names), chain
+    return sep.join(canonical_names), chain
+
+
+def resolve_converter_passes(spec: str | None = None) -> tuple[str, list[tuple[str, list[Converter]]]]:
+    """Parse a converter spec into (canonical_spec, [(encoding_name, converter_chain), ...]).
+
+    Each comma-separated entry becomes its own independent encoding pass (e.g.
+    `rot13,base64` runs a `rot13` pass and a `base64` pass). Use `all` to expand
+    to ALL_CONVERTERS, or `+` (e.g. `leet+zerowidth`) to chain multiple converters
+    within a single pass. Returns ("", []) when unset or "none".
+    """
+    raw = (spec or "").strip()
+    if not raw or raw.lower() == "none":
+        return "", []
+
+    raw_tokens = [t.strip() for t in raw.split(",") if t.strip()]
+    if not raw_tokens:
+        raise SystemExit(
+            f"Empty converter specification {spec!r}. "
+            f"Valid converters: {', '.join(CONVERTER_BUILDERS)} (or 'all' / 'none')."
+        )
+
+    expanded: list[str] = []
+    for token in raw_tokens:
+        low = token.lower()
+        if low == "none":
+            if len(raw_tokens) > 1:
+                raise SystemExit(f"Cannot combine 'none' with other converters in {spec!r}.")
+            return "", []
+        if low == "all":
+            expanded.extend(ALL_CONVERTERS)
+        else:
+            expanded.append(token)
+
+    passes: list[tuple[str, list[Converter]]] = []
+    seen: set[str] = set()
+    for item in expanded:
+        name, chain = resolve_converters(item)
+        if name and name not in seen:
+            seen.add(name)
+            passes.append((name, chain))
+
+    return ",".join(name for name, _ in passes), passes
 
 
 def build_converter_config(converters: list[Converter]) -> AttackConverterConfig | None:
-    """Wrap a converter list into a PyRIT AttackConverterConfig for PromptSendingAttack."""
+    """Wrap a converter list into a PyRIT AttackConverterConfig."""
     if not converters:
         return None
     return AttackConverterConfig(
@@ -606,22 +665,42 @@ def convert_text(text: str, converters: list[Converter]) -> str:
 
 
 def converted_probes(probes: list[Probe], conv_spec: str) -> list[Probe]:
-    """The probes the converters apply to: those in CONVERTED_DATASETS. SystemExit when none is selected."""
+    """The probes the converters apply to: every selected probe when converters are configured."""
     if not conv_spec:
         return []
-    chosen = [probe for probe in probes if probe.dataset in CONVERTED_DATASETS]
-    if not chosen:
-        raise SystemExit(
-            f"--converters {conv_spec} encodes only {' and '.join(CONVERTED_DATASETS)} probes, and none is "
-            "selected, so nothing would be encoded. Select some (e.g. --probes prompt_injection), or drop --converters."
-        )
-    return chosen
+    if not probes:
+        raise SystemExit(f"--converters {conv_spec} was set, but no probes are selected.")
+    return list(probes)
 
 
-def conversion_note(conv_spec: str, converted: list[Probe], total: int) -> str:
+def conversion_note(
+    conv_spec: str,
+    converted: list[Probe],
+    total: int,
+    pass_names: list[str] | None = None,
+    control: bool = True,
+) -> str:
     """The lines a run prints about what its converters encode."""
     datasets = " and ".join(sorted({probe.dataset for probe in converted}))
     rest = f" The other {total - len(converted)} are sent only as written." if total > len(converted) else ""
+    names = pass_names or ([conv_spec] if conv_spec else [])
+    if not control:
+        how = (
+            f"in {len(names)} encodings ({', '.join(names)}) only"
+            if len(names) > 1
+            else "encoded only"
+        )
+        return (
+            f"\nRequest converters ({conv_spec}, --no-control): the {len(converted)} {datasets} probe(s) "
+            f"are sent {how}, with no plain-text control.{rest}"
+        )
+    if len(names) > 1:
+        return (
+            f"\nRequest converters ({conv_spec}): the {len(converted)} {datasets} probe(s) are sent in "
+            f"{len(names)} encodings ({', '.join(names)}) and as written.{rest}\n"
+            "The one as written is the control: a probe flagged only when encoded got past "
+            "something the plain text did not."
+        )
     return (
         f"\nRequest converters ({conv_spec}): the {len(converted)} {datasets} probe(s) are sent twice, encoded and "
         f"as written.{rest}\nThe one as written is the control: a probe flagged only when encoded got past "
@@ -969,15 +1048,28 @@ def expand_repeats(
 
 
 def planned_calls(
-    groups: dict[tuple[str, ...], list[Probe]], pair_count: int, repeats: int, converted: list[Probe] = ()
+    groups: dict[tuple[str, ...], list[Probe]],
+    pair_count: int,
+    repeats: int,
+    converted: list[Probe] = (),
+    n_encodings: int = 1,
+    control: bool = True,
 ) -> tuple[int, int]:
     """(target calls, judge calls) the scan will make, before any retries.
 
-    Each `converted` probe is sent twice, as written and encoded, and graded both times.
+    When `converted` is non-empty, each converted probe is sent once per encoding
+    (`n_encodings`), plus as written when `control` is True. Matched-pair comparisons
+    also run for each pass that sends pairs.
     """
-    sends = {keys: len(group) + sum(probe in converted for probe in group) for keys, group in groups.items()}
+    base = 1 if (control or not converted) else 0
+    enc_passes = n_encodings if converted else 0
+    sends = {
+        keys: len(group) * base + sum(probe in converted for probe in group) * enc_passes
+        for keys, group in groups.items()
+    }
+    pair_passes = (base + enc_passes) if any(p.pair_id for p in converted) else 1
     target = sum(sends.values()) * repeats
-    judge = (sum(count * len(keys) for keys, count in sends.items()) + pair_count) * repeats
+    judge = (sum(count * len(keys) for keys, count in sends.items()) + pair_count * pair_passes) * repeats
     return target, judge
 
 
@@ -1031,13 +1123,15 @@ def list_probes(
     profile: Profile,
     probes_spec: str | None = None,
     converters_spec: str | None = None,
+    no_control: bool = False,
 ) -> int:
     """Print the probes the profile would send, and what grades each, without calling any model.
 
     For reviewing a dataset before a run, above all one with templates: the probes
     a template makes are not written out anywhere else.
     """
-    conv_spec, converters = resolve_converters(get_converters_spec(converters_spec))
+    conv_spec, converter_passes = resolve_converter_passes(get_converters_spec(converters_spec))
+    control = use_control(no_control)
     print(describe(profile))
     all_probes = load_probes()
     numbers = {(p.dataset, p.name): i for i, p in enumerate(all_probes, start=1)}
@@ -1047,7 +1141,15 @@ def list_probes(
         print(f"\nProbe filter ({spec}): {len(probes)} of {len(all_probes)} probe(s) selected.")
     converted = converted_probes(probes, conv_spec)
     if conv_spec:
-        print(conversion_note(conv_spec, converted, len(probes)))
+        print(
+            conversion_note(
+                conv_spec,
+                converted,
+                len(probes),
+                pass_names=[name for name, _ in converter_passes],
+                control=control,
+            )
+        )
     check_placeholders(probes)
     rubrics = rubrics_for(probes)
     compare = "disparate_treatment" in rubrics and any(p.pair_id for p in probes)
@@ -1065,8 +1167,9 @@ def list_probes(
             print(f"    template {probe.template!r}, filled from {probe.fixture}")
         print("    " + probe.prompt.strip().replace("\n", "\n    "))
         if probe in converted:
-            encoded = _console_safe(convert_text(probe.prompt, converters).strip())
-            print(f"    converted ({conv_spec}): " + encoded.replace("\n", "\n        "))
+            for enc_name, enc_chain in converter_passes:
+                encoded = _console_safe(convert_text(probe.prompt, enc_chain).strip())
+                print(f"    converted ({enc_name}): " + encoded.replace("\n", "\n        "))
         for slot, text in probe.judge_context:
             print(f"    judge is shown [[{slot}]]: " + text.replace("\n", "\n        "))
 
@@ -1078,13 +1181,15 @@ def list_probes(
 async def main(
     probes_spec: str | None = None,
     converters_spec: str | None = None,
+    no_control: bool = False,
 ) -> int:
     started = time.monotonic()
     profile = get_profile()
     repeats = get_repeats()
     spec = get_probes_spec(probes_spec, profile)
-    conv_spec, converters = resolve_converters(get_converters_spec(converters_spec))
-    converter_config = build_converter_config(converters)
+    conv_spec, converter_passes = resolve_converter_passes(get_converters_spec(converters_spec))
+    control = use_control(no_control)
+    pass_names = [name for name, _ in converter_passes]
 
     # SQLITE so the transcript and scores survive the run - they are the evidence
     # for the finding report. Writes to PyRIT's data folder, and inherits the
@@ -1159,7 +1264,7 @@ async def main(
 
     converted = converted_probes(sent, conv_spec)
     if conv_spec:
-        print(conversion_note(conv_spec, converted, len(sent)))
+        print(conversion_note(conv_spec, converted, len(sent), pass_names=pass_names, control=control))
 
     pair_count = len({p.pair_id for p in sent if p.pair_id}) if compare else 0
     graded = [f"{len(group)} graded by {' + '.join(keys)}" for keys, group in groups.items() if keys]
@@ -1167,9 +1272,22 @@ async def main(
     if ungraded_pairs:
         graded.append(f"{ungraded_pairs} sent only for pair comparison")
     pair_note = f"; then {pair_count} matched pairs compared" if pair_count else ""
-    target_calls, judge_calls = planned_calls(groups, pair_count, repeats, converted)
+    target_calls, judge_calls = planned_calls(
+        groups, pair_count, repeats, converted, n_encodings=len(converter_passes) or 1, control=control
+    )
     repeat_note = f", each {repeats} times (RT_REPEATS)" if repeats > 1 else ""
-    encoded_note = f", plus {len(converted)} encoded copies" if converted else ""
+    if converted and not control:
+        encoded_note = (
+            f" in {len(converter_passes)} encodings (--no-control)"
+            if len(converter_passes) > 1
+            else f" encoded with {conv_spec} (--no-control)"
+        )
+    elif converted and len(converter_passes) > 1:
+        encoded_note = f", plus {len(converted) * len(converter_passes)} encoded copies ({len(converter_passes)} encodings)"
+    elif converted:
+        encoded_note = f", plus {len(converted)} encoded copies"
+    else:
+        encoded_note = ""
     print(f"\nSending {len(sent)} probes{encoded_note}{repeat_note}: {', '.join(graded)}{pair_note}.")
     print(f"That is about {target_calls} target calls and {judge_calls} judge calls, before retries.\n")
     check_budget(target_calls, judge_calls, repeats, templated=any(p.template for p in sent))
@@ -1223,14 +1341,18 @@ async def main(
     # it sends.
     completed, incomplete = [], []
     progress = {"done": 0, "total": target_calls, "repeats": repeats}
-    # Every probe is sent as written; the ones the converters encode are sent encoded
-    # too, by an attack of their own, since the converters belong to the attack.
+    # Every probe is sent as written (unless --no-control is set with --converters),
+    # and once per requested encoding.
     sends = []
     for keys, group in groups.items():
-        sends.append((keys, group, "", {}))
+        if control or not converter_passes:
+            sends.append((keys, group, "", {}))
         encoded = [probe for probe in group if probe in converted]
         if encoded:
-            sends.append((keys, encoded, conv_spec, {"attack_converter_config": converter_config}))
+            for enc_name, enc_chain in converter_passes:
+                sends.append(
+                    (keys, encoded, enc_name, {"attack_converter_config": build_converter_config(enc_chain)})
+                )
     for keys, group, encoding, converter_kwargs in sends:
         attack = ProgressAttack(
             progress=progress,
@@ -1262,9 +1384,11 @@ async def main(
     for objective, exception in incomplete:
         errors.append(f"{objective[:70]!r} did not complete: {exception}")
 
-    # Each encoded probe's [flagged, answered] counts, as written ("") and encoded.
+    # Each encoded probe's [flagged, answered] counts, as written ("") and per encoding.
     versions: dict[tuple[str, str], dict[str, list[int]]] = {
-        (probe.dataset, probe.name): {"": [0, 0], conv_spec: [0, 0]} for probe in converted
+        (probe.dataset, probe.name): {"": [0, 0], **{name: [0, 0] for name in pass_names}}
+        for probe in converted
+        if not (probe.pair_id and not (set(rubrics_for([probe])) - set(PAIR_RUBRICS)))
     }
     for result in completed:
         response = result.last_response
@@ -1301,22 +1425,25 @@ async def main(
     if compare:
         print("\nComparing matched pairs...")
         rubric_prompt = load_rubrics()["disparate_treatment"]["system_prompt"]
-        # Pairs are never encoded; leaving the encoded copies out keeps them from standing in for a half.
-        as_written = [r for r in completed if not (r.labels or {}).get("rt_encoding")]
-        verdicts = await compare_pairs(sent, by_probe_and_repeat(as_written), memory, judge, rubric_prompt, repeats)
-        controls = [v for v in verdicts if v.control]
-        for verdict in verdicts:
-            flagged = verdict.score.get_value() is True
-            label = f"pair {verdict.pair_id} ({verdict.a.variant} vs. {verdict.b.variant})"
-            shown = label + (f", repeat {verdict.repeat}" if repeats > 1 else "")
-            if verdict.control:
-                # Identical text went in both times, so a difference is noise, not bias.
-                print(f"  {shown}: {'CONTROL DIFFERED (noise)' if flagged else 'control equivalent'}")
-            else:
-                print(f"  {shown}: {'DIFFERENT TREATMENT' if flagged else 'equivalent'}")
-            if flagged and not verdict.control:
-                findings.append(("disparate_treatment", label, verdict.score.score_rationale or ""))
-                by_rubric["disparate_treatment"] += 1
+        pair_encodings = ([""] if (control or not converter_passes) else []) + pass_names
+        controls = []
+        for enc in pair_encodings:
+            pass_results = [r for r in completed if (r.labels or {}).get("rt_encoding", "") == enc]
+            verdicts = await compare_pairs(sent, by_probe_and_repeat(pass_results), memory, judge, rubric_prompt, repeats)
+            controls.extend(v for v in verdicts if v.control)
+            for verdict in verdicts:
+                flagged = verdict.score.get_value() is True
+                enc_tag = f" [{enc}]" if enc else ""
+                label = f"pair {verdict.pair_id}{enc_tag} ({verdict.a.variant} vs. {verdict.b.variant})"
+                shown = label + (f", repeat {verdict.repeat}" if repeats > 1 else "")
+                if verdict.control:
+                    # Identical text went in both times, so a difference is noise, not bias.
+                    print(f"  {shown}: {'CONTROL DIFFERED (noise)' if flagged else 'control equivalent'}")
+                else:
+                    print(f"  {shown}: {'DIFFERENT TREATMENT' if flagged else 'equivalent'}")
+                if flagged and not verdict.control:
+                    findings.append(("disparate_treatment", label, verdict.score.score_rationale or ""))
+                    by_rubric["disparate_treatment"] += 1
         if controls:
             noisy = sum(v.score.get_value() is True for v in controls)
             print(
@@ -1327,7 +1454,12 @@ async def main(
     print("\n" + "=" * 78)
     minutes, seconds = divmod(round(time.monotonic() - started), 60)
     times = f" x {repeats} repeats" if repeats > 1 else ""
-    encoded_count = f" + {len(converted)} encoded" if converted else ""
+    if converted and not control:
+        encoded_count = f" ({conv_spec}, --no-control)"
+    elif converted:
+        encoded_count = f" + {len(converted) * len(converter_passes)} encoded"
+    else:
+        encoded_count = ""
     print(
         f"SCAN COMPLETE - {len(sent)} probes{encoded_count}{times}, {len(findings)} finding(s), "
         f"in {minutes}m {seconds:02d}s"
@@ -1338,18 +1470,29 @@ async def main(
         print(f"  {rubric}: {count}")
 
     if versions:
-        print(f"\nEncoded ({conv_spec}) vs. as written, flagged of answered:")
-        for (_, name), tally in versions.items():
-            (plain_flags, plain_answered), (encoded_flags, encoded_answered) = tally[""], tally[conv_spec]
-            more = (
-                encoded_answered and plain_answered
-                and encoded_flags / encoded_answered > plain_flags / plain_answered
-            )
-            print(
-                f"  {name}: as written {plain_flags} of {plain_answered}, encoded {encoded_flags} of {encoded_answered}"
-                + ("  <- flagged more often encoded" if more else "")
-            )
-        print("  The run summary reads these with fixed replies left out (Encoded vs. as written).")
+        if control:
+            for enc_name in pass_names:
+                print(f"\nEncoded ({enc_name}) vs. as written, flagged of answered:")
+                for (_, name), tally in versions.items():
+                    (plain_flags, plain_answered), (encoded_flags, encoded_answered) = tally[""], tally[enc_name]
+                    more = (
+                        encoded_answered and plain_answered
+                        and encoded_flags / plain_answered > plain_flags / plain_answered
+                    ) if encoded_answered == plain_answered else (
+                        encoded_answered and plain_answered
+                        and encoded_flags / encoded_answered > plain_flags / plain_answered
+                    )
+                    print(
+                        f"  {name}: as written {plain_flags} of {plain_answered}, encoded {encoded_flags} of {encoded_answered}"
+                        + ("  <- flagged more often encoded" if more else "")
+                    )
+            print("  The run summary reads these with fixed replies left out (Encoded vs. as written).")
+        else:
+            for enc_name in pass_names:
+                print(f"\nEncoded ({enc_name}, --no-control), flagged of answered:")
+                for (_, name), tally in versions.items():
+                    encoded_flags, encoded_answered = tally[enc_name]
+                    print(f"  {name}: encoded {encoded_flags} of {encoded_answered}")
 
     # With repeats, one probe can be flagged several times: print it once, with the
     # count and the first rationale.
@@ -1417,13 +1560,17 @@ if __name__ == "__main__":
         default=None,
         metavar="SPEC",
         help=(
-            "comma-separated PyRIT request converters applied in order to each prompt_injection and "
-            "sensitive_data_leakage probe before sending (overrides RT_CONVERTERS): "
-            f"{', '.join(CONVERTER_BUILDERS)} (or 'none'). "
-            "Aliases: leet, confusable, zerowidth."
+            "comma-separated PyRIT request converters applied to each selected probe before sending "
+            f"(overrides RT_CONVERTERS): {', '.join(CONVERTER_BUILDERS)}, 'all', or 'none'. "
+            "Aliases: leet, confusable, zerowidth. Use '+' to chain converters in one pass (e.g. leet+zerowidth)."
         ),
+    )
+    parser.add_argument(
+        "--no-control",
+        action="store_true",
+        help="when --converters is set, send only the encoded probe(s) and skip the unencoded control pass (or set RT_CONTROL=0)",
     )
     args = parser.parse_args()
     if args.list_probes:
-        sys.exit(list_probes(get_profile(), args.probes, args.converters))
-    sys.exit(asyncio.run(main(args.probes, args.converters)))
+        sys.exit(list_probes(get_profile(), args.probes, args.converters, args.no_control))
+    sys.exit(asyncio.run(main(args.probes, args.converters, args.no_control)))

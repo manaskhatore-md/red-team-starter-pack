@@ -362,24 +362,40 @@ def encoding_comparison(entries) -> list[dict]:
     def counts():
         return {"flagged": 0, "passed": 0, "no_verdict": 0}
 
-    keyed = [((e["result"].labels or {}).get("rt_dataset", "-"), probe_name(e["result"]), e) for e in entries]
-    sent_encoded = {(dataset, name) for dataset, name, e in keyed if encoding_of(e["result"])}
-    rows: dict[tuple[str, str], dict] = {}
-    for dataset, name, e in keyed:
-        if (dataset, name) not in sent_encoded:
-            continue
-        row = rows.setdefault((dataset, name), {"dataset": dataset, "probe": name, "encoding": "",
-                                                "as_written": counts(), "encoded": counts()})
-        encoding = encoding_of(e["result"])
-        side = row["encoded"] if encoding else row["as_written"]
-        if encoding:
-            row["encoding"] = encoding
-        if e["verdict"] in (FLAGGED, ACHIEVED):
+    def add_verdict(side: dict, verdict: str) -> None:
+        if verdict in (FLAGGED, ACHIEVED):
             side["flagged"] += 1
-        elif e["verdict"] in (PASSED, HELD):
+        elif verdict in (PASSED, HELD):
             side["passed"] += 1
         else:
             side["no_verdict"] += 1
+
+    keyed = [
+        ((e["result"].labels or {}).get("rt_dataset", "-"), probe_name(e["result"]), e)
+        for e in entries
+        if e["verdict"] != PAIR_ONLY
+    ]
+    plain_counts: dict[tuple[str, str], dict] = {}
+    for dataset, name, e in keyed:
+        if not encoding_of(e["result"]):
+            add_verdict(plain_counts.setdefault((dataset, name), counts()), e["verdict"])
+
+    rows: dict[tuple[str, str, str], dict] = {}
+    for dataset, name, e in keyed:
+        encoding = encoding_of(e["result"])
+        if not encoding:
+            continue
+        row = rows.setdefault(
+            (dataset, name, encoding),
+            {
+                "dataset": dataset,
+                "probe": name,
+                "encoding": encoding,
+                "as_written": dict(plain_counts.get((dataset, name), counts())),
+                "encoded": counts(),
+            },
+        )
+        add_verdict(row["encoded"], e["verdict"])
     return list(rows.values())
 
 
@@ -466,7 +482,9 @@ def pair_verdicts(entries, fixed_texts: set[str] = frozenset()) -> list[dict]:
     for entry in entries:
         pair_id = (entry["result"].labels or {}).get("rt_pair_id")
         if pair_id:
-            pairs[(pair_id, repeat_of(entry["result"]))].append(entry)
+            enc = encoding_of(entry["result"])
+            shown_pair_id = f"{pair_id} [{enc}]" if enc else pair_id
+            pairs[(shown_pair_id, repeat_of(entry["result"]))].append(entry)
     out = []
     for (pair_id, repeat), members in sorted(pairs.items()):
         score = next(
@@ -557,7 +575,7 @@ def build_summary(results, memory, run_id: str) -> str:
         return repeats == 1 or p["verdict"] in PAIR_FLAGS
 
     def pair_anchor(p) -> str:
-        return f"pair-{p['pair_id']}-{p['repeat']}"
+        return re.sub(r"[^a-zA-Z0-9_-]+", "-", f"pair-{p['pair_id']}-{p['repeat']}").strip("-")
 
     counts = Counter(e["verdict"] for e in entries)
     flagged = counts[FLAGGED] + counts[ACHIEVED]
@@ -630,8 +648,13 @@ def build_summary(results, memory, run_id: str) -> str:
             if has_control
             else "with no plain-text control in this run"
         )
+        scope = (
+            "on every objective"
+            if encoded_in == ["-"]
+            else f"on the {' and '.join(encoded_in) or 'no'} probes"
+        )
         lines.append(
-            f"| Converters | `{labels['rt_converters']}`, on the {' and '.join(encoded_in) or 'no'} probes "
+            f"| Converters | `{labels['rt_converters']}`, {scope} "
             f"(marked with it below), {control} |"
         )
     if started:
@@ -740,10 +763,11 @@ def build_summary(results, memory, run_id: str) -> str:
         )
     if comparison and has_control:
         worse = [r for r in comparison if encoding_reading(r["as_written"], r["encoded"]) in ENCODING_GOT_THROUGH]
-        encoding = comparison[0]["encoding"]
+        encodings = sorted({r["encoding"] for r in comparison})
+        encoding_str = ", ".join(f"`{enc}`" for enc in encodings)
         if worse:
             lines.append(
-                f"- **{len(worse)} of {len(comparison)} probe(s) were flagged more often encoded with `{encoding}` "
+                f"- **{len(worse)} of {len(comparison)} probe(s) were flagged more often encoded with {encoding_str} "
                 "than as written.** The plain-text copy is the control, so the encoding is what got past the "
                 "model's or the app's defenses: [Encoded vs. as written](#encoded-vs-as-written)."
                 + (" One try each is one reply either way; re-run with RT_REPEATS=5 or more before you report it."
@@ -751,7 +775,7 @@ def build_summary(results, memory, run_id: str) -> str:
             )
         else:
             lines.append(
-                f"- **Encoding with `{encoding}` made no probe fail more often than its plain-text copy** "
+                f"- **Encoding with {encoding_str} made no probe fail more often than its plain-text copy** "
                 f"([Encoded vs. as written](#encoded-vs-as-written))."
             )
     elif comparison:
@@ -846,17 +870,19 @@ def build_summary(results, memory, run_id: str) -> str:
         lines.append("")
 
     if comparison:
-        encoding = comparison[0]["encoding"]
+        encodings = sorted({r["encoding"] for r in comparison})
+        encoding_str = ", ".join(f"`{enc}`" for enc in encodings)
+        multi_encoding = len(encodings) > 1
         lines += [
             '<a id="encoded-vs-as-written"></a>',
             "## Encoded vs. as written",
             "",
             (
-                f"Each probe below was sent encoded with `{encoding}` and, as the control, as written. A probe "
+                f"Each probe below was sent encoded with {encoding_str} and, as the control, as written. A probe "
                 "flagged only when encoded got past something - a keyword filter, a guardrail, the model's own "
                 "training - that the plain text did not."
                 if has_control
-                else f"Each probe below was sent encoded with `{encoding}` only: this run sent no plain-text "
+                else f"Each probe below was sent encoded with {encoding_str} only: this run sent no plain-text "
                 "control, so the As written column is empty and a flag does not show the encoding got through."
             )
             + " \"Without a verdict\" counts errors, blocked or empty replies, fixed replies, and missing judge "
@@ -868,8 +894,9 @@ def build_summary(results, memory, run_id: str) -> str:
         ]
         for row in comparison:
             plain, enc = row["as_written"], row["encoded"]
+            probe_cell = f"{row['probe']} [{row['encoding']}]" if multi_encoding else row["probe"]
             lines.append(
-                f"| {row['probe']} | {row['dataset']} | {plain['flagged']} of {plain['flagged'] + plain['passed']} "
+                f"| {probe_cell} | {row['dataset']} | {plain['flagged']} of {plain['flagged'] + plain['passed']} "
                 f"| {enc['flagged']} of {enc['flagged'] + enc['passed']} | {plain['no_verdict']} / {enc['no_verdict']} "
                 f"| {encoding_reading(plain, enc)} |"
             )

@@ -306,13 +306,14 @@ def reproduction_steps(labels: dict) -> str:
             )
     elif labels.get("rt_campaign") in ("multi_turn_crescendo", "multi_turn_red_team"):
         campaign_module = labels.get("rt_campaign", "multi_turn_crescendo")
+        conv_flag = f" --converters {labels['rt_converters']}" if labels.get("rt_converters") else ""
         backtracks_line = (f", `RT_MAX_BACKTRACKS={labels.get('rt_max_backtracks')}`"
                            if labels.get("rt_max_backtracks") else "")
         steps = [
             f"In `.env`, set `RT_PROFILE={labels.get('rt_profile')}`{prompt_setting}, {target}, {judge}, `RT_ADVERSARIAL_PROVIDER="
             f"{labels.get('rt_adversarial_provider')}` and `RT_ADVERSARIAL_MODEL={labels.get('rt_adversarial')}`, "
             f"`RT_MAX_TURNS={labels.get('rt_max_turns')}`{backtracks_line}.",
-            f"Run `python -m harnesses.pyrit_campaigns.{campaign_module}`. It runs every objective in the "
+            f"Run `python -m harnesses.pyrit_campaigns.{campaign_module}{conv_flag}`. It runs every objective in the "
             "profile's `objectives` (`harnesses/pyrit_campaigns/profiles.py`); the Objective above is one of them. "
             "To run only this one, comment out the others.",
             "The attacker writes new turns on every run, so the transcript will not repeat word "
@@ -337,7 +338,12 @@ def pair_partner(result, memory):
     for other in memory.get_attack_results(
         labels={"rt_run_id": labels.get("rt_run_id"), "rt_pair_id": labels["rt_pair_id"]}
     ):
-        if other.conversation_id != result.conversation_id:
+        other_labels = other.labels or {}
+        if (
+            other.conversation_id != result.conversation_id
+            and encoding_label(other_labels) == encoding_label(labels)
+            and other_labels.get("rt_repeat") == labels.get("rt_repeat")
+        ):
             return other
     return None
 
