@@ -586,6 +586,8 @@ python -m harnesses.pyrit_campaigns.single_turn_scan --probes prompt_injection -
 The system prompt is left untouched, the judge still evaluates the reply against the original
 plain-English probe objective and `pass_criteria`, and exported finding reports show both
 `[user original]` and the converted `[user]` payload alongside a `--converters` reproduction command.
+A report on an encoded probe also gives the control under Reproducibility: how often the same
+probe was flagged as written, against the same target, next to how often it was flagged encoded.
 
 ## What to customize first
 

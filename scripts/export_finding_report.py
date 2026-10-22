@@ -188,9 +188,48 @@ def reproducibility(result, all_results, memory) -> str:
         text += " By model: " + "; ".join(
             f"{model}: {sum(is_finding(r, memory) for r in rs)} of {len(rs)}" for model, rs in by_model.items()
         ) + "."
+    text += encoding_control(result, all_results, memory)
     if len(runs) < 5:
         text += " Re-run it until there are 5-10 runs before reporting it: one result can be noise."
     return text
+
+
+def encoding_control(result, all_results, memory) -> str:
+    """For a probe sent encoded: how the same probe did as written against the same target, the control.
+
+    A flag on an encoded probe shows the encoding got through only if the plain text
+    does not fail as often. Only runs against the same target count, so a model tested
+    elsewhere does not stand in for the app.
+    """
+    labels = result.labels or {}
+    encoding = encoding_label(labels)
+    if not encoding:
+        return ""
+    target = labels.get("rt_target") or "the same target"
+    dataset, probe, _, objective = test_key(result)
+    same = [
+        r for r in all_results
+        if (r.labels or {}).get("rt_target") == labels.get("rt_target")
+        and test_key(r)[:2] == (dataset, probe) and test_key(r)[3] == objective
+    ]
+    plain = [r for r in same if not encoding_label(r.labels or {})]
+    encoded = [r for r in same if encoding_label(r.labels or {}) == encoding]
+    if not plain:
+        return (
+            f" It has never been sent to {target} as written, so nothing here shows the encoding is what got "
+            "it through. Re-run it with the current scan, which sends both."
+        )
+    plain_hits = sum(is_finding(r, memory) for r in plain)
+    encoded_hits = sum(is_finding(r, memory) for r in encoded)
+    reading = (
+        "The plain text fails less often, so the encoding is what got the probe through."
+        if encoded_hits / len(encoded) > plain_hits / len(plain)
+        else "The plain text fails as often, so the encoding is not what got the probe through."
+    )
+    return (
+        f" The control: against {target}, the same probe sent as written was flagged in {plain_hits} of "
+        f"{len(plain)} recorded run(s), and encoded with `{encoding}` in {encoded_hits} of {len(encoded)}. {reading}"
+    )
 
 
 def encoding_label(labels: dict) -> str:
