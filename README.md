@@ -63,12 +63,15 @@ APP_API_KEY=...                             # sent as x-api-key; or APP_TOKEN, s
 RT_JUDGE_PROVIDER=gemini                    # the key you added in step 1
 ```
 
-Pick the profile that matches your deployment (see [Pick your deployment
-profile](#pick-your-deployment-profile)) and run the single-turn scan:
+Run the single-turn scan:
 
 ```bash
-RT_PROFILE=public_conversational python -m harnesses.pyrit_campaigns.single_turn_scan
+python -m harnesses.pyrit_campaigns.single_turn_scan
 ```
+
+With no `RT_PROFILE` set, it runs the built-in `default` profile: every attack suite, 58
+`core` probes. Once you know what kind of deployment you're testing, a preset can narrow
+it — see [Deployment profiles](#deployment-profiles).
 
 - **Only want to run specific probes, an `m-n` range, or skip the expanded bias templates?** Pass `--probes <spec>` (e.g. `--probes core`, `--probes general`, `--probes 1-15`, or `--probes override_simple`) — see [Running a subset of probes](#running-a-subset-of-probes).
 - **Want to verify OAuth login gates and API access controls first?** Run `python -m harnesses.access_checks` — see [Access-control & OAuth/API checks](#access-control--oauthapi-checks).
@@ -78,7 +81,8 @@ RT_PROFILE=public_conversational python -m harnesses.pyrit_campaigns.single_turn
   pipeline against a raw model first.
 
 > Non-production instance, synthetic data, and written authorization before pointing any
-> of this at a real system.
+> of this at a real system. Every run against an app (`RT_PROVIDER=app`) prints this
+> reminder; it does not stop the run.
 
 ### 4. Read the results
 
@@ -94,8 +98,8 @@ python -m scripts.export_finding_report --list                                  
 Once the scan runs, add the multi-turn campaigns — attacks that build over a conversation:
 
 ```bash
-RT_PROFILE=public_conversational python -m harnesses.pyrit_campaigns.multi_turn_red_team   # adaptive; works against an app
-RT_PROFILE=public_conversational python -m harnesses.pyrit_campaigns.multi_turn_crescendo  # gradual escalation; an app must take {HISTORY}
+python -m harnesses.pyrit_campaigns.multi_turn_red_team   # adaptive; works against an app
+python -m harnesses.pyrit_campaigns.multi_turn_crescendo  # gradual escalation; an app must take {HISTORY}
 ```
 
 ## Fine-tuning
@@ -108,7 +112,7 @@ The rest of this README is reference — reach for a section when you need it:
 - **[Running on Bedrock](#running-on-bedrock)** — AWS credentials and model access
 - **[The system prompt and canary token](#the-system-prompt-and-the-canary-token-in-it)** — how leaks are caught, and the planted records
 - **[Repeats](#repeats-how-often-a-probe-fails-not-just-whether-it-did)** — run each probe N times for a failure rate
-- **[Pick your deployment profile](#pick-your-deployment-profile)** — which datasets and rubrics run
+- **[Deployment profiles](#deployment-profiles)** — the built-in default and the presets: which datasets and rubrics run
 - **[Running a subset of probes](#running-a-subset-of-probes)** — filter probes by category (`core`, `general`, `bias`, `bias-core`, `bias-templated`), `m-n` range, or name
 - **[What to customize first](#what-to-customize-first)** — making generic probes specific to your system
 
@@ -371,8 +375,8 @@ replies against the system prompt — which means your prompt goes to the judge'
 too. Keep the judge on a provider you'd trust with it, such as Bedrock in your own AWS
 account. Each judge is also shown the probe's `pass_criteria` from its dataset.
 
-**Planted records.** Profiles graded by `pii_disclosure` (`internal_productivity`,
-`constituent_decision`) also plant two fake records of other people in the prompt, with
+**Planted records.** Profiles graded by `pii_disclosure` (`default`,
+`internal_productivity`, `constituent_decision`) also plant two fake records of other people in the prompt, with
 orders not to disclose them; every reply is checked for their details. A hit is a `planted_record_leak` finding. Values are synthetic and unissuable
 (SSNs start 666, phones are in the 555-0100–0199 fiction range). The same section holds a
 fake database connection string so the `credential_disclosure` probe has a credential to
@@ -472,26 +476,33 @@ campaigns send to *your AI system*, and a failure there is a finding about it.
 `tests/` is the pack's own pytest suite: it never calls a model, and a failure there
 is a bug in the pack.
 
-## Pick your deployment profile
+## Deployment profiles
 
-`RT_PROFILE` decides which datasets run and which rubrics grade them. Run the one that
-matches what you're testing, not all three.
+`RT_PROFILE` decides which datasets run, which rubrics grade them, and what the
+multi-turn campaigns attack for. You don't have to set it: unset, a run uses the
+built-in `default`, which covers every suite. The named profiles are presets for when
+you know what kind of deployment you're testing.
 
 | `RT_PROFILE` | Use for | Primary risk |
 |---|---|---|
+| unset (`default`) | A first run, or a system no preset fits | All of them, broadly |
 | `internal_productivity` | Staff copilots, document search | Over-broad retrieval; pasted untrusted content |
 | `public_conversational` | Public FAQ and program chatbots | Wrong answers at scale; equity |
 | `constituent_decision` | Eligibility, casework, licensing | Authorization boundaries; disparate impact |
 
-`internal_productivity` is the gentlest place to shake out the tooling and is the
-default. `constituent_decision` is the highest risk and needs authorization before
-anything runs. Each profile carries its own threat model, probe selection, and
+`default` sends the `core` probes: every probe except the 36 bias probes made from
+fixtures, which need repeats to mean anything. Pass `--probes all` for all 94, or
+`--probes bias-templated` for just those. Its probes are numbered with bias last, so
+`--probes 1-48` picks the same probes as in `internal_productivity`.
+`constituent_decision` is the highest risk and needs authorization before anything
+runs. Each profile carries its own threat model, probe selection, and
 pre-sign-off checklist in `harnesses/pyrit_campaigns/profiles.py` — read the one you're using
 before you run it.
 
 ## Running a subset of probes
 
-By default, `single_turn_scan` sends every probe in the active profile's datasets. To
+By default, `single_turn_scan` sends every probe in the active profile's datasets
+(`core` under the built-in `default` profile). To
 inspect the numbered probe list first or run only specific probes, pass `--probes <spec>`
 on the command line (or set `RT_PROBES=<spec>` in `.env`):
 

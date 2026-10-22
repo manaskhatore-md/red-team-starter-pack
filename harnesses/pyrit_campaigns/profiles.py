@@ -10,14 +10,19 @@ So each campaign asks this module what applies:
 
     RT_PROFILE=constituent_decision python -m harnesses.pyrit_campaigns.single_turn_scan
 
+With RT_PROFILE unset, a run uses the built-in `default` profile: every suite, the
+`core` probes unless --probes or RT_PROBES picks others, and generic multi-turn goals.
+The named profiles are presets for a deployment type you already know.
+
 A profile decides four things:
   - which attack_suites/*/*.yaml probes run
   - which harnesses/pyrit_campaigns/state_policy_rubric.yaml rubrics grade them
   - which objectives the multi-turn campaigns pursue, read from config/objectives/<profile>.yaml
     (RT_OBJECTIVES_FILE replaces them with your own file)
   - whether the run is gated on written authorization
+    (any run against an app, RT_PROVIDER=app, gets the same warning)
 
-TODO: these three profiles are the generic ones. Add a profile per real system you
+TODO: these profiles are the generic ones. Add a profile per real system you
 assess, rather than stretching one of these to fit.
 """
 
@@ -26,6 +31,8 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 import yaml
+
+from harnesses.pyrit_campaigns.target_factory import resolve_provider
 
 # Rubrics that compare two responses instead of grading one. They cannot run in a
 # single-turn scan, because there is nothing to compare a lone response against -
@@ -86,6 +93,9 @@ class Profile:
     objectives_file: str = ""
     # True for profiles that touch real people's data or a system you do not own.
     requires_authorization: bool = False
+    # The --probes selection the scan uses when neither --probes nor RT_PROBES sets one.
+    # Blank: every probe.
+    probes: str = ""
 
 
 # Every {{ token }} used anywhere in datasets/. A probe that ships with an unrendered
@@ -121,7 +131,44 @@ _GENERIC_PLACEHOLDERS = {
 }
 
 
+# What a run uses when RT_PROFILE is not set.
+DEFAULT_PROFILE = "default"
+
+
 PROFILES: dict[str, Profile] = {
+    # -----------------------------------------------------------------------
+    DEFAULT_PROFILE: Profile(
+        key=DEFAULT_PROFILE,
+        description="Built-in default (RT_PROFILE unset) - every suite; sends the core probes unless --probes says otherwise",
+        data_levels="1-4",
+        threat_model="""Used when RT_PROFILE is not set, so it assumes nothing about the deployment: every
+suite runs, graded by every rubric. That makes it broad rather than targeted - a
+first pass that shows which kinds of failure your system has, before you know which
+preset fits or write a profile of your own.
+
+Probes are listed suite by suite with bias last, so probes 1-48 are the same probes
+as in internal_productivity. The scan sends the `core` probes: everything except the
+bias probes made from fixtures (templated), which need repeats to mean anything.
+--probes all, or --probes bias-templated, sends those too.""",
+        datasets=("prompt_injection", "sensitive_data_leakage", "excessive_agency", "algorithmic_bias"),
+        rubrics=(
+            "injection_compliance",
+            "pii_disclosure",
+            "unauthorized_determination",
+            "excessive_agency",
+            "disparate_treatment",
+        ),
+        placeholders=_GENERIC_PLACEHOLDERS,
+        checklist=(
+            "Pick the preset that matches the deployment (internal_productivity, public_conversational, "
+            "constituent_decision) or write a profile for it, and re-run with RT_PROFILE set. The default "
+            "grades every probe by every rubric that applies, whether or not it fits this system.",
+            "Run the templated bias probes (--probes bias-templated) with RT_REPEATS=5 or more before "
+            "reading anything into them.",
+        ),
+        objectives_file="config/objectives/default.yaml",
+        probes="core",
+    ),
     # -----------------------------------------------------------------------
     "internal_productivity": Profile(
         key="internal_productivity",
@@ -298,13 +345,13 @@ def with_env_overrides(values: dict[str, str]) -> dict[str, str]:
 def get_profile(name: str | None = None) -> Profile:
     """Return the profile named by RT_PROFILE (or the argument).
 
-    Defaults to internal_productivity: the lowest-blast-radius profile, so an
-    unconfigured run does the least surprising thing.
+    With neither, the built-in default: every suite, so an unconfigured run does not
+    have to guess which deployment it is testing.
 
     RT_OBJECTIVES_FILE replaces the profile's objectives with the ones in that file, so
     a system's own objectives can live outside this repo.
     """
-    key = (name or os.getenv("RT_PROFILE", "internal_productivity")).lower()
+    key = (name or os.getenv("RT_PROFILE") or DEFAULT_PROFILE).lower()
     if key not in PROFILES:
         raise SystemExit(
             f"Unknown RT_PROFILE {key!r}. Options: {', '.join(PROFILES)}\n"
@@ -323,6 +370,10 @@ def describe(profile: Profile) -> str:
 
     Leaves out the threat model: it is the same on every run, and is read here, in
     this file, when choosing a profile.
+
+    The authorization warning prints for a profile that requires it, and for any run
+    against an app, whatever the profile: an app is a real system. It names whichever
+    is the reason - the app, if both - and does not stop the run.
     """
     lines = [
         "=" * 78,
@@ -332,7 +383,13 @@ def describe(profile: Profile) -> str:
         f"datasets: {', '.join(profile.datasets)}",
         f"rubrics:  {', '.join(profile.rubrics)}",
     ]
-    if profile.requires_authorization:
+    if resolve_provider("target") == "app":
+        lines += [
+            "",
+            "!! Runs against an app need a non-production instance, synthetic data only, and",
+            "!! written authorization from the system owner before you run them.",
+        ]
+    elif profile.requires_authorization:
         lines += [
             "",
             "!! This profile requires a non-production instance, synthetic data only, and",
