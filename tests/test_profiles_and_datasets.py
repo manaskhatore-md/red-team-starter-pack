@@ -22,10 +22,6 @@ def profile(request):
     return get_profile(request.param)
 
 
-def test_every_profile_rubric_exists(profile):
-    assert set(profile.rubrics) <= set(RUBRICS)
-
-
 JSON_INSTRUCTION = "Respond with only a JSON object with exactly these two keys"
 
 
@@ -63,19 +59,27 @@ def test_every_rubric_grades_only_real_datasets():
 def test_every_probe_in_a_profile_gets_graded(profile):
     # A probe no rubric grades is not sent, so a gap here is a silent hole in coverage.
     probes = single_turn_scan.load_probes(profile)
-    compare = bool(PAIR_RUBRICS & set(profile.rubrics))
-    groups = single_turn_scan.group_by_rubrics(probes, profile.rubrics, compare=compare)
+    rubrics = single_turn_scan.rubrics_for(probes)
+    groups = single_turn_scan.group_by_rubrics(probes, rubrics, compare=bool(PAIR_RUBRICS & set(rubrics)))
     sent = {p.name for group in groups.values() for p in group}
     assert {p.name for p in probes} == sent
 
 
-def test_every_dataset_token_has_a_default():
-    used = set()
-    paths = list(profiles.DATASETS_DIR.glob("*/*.yaml"))
+def test_every_token_has_a_default():
+    # One set of values for every profile, so every token anywhere needs one: in the
+    # probes and their fixtures, the stand-in system prompts, and the multi-turn goals.
+    paths = [
+        *profiles.DATASETS_DIR.glob("*/*.yaml"),
+        *profiles.DATASETS_DIR.glob("*/fixtures/*.yaml"),
+        *(profiles.REPO_ROOT / "config" / "system_prompts").glob("*.txt"),
+    ]
     assert paths, f"no datasets found under {profiles.DATASETS_DIR}"
-    for path in paths:
-        used |= set(TOKEN.findall(path.read_text(encoding="utf-8")))
-    assert used <= set(profiles._GENERIC_PLACEHOLDERS)
+    texts = [path.read_text(encoding="utf-8") for path in paths]
+    texts += [o.goal for profile in PROFILES.values() for o in profile.objectives]
+    used = {token for text in texts for token in TOKEN.findall(text)}
+    # Filled by the kit itself: see system_prompt.py.
+    filled_by_the_kit = {"prompt_canary", "planted_records"}
+    assert used - filled_by_the_kit <= set(profiles.PLACEHOLDERS), used - filled_by_the_kit - set(profiles.PLACEHOLDERS)
 
 
 def test_matched_pairs_have_exactly_two_halves(profile):
@@ -85,7 +89,7 @@ def test_matched_pairs_have_exactly_two_halves(profile):
 
 def test_placeholder_values_come_from_env(clean_env):
     clean_env.setenv("RT_PROGRAM_NAME", "Energy Assistance")
-    assert get_profile("internal_productivity").placeholders["program_name"] == "Energy Assistance"
+    assert profiles.placeholders()["program_name"] == "Energy Assistance"
 
 
 def test_unknown_profile_lists_the_options():
@@ -95,7 +99,7 @@ def test_unknown_profile_lists_the_options():
 
 def test_placeholder_warning_names_the_env_var(capsys):
     profile = get_profile("public_conversational")
-    single_turn_scan.check_placeholders(profile, single_turn_scan.load_probes(profile))
+    single_turn_scan.check_placeholders(single_turn_scan.load_probes(profile))
     assert "RT_PROGRAM_NAME=" in capsys.readouterr().out
 
 

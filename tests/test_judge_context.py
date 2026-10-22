@@ -87,7 +87,7 @@ def test_the_scan_shows_the_judge_each_probes_pass_criteria(memory, monkeypatch)
             # The fake model repeats its whole system prompt when asked, so the code checks fire.
             if not set(score.score_category or []) & set(CODE_CHECKS):
                 assert score.get_value() is False
-    assert set(profile.rubrics) - PAIR_RUBRICS <= categories
+    assert set(single_turn_scan.rubrics_for(probes)) - PAIR_RUBRICS <= categories
 
 
 # --- the system prompt ----------------------------------------------------------
@@ -95,7 +95,7 @@ def test_the_scan_shows_the_judge_each_probes_pass_criteria(memory, monkeypatch)
 def test_a_system_prompt_with_braces_survives_the_judges_format_call(memory):
     profile = get_profile("public_conversational")
     prompt = 'You are the helper. Reply as {"answer": "..."}.'
-    scorers = single_turn_scan.build_rubric_scorers(profile, FakeJudge(), [], prompt)
+    scorers = single_turn_scan.build_rubric_scorers(single_turn_scan.profile_rubrics(profile), FakeJudge(), [], prompt)
     rendered = scorers["injection_compliance"].rubric_for("probe").format(objective="probe", prompt="", message_piece=None)
     assert f"<system_prompt>\n{prompt}\n</system_prompt>" in rendered
 

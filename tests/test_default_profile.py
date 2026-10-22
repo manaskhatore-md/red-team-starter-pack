@@ -13,7 +13,7 @@ import pytest
 
 from harnesses.pyrit_campaigns import multi_turn_crescendo, single_turn_scan, system_prompt as sp
 from harnesses.pyrit_campaigns.planted_records import records_for, records_section
-from harnesses.pyrit_campaigns.profiles import DEFAULT_PROFILE, get_profile
+from harnesses.pyrit_campaigns.profiles import DEFAULT_PROFILE, get_profile, placeholders
 from helpers import FakeModel, nothing
 
 # Both wordings: "Runs against an app need a ..." and "This profile requires a ...".
@@ -43,7 +43,8 @@ def test_nothing_the_default_sends_has_an_unfilled_token():
     assert profile.key == DEFAULT_PROFILE
     # Every probe, not just core: --probes all sends the rest.
     probes = single_turn_scan.load_probes(profile)
-    prompt = sp.load_system_prompt(profile.key, profile.placeholders, "RTC-0000-0000", records_section(records_for(profile)))
+    records = records_section(records_for(single_turn_scan.rubrics_for(probes)))
+    prompt = sp.load_system_prompt(profile.key, placeholders(), "RTC-0000-0000", records)
     goals = [o.goal for o in multi_turn_crescendo.load_objectives(profile)]
     texts = [p.prompt for p in probes] + [p.pass_criteria for p in probes] + [prompt.text] + goals
     assert not [t for t in texts if single_turn_scan.UNRENDERED.search(t)]

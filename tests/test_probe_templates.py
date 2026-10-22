@@ -61,8 +61,8 @@ def write_dataset(root, dataset=TEMPLATE, fixtures=FIXTURES):
 def templated(tmp_path, monkeypatch):
     """A profile whose only dataset is a template over a two-entry fixture file, in tmp_path."""
     monkeypatch.setattr(profiles, "DATASETS_DIR", tmp_path)
+    monkeypatch.setenv("RT_PROGRAM_NAME", "Energy Assistance")
     profile = replace(get_profile("internal_productivity"), datasets=("templated",))
-    profile.placeholders["program_name"] = "Energy Assistance"
     return tmp_path, profile
 
 
@@ -244,8 +244,7 @@ def scan_templated(templated, monkeypatch, judge, target=None):
     # which scores are rubric verdicts.
     monkeypatch.setattr(run_summary, "load_rubrics", lambda: rubrics)
     monkeypatch.setattr(export_finding_report, "rubric_names", lambda: set(rubrics) | set(CODE_CHECKS))
-    monkeypatch.setitem(profiles.PROFILES, "internal_productivity", replace(profile, rubrics=("fact_rubric",)))
-    monkeypatch.setenv("RT_PROGRAM_NAME", "Energy Assistance")
+    monkeypatch.setitem(profiles.PROFILES, "internal_productivity", profile)
     return run_scan(monkeypatch, target or AnswersEachProbe(), judge=judge)
 
 
@@ -281,7 +280,7 @@ def test_the_finding_report_names_the_template_and_the_fixture_entry():
 def test_list_probes_shows_what_would_be_sent_without_calling_a_model(templated, capsys):
     root, profile = templated
     write_dataset(root)
-    single_turn_scan.list_probes(replace(profile, rubrics=("injection_compliance",)))
+    single_turn_scan.list_probes(profile)
     out = capsys.readouterr().out
     assert "templated / premise[vehicle]  [NOT SENT: no rubric grades it]" in out
     assert "template 'premise', filled from" in out
@@ -369,8 +368,9 @@ def test_every_shipped_profile_fits_the_default_budget_at_ten_repeats():
     for key in profiles.PROFILES:
         profile = get_profile(key)
         probes = single_turn_scan.load_probes(profile)
-        rubrics = [k for k in profile.rubrics if k not in profiles.PAIR_RUBRICS]
-        compare = "disparate_treatment" in profile.rubrics and any(p.pair_id for p in probes)
+        rubrics = single_turn_scan.rubrics_for(probes)
+        compare = "disparate_treatment" in rubrics and any(p.pair_id for p in probes)
+        rubrics = [k for k in rubrics if k not in profiles.PAIR_RUBRICS]
         groups = single_turn_scan.group_by_rubrics(probes, rubrics, compare)
         pairs = len({p.pair_id for group in groups.values() for p in group if p.pair_id}) if compare else 0
         assert sum(single_turn_scan.planned_calls(groups, pairs, 10)) <= single_turn_scan.DEFAULT_MAX_CALLS, key

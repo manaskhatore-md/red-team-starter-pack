@@ -339,7 +339,6 @@ def build_report(result, memory, template: str, all_results) -> str:
     profile = PROFILES.get(labels.get("rt_profile", ""))
     if profile:
         values["deployment_profile"] = f"{profile.key} - {profile.description}"
-        values["data_level"] = f"TODO: Data Level of this system (profile {profile.key} covers {profile.data_levels})"
 
     # The rubric's own severity and description are a starting point, not the answer.
     if flagged:

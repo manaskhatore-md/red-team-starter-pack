@@ -92,7 +92,7 @@ from pyrit.score import MessageTrueFalseScorer, SelfAskGeneralTrueFalseScorer, S
 from pyrit.score.scorer_prompt_validator import ScorerPromptValidator
 from pyrit.setup import SQLITE, initialize_pyrit_async
 
-from harnesses.pyrit_campaigns.profiles import PAIR_RUBRICS, Objective, Profile, describe, get_profile
+from harnesses.pyrit_campaigns.profiles import PAIR_RUBRICS, Objective, Profile, describe, get_profile, placeholders
 from harnesses.pyrit_campaigns.single_turn_scan import (
     FAIL_ON_FINDING,
     _escape_braces,
@@ -101,6 +101,7 @@ from harnesses.pyrit_campaigns.single_turn_scan import (
     get_repeats,
     load_rubrics,
     neutralize_tags,
+    profile_rubrics,
     rubric_prompt,
 )
 from harnesses.pyrit_campaigns.code_checks import CODE_CHECKS, KnownPromptLeakScorer, code_scorers, fill_pattern_check
@@ -154,23 +155,24 @@ PASS_CRITERIA = (
 
 
 def load_objectives(profile: Profile) -> list[Objective]:
-    """The profile's objectives with their placeholders filled, checked against its rubrics."""
+    """The profile's objectives with their placeholders filled, each checked against the rubrics of its probes."""
     if not profile.objectives:
         raise SystemExit(
             f"Profile {profile.key!r} has no objectives. Add them to config/objectives/{profile.key}.yaml,\n"
             "or point RT_OBJECTIVES_FILE at a file of your own."
         )
-    rubrics = load_rubrics()
+    rubrics = profile_rubrics(profile)
     for objective in profile.objectives:
-        if objective.rubric not in profile.rubrics or objective.rubric not in rubrics:
+        if objective.rubric not in rubrics:
             raise SystemExit(
                 f"{profile.objectives_file or 'Profile ' + repr(profile.key)} has an objective judged by "
-                f"{objective.rubric!r}, which is not one of profile {profile.key!r}'s rubrics: "
-                f"{', '.join(profile.rubrics)}."
+                f"{objective.rubric!r}, which grades none of profile {profile.key!r}'s probes. Its probes' "
+                f"rubrics are: {', '.join(rubrics)}."
             )
         if objective.rubric in PAIR_RUBRICS:
             raise SystemExit(f"{objective.rubric!r} compares two replies, so it cannot judge a Crescendo attack.")
-    objectives = [replace(o, goal=render(o.goal, profile.placeholders)) for o in profile.objectives]
+    values = placeholders()
+    objectives = [replace(o, goal=render(o.goal, values)) for o in profile.objectives]
     # The judge finds an objective's rubric by its goal, so no two goals can be the same.
     duplicates = [goal for goal, n in Counter(o.goal for o in objectives).items() if n > 1]
     if duplicates:
@@ -362,14 +364,14 @@ async def main() -> int:
 
     # A deployed app sends its own system prompt, so it gets no stand-in or records.
     is_app = resolve_provider("target") == "app"
-    records = () if is_app else records_for(profile)
+    records = () if is_app else records_for(profile_rubrics(profile))
     system_prompt = None if is_app else load_system_prompt(
-        profile.key, profile.placeholders, new_canary(), records_section(records) if records else ""
+        profile.key, placeholders(), new_canary(), records_section(records) if records else ""
     )
     if not system_prompt:
         records = ()
-    placeholders = check_placeholders(
-        profile, [], "\n".join([o.goal for o in objectives] + ([system_prompt.text] if system_prompt else []))
+    unfilled = check_placeholders(
+        [], "\n".join([o.goal for o in objectives] + ([system_prompt.text] if system_prompt else []))
     )
 
     target = build_target()
@@ -457,7 +459,7 @@ async def main() -> int:
         "rt_max_turns": str(MAX_TURNS),
         "rt_max_backtracks": str(MAX_BACKTRACKS),
         # Settings still at "TODO ...", so the summary can say the objectives named a placeholder.
-        "rt_placeholders": ", ".join(placeholders),
+        "rt_placeholders": ", ".join(unfilled),
         # Which objectives file the attacks came from, so the report can say what was tested.
         "rt_objectives_file": profile.objectives_file,
         "rt_trace_path": os.getenv("APP_TRACE_PATH", "").strip(),

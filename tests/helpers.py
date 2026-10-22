@@ -75,7 +75,7 @@ def scan_main(monkeypatch, target, judge=None, profile="internal_productivity"):
     monkeypatch.setattr(single_turn_scan, "model_name", lambda t: "fake-model")
     if judge is None:
         monkeypatch.setattr(single_turn_scan, "build_rubric_scorers",
-                            lambda profile, judge, *rest: {k: NeverFlags(category=k) for k in profile.rubrics})
+                            lambda rubrics, judge, *rest: {k: NeverFlags(category=k) for k in rubrics})
     runs = []
     monkeypatch.setattr(single_turn_scan, "write_after_run", runs.append)
     exit_code = asyncio.run(single_turn_scan.main())

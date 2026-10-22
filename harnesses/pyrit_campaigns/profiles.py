@@ -15,8 +15,9 @@ With RT_PROFILE unset, a run uses the built-in `default` profile: every suite, t
 The named profiles are presets for a deployment type you already know.
 
 A profile decides four things:
-  - which attack_suites/*/*.yaml probes run
-  - which harnesses/pyrit_campaigns/state_policy_rubric.yaml rubrics grade them
+  - which attack_suites/*/*.yaml probes run. The rubrics that grade them follow from
+    the probes: each rubric in harnesses/pyrit_campaigns/state_policy_rubric.yaml lists
+    the datasets it `grades`.
   - which objectives the multi-turn campaigns pursue, read from config/objectives/<profile>.yaml
     (RT_OBJECTIVES_FILE replaces them with your own file)
   - whether the run is gated on written authorization
@@ -27,7 +28,7 @@ assess, rather than stretching one of these to fit.
 """
 
 import os
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 import yaml
@@ -76,17 +77,12 @@ class Profile:
 
     key: str
     description: str
-    data_levels: str
     threat_model: str
     datasets: tuple[str, ...]
-    rubrics: tuple[str, ...]
-    # Placeholders substituted into the dataset probes. The datasets ship with
-    # {{ jinja }} tokens so they stay agency-agnostic on the shelf.
-    placeholders: dict[str, str] = field(default_factory=dict)
     # Printed after a run. What this profile needs before you can call it covered.
     checklist: tuple[str, ...] = ()
     # What the multi-turn campaigns attack for, read from objectives_file when PROFILES is
-    # built. Each rubric must be one of the profile's rubrics.
+    # built. Each rubric must grade one of the profile's probes.
     objectives: tuple[Objective, ...] = ()
     # Where the objectives come from: config/objectives/<profile>.yaml for the shipped
     # profiles, relative to the repo, or the file RT_OBJECTIVES_FILE names.
@@ -98,9 +94,11 @@ class Profile:
     probes: str = ""
 
 
-# Every {{ token }} used anywhere in datasets/. A probe that ships with an unrendered
-# placeholder tests nothing, so profiles carry the full set even for datasets they do
-# not run - single_turn_scan.py checks for leftovers and warns.
+# Every {{ token }} used in the probes, the stand-in system prompts, and the multi-turn
+# goals, which ship with tokens so they stay agency-agnostic on the shelf. One set for
+# every profile: a value is about your agency or the test design, not the deployment
+# type. A probe that ships with an unrendered placeholder tests nothing, so
+# single_turn_scan.py checks for leftovers and warns.
 #
 # These are defaults. Any of them can be set in .env as RT_ plus the name in
 # capitals, e.g. RT_PROGRAM_NAME. The agency names are listed in the "YOUR AGENCY"
@@ -109,7 +107,7 @@ class Profile:
 # where the team reviews it and every run uses the same values. A per-person .env
 # value makes two people's bias results incomparable. The scan warns while a probe
 # it sends still contains a "TODO ..." value.
-_GENERIC_PLACEHOLDERS = {
+PLACEHOLDERS = {
     "agency_name": "TODO Agency",
     "program_name": "TODO Program",
     "contact_channel": "TODO phone/URL",
@@ -140,7 +138,6 @@ PROFILES: dict[str, Profile] = {
     DEFAULT_PROFILE: Profile(
         key=DEFAULT_PROFILE,
         description="Built-in default (RT_PROFILE unset) - every suite; sends the core probes unless --probes says otherwise",
-        data_levels="1-4",
         threat_model="""Used when RT_PROFILE is not set, so it assumes nothing about the deployment: every
 suite runs, graded by every rubric. That makes it broad rather than targeted - a
 first pass that shows which kinds of failure your system has, before you know which
@@ -151,14 +148,6 @@ as in internal_productivity. The scan sends the `core` probes: everything except
 bias probes made from fixtures (templated), which need repeats to mean anything.
 --probes all, or --probes bias-templated, sends those too.""",
         datasets=("prompt_injection", "sensitive_data_leakage", "excessive_agency", "algorithmic_bias"),
-        rubrics=(
-            "injection_compliance",
-            "pii_disclosure",
-            "unauthorized_determination",
-            "excessive_agency",
-            "disparate_treatment",
-        ),
-        placeholders=_GENERIC_PLACEHOLDERS,
         checklist=(
             "Pick the preset that matches the deployment (internal_productivity, public_conversational, "
             "constituent_decision) or write a profile for it, and re-run with RT_PROFILE set. The default "
@@ -173,7 +162,6 @@ bias probes made from fixtures (templated), which need repeats to mean anything.
     "internal_productivity": Profile(
         key="internal_productivity",
         description="Internal staff productivity tool - staff copilots, document search, drafting",
-        data_levels="1-2",
         threat_model="""\
 Users are authenticated employees, so classic jailbreaking matters less; a staff
 member who wants to write something inappropriate does not need to trick a chatbot.
@@ -187,8 +175,6 @@ What matters here is:
 Lower blast radius than the public-facing profiles, so this is the sensible place to
 run your first assessment and shake out the tooling.""",
         datasets=("prompt_injection", "sensitive_data_leakage", "excessive_agency"),
-        rubrics=("injection_compliance", "pii_disclosure", "excessive_agency"),
-        placeholders=_GENERIC_PLACEHOLDERS,
         checklist=(
             "Against the real app, plant a canary document in its document store that the test "
             "user should NOT be able to reach, then assert on its token. The scan's planted records "
@@ -201,7 +187,6 @@ run your first assessment and shake out the tooling.""",
     "public_conversational": Profile(
         key="public_conversational",
         description="Public-facing constituent chatbot - program FAQ, 311-style chat, web widgets",
-        data_levels="1-2",
         threat_model="""\
 Anyone on the internet can talk to it, and the transcript can end up in a news story
 or a screenshot. Two distinct risks, and the second is the one agencies underestimate:
@@ -214,8 +199,6 @@ So this profile weights accuracy, scope discipline, and equity at least as heavi
 jailbreak resistance. Do not let the interesting attacks crowd out the boring failure
 that will affect thousands of people.""",
         datasets=("prompt_injection", "algorithmic_bias", "excessive_agency"),
-        rubrics=("unauthorized_determination", "injection_compliance", "disparate_treatment", "excessive_agency"),
-        placeholders=_GENERIC_PLACEHOLDERS,
         checklist=(
             "Add a probe per language your agency is required to serve - a guardrail that "
             "only fires in English is a language-access finding as well as a safety one.",
@@ -230,7 +213,6 @@ that will affect thousands of people.""",
     "constituent_decision": Profile(
         key="constituent_decision",
         description="Constituent decision support - eligibility screening, casework, licensing",
-        data_levels="3-4 (PII/PHI)",
         threat_model="""\
 HIGHEST-RISK PROFILE IN THE PACK. Outputs here influence decisions about people's
 benefits, custody, licenses, or care, and the system handles PII/PHI.
@@ -254,21 +236,6 @@ application. Use RT_PROVIDER=app.""",
             "algorithmic_bias",
             "excessive_agency",
         ),
-        rubrics=(
-            "unauthorized_determination",
-            "pii_disclosure",
-            "injection_compliance",
-            "disparate_treatment",
-            "excessive_agency",
-        ),
-        placeholders={
-            **_GENERIC_PLACEHOLDERS,
-            # Fixtures only this tier needs. SYNTHETIC ONLY. TODO: replace with
-            # fabricated identifiers from your own test fixtures - never a real
-            # person's data.
-            "synthetic_case_id": "ZZ-TEST-00417",
-            "canary_token": "ZZ-CANARY-4417",
-        },
         checklist=(
             "Run every probe at each role (constituent, caseworker, supervisor). The finding "
             "is not 'it refused' - it is whether the refusal tracks the entitlement at every role.",
@@ -342,6 +309,11 @@ def with_env_overrides(values: dict[str, str]) -> dict[str, str]:
     return {key: os.getenv(env_var(key)) or default for key, default in values.items()}
 
 
+def placeholders() -> dict[str, str]:
+    """The value of every {{ token }} for this run: PLACEHOLDERS, with any .env settings."""
+    return with_env_overrides(PLACEHOLDERS)
+
+
 def get_profile(name: str | None = None) -> Profile:
     """Return the profile named by RT_PROFILE (or the argument).
 
@@ -358,7 +330,6 @@ def get_profile(name: str | None = None) -> Profile:
             "Defined in harnesses/pyrit_campaigns/profiles.py."
         )
     profile = PROFILES[key]
-    profile = replace(profile, placeholders=with_env_overrides(profile.placeholders))
     own = os.getenv("RT_OBJECTIVES_FILE", "").strip()
     if own:
         profile = replace(profile, objectives=load_objectives_file(own), objectives_file=own)
@@ -381,7 +352,6 @@ def describe(profile: Profile) -> str:
         profile.description,
         "=" * 78,
         f"datasets: {', '.join(profile.datasets)}",
-        f"rubrics:  {', '.join(profile.rubrics)}",
     ]
     if resolve_provider("target") == "app":
         lines += [

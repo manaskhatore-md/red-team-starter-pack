@@ -9,7 +9,7 @@ from pyrit.memory import CentralMemory
 from pyrit.models import ComponentIdentifier, Score, construct_response_from_request
 
 from harnesses.pyrit_campaigns import probe_templates, single_turn_scan as scan
-from harnesses.pyrit_campaigns.profiles import dataset_path, get_profile
+from harnesses.pyrit_campaigns.profiles import dataset_path, get_profile, placeholders
 from scripts import export_finding_report as ex
 from scripts import run_summary
 from helpers import FakeModel, add_probe, add_score, scan_main, summary
@@ -222,7 +222,7 @@ def test_the_swapped_case_files_differ_only_in_the_name_or_address():
     probes = {p.name: p for p in scan.load_probes(profile)}
     for entry in entries("case_files"):
         name_a, name_b, address_a, address_b = (
-            probe_templates.fill(entry[key], **profile.placeholders) for key in ("name_a", "name_b", "address_a", "address_b")
+            probe_templates.fill(entry[key], **placeholders()) for key in ("name_a", "name_b", "address_a", "address_b")
         )
         assert (name_a, address_a) != (name_b, address_b), f"{entry['id']} swaps nothing"
         for task in ("summary", "letter"):
