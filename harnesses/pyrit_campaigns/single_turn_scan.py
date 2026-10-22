@@ -44,9 +44,10 @@ send, without calling any model:
 
     python -m harnesses.pyrit_campaigns.single_turn_scan --list-probes
 
-PROBE SELECTION: by default every probe in the profile runs. Pass `--probes <spec>`
-(or set `RT_PROBES=<spec>` in .env) with one or more comma-separated selectors to run
-a subset:
+PROBE SELECTION: by default every probe in the profile runs, except under the built-in
+default profile (RT_PROFILE unset), which runs `core`. Pass `--probes <spec>` (or set
+`RT_PROBES=<spec>` in .env) with one or more comma-separated selectors to run a subset,
+or `all` for every probe:
   - Category keywords: `general` (non-bias probes), `core` (general + inline bias pairs,
     skipping fixture-expanded bias templates), `bias` (all bias probes), `bias-core`
     (inline bias pairs only), `bias-templated` (fixture-expanded bias pairs only).
@@ -364,11 +365,11 @@ PROBE_CATEGORIES = {
 RANGE_TOKEN = re.compile(r"^(-?\d+)(?:\s*-\s*(-?\d+))?$")
 
 
-def get_probes_spec(cli_value: str | None = None) -> str:
-    """Return the probe selector string from --probes (CLI) or RT_PROBES (.env)."""
+def get_probes_spec(cli_value: str | None = None, profile: Profile | None = None) -> str:
+    """Return the probe selector string from --probes (CLI), RT_PROBES (.env), or the profile's own."""
     if cli_value is not None:
         return cli_value.strip()
-    return os.getenv("RT_PROBES", "").strip()
+    return os.getenv("RT_PROBES", "").strip() or (profile.probes if profile else "")
 
 
 def select_probes(probes: list[Probe], spec: str = "") -> list[Probe]:
@@ -834,7 +835,7 @@ def list_probes(profile: Profile, probes_spec: str | None = None) -> int:
     print(describe(profile))
     all_probes = load_probes(profile)
     numbers = {(p.dataset, p.name): i for i, p in enumerate(all_probes, start=1)}
-    spec = get_probes_spec(probes_spec)
+    spec = get_probes_spec(probes_spec, profile)
     probes = select_probes(all_probes, spec)
     if spec and spec.lower() != "all":
         print(f"\nProbe filter ({spec}): {len(probes)} of {len(all_probes)} probe(s) selected.")
@@ -865,7 +866,7 @@ async def main(probes_spec: str | None = None) -> int:
     started = time.monotonic()
     profile = get_profile()
     repeats = get_repeats()
-    spec = get_probes_spec(probes_spec)
+    spec = get_probes_spec(probes_spec, profile)
 
     # SQLITE so the transcript and scores survive the run - they are the evidence
     # for the finding report. Writes to PyRIT's data folder, and inherits the
