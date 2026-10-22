@@ -550,6 +550,8 @@ def build_summary(results, memory, run_id: str) -> str:
         lines.append(f"| Objectives | from `{labels['rt_objectives_file']}` |")
     if labels.get("rt_probes"):
         lines.append(f"| Probe filter | `{labels['rt_probes']}` |")
+    if labels.get("rt_converters"):
+        lines.append(f"| Converters | `{labels['rt_converters']}` |")
     if started:
         local = started.astimezone()
         lines.append(f"| Run started | {local:%Y-%m-%d %H:%M} {local.tzname()} ({started:%H:%M} UTC) |")

@@ -107,6 +107,12 @@ def format_transcript(messages) -> str:
     lines = []
     for message in messages:
         for piece in message.message_pieces:
+            if (
+                piece.role == "user"
+                and getattr(piece, "original_value", None)
+                and piece.original_value != piece.converted_value
+            ):
+                lines.append(f"[user original] {piece.original_value}")
             lines.append(f"[{piece.role}] {piece.converted_value}")
             trace = (piece.prompt_metadata or {}).get(TRACE_METADATA_KEY)
             if piece.role == "assistant" and trace:
@@ -233,9 +239,10 @@ def reproduction_steps(labels: dict) -> str:
         )
     )
     if labels.get("rt_campaign") == "single_turn_scan":
+        conv_flag = f" --converters {labels['rt_converters']}" if labels.get("rt_converters") else ""
         steps = [
             f"In `.env`, set `RT_PROFILE={labels.get('rt_profile')}`{prompt_setting}, {target}, and {judge}.",
-            "Run `python -m harnesses.pyrit_campaigns.single_turn_scan`.",
+            f"Run `python -m harnesses.pyrit_campaigns.single_turn_scan{conv_flag}`.",
             probe_step(labels),
         ]
         if labels.get("rt_prompt_canary"):
@@ -411,10 +418,10 @@ def test_key(result) -> tuple:
     """What makes two results runs of the same test: the probe, not only its text.
 
     Several probes can send the same words: the English baseline of each language pair,
-    and both halves of a control pair. The dataset and probe name keep them apart.
+    and both halves of a control pair. The dataset, probe name, and converter chain keep them apart.
     """
     labels = result.labels or {}
-    return (labels.get("rt_dataset"), labels.get("rt_probe"), result.objective)
+    return (labels.get("rt_dataset"), labels.get("rt_probe"), labels.get("rt_converters") or "", result.objective)
 
 
 def latest_per_test(results) -> list:
