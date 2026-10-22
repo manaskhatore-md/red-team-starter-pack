@@ -8,9 +8,9 @@
       "rt_planted_records": "2",
       "rt_placeholders": "RT_AGENCY_NAME, RT_CONTACT_CHANNEL, RT_PROGRAM_NAME, RT_RECORD_TYPE, RT_TOOL_NAME"
     },
-    "probe_numbering": "a09afa4ea486",
+    "probe_numbering": "f258a23b5767",
     "system_prompt": "11c964b8b85a",
-    "authorization_banner": true,
+    "authorization_banner": false,
     "code_checks_on_every_reply": [
       "credential_leak",
       "markdown_exfiltration",

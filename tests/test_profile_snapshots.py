@@ -45,7 +45,7 @@ RUBRICS = set(yaml.safe_load(
     (REPO_ROOT / "harnesses" / "pyrit_campaigns" / "state_policy_rubric.yaml").read_text(encoding="utf-8")
 )["rubrics"])
 UPDATE = os.getenv("UPDATE_PROFILE_SNAPSHOTS") == "1"
-# Both wordings: "Runs against an app need a ..." and "This profile requires a ...".
+# From the warning every run against an app prints: "Runs against an app need a ...".
 AUTHORIZATION_BANNER = "non-production instance, synthetic data only"
 
 
@@ -82,7 +82,8 @@ def probe_numbering(capsys) -> str:
     """The numbers --list-probes gives this profile's probes, which --probes 1-15 selects by."""
     single_turn_scan.list_probes(get_profile(), None)
     numbered = re.findall(r"^\[(\d+)\] (\S+) / (\S+)", capsys.readouterr().out, re.MULTILINE)
-    assert numbered and [int(n) for n, _, _ in numbered] == list(range(1, len(numbered) + 1))
+    # Numbers are shared by every profile, so a profile that skips a suite skips its numbers.
+    assert numbered and [int(n) for n, _, _ in numbered] == sorted({int(n) for n, _, _ in numbered})
     return digest("\n".join(f"{n} {dataset}/{name}" for n, dataset, name in numbered))
 
 

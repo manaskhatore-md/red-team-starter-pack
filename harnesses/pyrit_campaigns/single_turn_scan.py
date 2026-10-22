@@ -1,4 +1,4 @@
-"""Single-turn scan - every probe in the profile's datasets, graded by your rubrics.
+"""Single-turn scan - the profile's probes, graded by the rubrics written for their suites.
 
 This is the broad, cheap pass: one prompt, one response, one judgment per probe. It
 catches the failures that do not need patience, and it is the thing you re-run on a
@@ -7,9 +7,10 @@ schedule to catch regressions. The multi-turn campaigns
 
     RT_PROFILE=public_conversational python -m harnesses.pyrit_campaigns.single_turn_scan
 
-What runs is decided by the profile, not by this file: the profile names which
-attack_suites/*/*.yaml probes to send, and the harnesses/pyrit_campaigns/state_policy_rubric.yaml rubrics
-that grade those probes' datasets grade them. See harnesses/pyrit_campaigns/profiles.py.
+What runs is decided by the profile, not by this file: the profile picks, in --probes
+syntax, which probes from every attack_suites/*/*.yaml suite to send, and the
+harnesses/pyrit_campaigns/state_policy_rubric.yaml rubrics that grade those probes'
+datasets grade them. See harnesses/pyrit_campaigns/profiles.py.
 
 MATCHED PAIRS (attack_suites/03_algorithmic_bias/algorithmic_bias.yaml): bias only shows when two replies are
 compared, so after the scan, the two replies to each pair are handed to the judge
@@ -39,19 +40,20 @@ it asks about exists.
 
 TEMPLATES: a seed whose metadata says `expand_with: <name>` is sent once per entry
 in fixtures/<name>.yaml beside its dataset, filled with that entry. See
-harnesses/pyrit_campaigns/probe_templates.py. To see every probe a profile would
-send, without calling any model:
+harnesses/pyrit_campaigns/probe_templates.py. To see the probes a profile would
+send, numbered among every suite's, without calling any model:
 
     python -m harnesses.pyrit_campaigns.single_turn_scan --list-probes
 
-PROBE SELECTION: by default every probe in the profile runs, except under the built-in
-default profile (RT_PROFILE unset), which runs `core`. Pass `--probes <spec>` (or set
-`RT_PROBES=<spec>` in .env) with one or more comma-separated selectors to run a subset,
-or `all` for every probe:
+PROBE SELECTION: every probe in every suite is numbered, in the order of SUITES in
+profiles.py, and the profile picks which run (`core` for the built-in default, with
+RT_PROFILE unset). Pass `--probes <spec>` (or set `RT_PROBES=<spec>` in .env) with one or
+more comma-separated selectors to run others instead, or `all` for every probe:
   - Category keywords: `general` (non-bias probes), `core` (general + inline bias pairs,
     skipping fixture-expanded bias templates), `bias` (all bias probes), `bias-core`
     (inline bias pairs only), `bias-templated` (fixture-expanded bias pairs only).
-  - 1-based probe numbers or ranges from `--list-probes`: e.g. `1`, `1-15`, `16-25`.
+  - 1-based probe numbers or ranges from `--list-probes`: e.g. `1`, `1-15`, `16-25`. A
+    probe has the same number whichever profile runs.
   - Dataset, probe, template, or pair names: e.g. `prompt_injection`, `override_simple`,
     `scenario_spanish`, `dialect_01`.
 If a selected probe belongs to a matched pair (`pair_id`), its partner probe is
@@ -110,12 +112,12 @@ from pyrit.score import MessageTrueFalseScorer, SelfAskGeneralTrueFalseScorer
 from pyrit.score.scorer_prompt_validator import ScorerPromptValidator
 from pyrit.setup import SQLITE, initialize_pyrit_async
 
-from harnesses.pyrit_campaigns import calibration
+from harnesses.pyrit_campaigns import calibration, profiles
 from harnesses.pyrit_campaigns.probe_templates import expand, fill, load_dataset
 from harnesses.pyrit_campaigns.profiles import (
     PAIR_RUBRICS,
-    PROFILES,
     Profile,
+    checklist_for,
     dataset_path,
     describe,
     env_var,
@@ -314,14 +316,17 @@ def judge_context(raw, where: str, placeholders: dict[str, str]) -> tuple[tuple[
     return tuple(pairs)
 
 
-def load_probes(profile: Profile) -> list[Probe]:
-    """Return a Probe for every seed the profile selects: one per fixture entry for a template seed."""
+def load_probes(datasets=None) -> list[Probe]:
+    """A Probe for every seed in the datasets, every suite by default: one per fixture entry for a template seed.
+
+    In SUITES order, which is the order --list-probes numbers them in.
+    """
     values = placeholders()
     probes: list[Probe] = []
-    for name in profile.datasets:
+    for name in datasets or profiles.SUITES:
         path = dataset_path(name)
         if not path.exists():
-            raise SystemExit(f"Profile {profile.key!r} names a missing dataset: {path}")
+            raise SystemExit(f"Suite {name!r} has no dataset: {path}")
         dataset = load_dataset(path)
         for seed in dataset.seeds:
             # A template seed becomes one probe per entry in its fixture file; any
@@ -396,10 +401,9 @@ def select_probes(probes: list[Probe], spec: str = "") -> list[Probe]:
     if not tokens:
         raise SystemExit(f"Empty probe selector {spec!r}.")
     if not probes:
-        raise SystemExit("Profile has no probes to select from.")
+        raise SystemExit("There are no probes to select from.")
 
     total = len(probes)
-    known_datasets = {d for prof in PROFILES.values() for d in prof.datasets}
     directly_selected: set[int] = set()
 
     for token in tokens:
@@ -413,7 +417,7 @@ def select_probes(probes: list[Probe], spec: str = "") -> list[Probe]:
             if not matched:
                 datasets = ", ".join(sorted({p.dataset for p in probes}))
                 raise SystemExit(
-                    f"Probe selector {token!r} matched 0 probes in this profile (datasets: {datasets})."
+                    f"Probe selector {token!r} matched 0 probes (datasets: {datasets})."
                 )
             directly_selected.update(matched)
             continue
@@ -429,7 +433,7 @@ def select_probes(probes: list[Probe], spec: str = "") -> list[Probe]:
             end = int(range_match.group(2)) if range_match.group(2) is not None else start
             if start < 1 or end < 1 or start > total or end > total:
                 raise SystemExit(
-                    f"Probe selector {token!r} is out of range: this profile has {total} probe(s) (1-{total})."
+                    f"Probe selector {token!r} is out of range: there are {total} probe(s) (1-{total})."
                 )
             if start > end:
                 raise SystemExit(
@@ -437,12 +441,6 @@ def select_probes(probes: list[Probe], spec: str = "") -> list[Probe]:
                 )
             directly_selected.update(range(start - 1, end))
             continue
-
-        if token in known_datasets:
-            datasets = ", ".join(sorted({p.dataset for p in probes}))
-            raise SystemExit(
-                f"Dataset {token!r} is not in this profile (datasets: {datasets})."
-            )
 
         categories = ", ".join(PROBE_CATEGORIES)
         raise SystemExit(
@@ -476,9 +474,14 @@ def rubrics_for(probes: list[Probe]) -> tuple[str, ...]:
     return tuple(key for key, rubric in load_rubrics().items() if datasets & set(rubric.get("grades", [])))
 
 
+def profile_probes(profile: Profile) -> list[Probe]:
+    """The probes the profile picks, before --probes or RT_PROBES picks others."""
+    return select_probes(load_probes(), profile.probes)
+
+
 def profile_rubrics(profile: Profile) -> tuple[str, ...]:
     """The rubrics that grade the profile's probes. The multi-turn campaigns' goals are judged by these."""
-    return rubrics_for(load_probes(profile))
+    return rubrics_for(profile_probes(profile))
 
 
 NO_PASS_CRITERIA = "None were written for this probe."
@@ -840,13 +843,13 @@ def check_placeholders(probes: list[Probe], system_prompt: str = "") -> list[str
 
 
 def list_probes(profile: Profile, probes_spec: str | None = None) -> int:
-    """Print every probe the profile would send, and what grades it, without calling any model.
+    """Print the probes the profile would send, and what grades each, without calling any model.
 
     For reviewing a dataset before a run, above all one with templates: the probes
     a template makes are not written out anywhere else.
     """
     print(describe(profile))
-    all_probes = load_probes(profile)
+    all_probes = load_probes()
     numbers = {(p.dataset, p.name): i for i, p in enumerate(all_probes, start=1)}
     spec = get_probes_spec(probes_spec, profile)
     probes = select_probes(all_probes, spec)
@@ -889,7 +892,7 @@ async def main(probes_spec: str | None = None) -> int:
 
     print(describe(profile))
 
-    all_probes = load_probes(profile)
+    all_probes = load_probes()
     probes = select_probes(all_probes, spec)
     if spec and spec.lower() != "all":
         print(f"\nProbe filter ({spec}): {len(probes)} of {len(all_probes)} probe(s) selected.")
@@ -1114,9 +1117,10 @@ async def main(probes_spec: str | None = None) -> int:
             print(f"  - {error}")
         print("  (a blocked or empty response is not a pass - it means nothing was tested)")
 
-    if profile.checklist:
+    checklist = checklist_for(profile, {probe.dataset for probe in sent})
+    if checklist:
         print(f"\nBefore calling {profile.key!r} covered:")
-        for item in profile.checklist:
+        for item in checklist:
             print(f"  [ ] {item}")
 
     write_after_run(run_labels["rt_run_id"])
@@ -1138,11 +1142,11 @@ async def main(probes_spec: str | None = None) -> int:
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Send every probe in the profile's datasets, graded by its rubrics.")
+    parser = argparse.ArgumentParser(description="Send the profile's probes, graded by the rubrics written for their suites.")
     parser.add_argument(
         "--list-probes",
         action="store_true",
-        help="print the probes RT_PROFILE would send, and what grades each, then stop without calling any model",
+        help="print the probes the run would send, numbered, and what grades each, then stop without calling any model",
     )
     parser.add_argument(
         "--probes",

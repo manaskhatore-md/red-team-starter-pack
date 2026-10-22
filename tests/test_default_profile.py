@@ -16,7 +16,7 @@ from harnesses.pyrit_campaigns.planted_records import records_for, records_secti
 from harnesses.pyrit_campaigns.profiles import DEFAULT_PROFILE, get_profile, placeholders
 from helpers import FakeModel, nothing
 
-# Both wordings: "Runs against an app need a ..." and "This profile requires a ...".
+# From the warning every run against an app prints: "Runs against an app need a ...".
 AUTHORIZATION_BANNER = "non-production instance, synthetic data only"
 
 
@@ -42,7 +42,7 @@ def test_nothing_the_default_sends_has_an_unfilled_token():
     profile = get_profile()
     assert profile.key == DEFAULT_PROFILE
     # Every probe, not just core: --probes all sends the rest.
-    probes = single_turn_scan.load_probes(profile)
+    probes = single_turn_scan.profile_probes(profile)
     records = records_section(records_for(single_turn_scan.rubrics_for(probes)))
     prompt = sp.load_system_prompt(profile.key, placeholders(), "RTC-0000-0000", records)
     goals = [o.goal for o in multi_turn_crescendo.load_objectives(profile)]
@@ -77,10 +77,13 @@ def test_the_default_runs_core_unless_probes_says_otherwise(monkeypatch, clean_e
     assert "Probe filter (1-48): 48 of 94 probe(s) selected." in capsys.readouterr().out
 
 
-def test_a_named_profile_still_runs_every_probe(capsys):
+def test_a_named_profile_runs_its_own_selection(capsys):
     single_turn_scan.list_probes(get_profile("internal_productivity"))
     out = capsys.readouterr().out
-    assert "Probe filter" not in out and "48 of 48 probe(s) would be sent" in out
+    assert "Probe filter (prompt_injection,sensitive_data_leakage,excessive_agency): 48 of 94" in out
+    assert "48 of 48 probe(s) would be sent" in out
+    single_turn_scan.list_probes(get_profile("constituent_decision"))
+    assert "94 of 94 probe(s) would be sent" in capsys.readouterr().out
 
 
 def test_a_run_against_an_app_warns_about_authorization_with_no_profile_set(monkeypatch, clean_env, memory, capsys):
@@ -92,11 +95,11 @@ def test_a_run_against_an_app_warns_about_authorization_with_no_profile_set(monk
     assert "Runs against an app need a non-production instance" in out
 
 
-def test_a_profile_that_requires_authorization_says_so_against_a_model(monkeypatch, clean_env, memory, capsys):
+def test_no_profile_warns_about_authorization_against_a_model(monkeypatch, clean_env, memory, capsys):
+    # The warning is about the app; a raw model is not anyone's system.
     clean_env.setenv("RT_PROFILE", "constituent_decision")
     scan_until_sending(monkeypatch)
-    out = capsys.readouterr().out
-    assert "This profile requires a non-production instance" in out and "Runs against an app" not in out
+    assert AUTHORIZATION_BANNER not in capsys.readouterr().out
 
 
 def test_a_run_against_a_model_with_no_profile_set_does_not(monkeypatch, clean_env, memory, capsys):

@@ -45,7 +45,7 @@ def test_the_halves_of_a_control_pair_are_two_conversations_not_one(memory, monk
 
 
 def test_every_shipped_control_pair_sends_one_text_and_does_not_say_it_is_a_control():
-    probes = [p for p in scan.load_probes(get_profile("constituent_decision")) if p.dataset == BIAS]
+    probes = [p for p in scan.profile_probes(get_profile("constituent_decision")) if p.dataset == BIAS]
     controls = defaultdict(list)
     for p in probes:
         if p.control:
@@ -178,7 +178,7 @@ def test_a_pair_the_judge_read_in_swapped_order_says_so_in_the_summary(memory):
 def test_a_scan_compares_every_pair_and_keeps_controls_out_of_the_findings(memory, monkeypatch, capsys):
     monkeypatch.setenv("RT_REPEATS", "2")
     profile = get_profile("constituent_decision")
-    probes = [p for p in scan.load_probes(profile) if p.dataset == BIAS]
+    probes = [p for p in scan.profile_probes(profile) if p.dataset == BIAS]
     pair_ids = {p.pair_id for p in probes if p.pair_id}
     controls = {p.pair_id for p in probes if p.control}
     judge = PairJudge()
@@ -219,7 +219,7 @@ def test_every_version_of_a_scenario_has_the_same_figures():
 
 def test_the_swapped_case_files_differ_only_in_the_name_or_address():
     profile = get_profile("constituent_decision")
-    probes = {p.name: p for p in scan.load_probes(profile)}
+    probes = {p.name: p for p in scan.profile_probes(profile)}
     for entry in entries("case_files"):
         name_a, name_b, address_a, address_b = (
             probe_templates.fill(entry[key], **placeholders()) for key in ("name_a", "name_b", "address_a", "address_b")
@@ -232,7 +232,7 @@ def test_the_swapped_case_files_differ_only_in_the_name_or_address():
 
 
 def test_each_fixture_entry_is_its_own_pair():
-    pairs = {p.pair_id for p in scan.load_probes(get_profile("constituent_decision")) if p.dataset == BIAS}
+    pairs = {p.pair_id for p in scan.profile_probes(get_profile("constituent_decision")) if p.dataset == BIAS}
     for entry in entries("scenarios"):
         for kind in ("dialect", "language_es", "language_zh", "control"):
             assert f"{kind}_{entry['id']}" in pairs

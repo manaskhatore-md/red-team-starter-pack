@@ -1,8 +1,8 @@
 """The profiles, datasets, and rubrics agree with each other.
 
 These catch the edits most likely to break a scan without any error message: a
-profile naming a dataset that was renamed, a probe that no rubric grades, a new
-{{ token }} with no default value, or a matched pair missing its other half.
+suite missing from SUITES, a probe that no rubric grades, a new {{ token }} with no
+default value, or a matched pair missing its other half.
 """
 
 import re
@@ -12,6 +12,8 @@ import pytest
 
 from harnesses.pyrit_campaigns import profiles, single_turn_scan
 from harnesses.pyrit_campaigns.profiles import PAIR_RUBRICS, PROFILES, get_profile
+from scripts import run_summary
+from helpers import FakeModel, scan_main
 
 RUBRICS = single_turn_scan.load_rubrics()
 TOKEN = re.compile(r"\{\{\s*(\w+)\s*\}\}")
@@ -50,6 +52,17 @@ def test_every_rubric_labels_its_verdicts_with_score_value():
         assert "Set score_value to false (ACCEPTABLE)" in prompt, name
 
 
+def test_every_suite_on_disk_is_in_suites():
+    # A suite left out of SUITES is never sent, by any profile.
+    on_disk = {p.stem for p in profiles.DATASETS_DIR.glob("*/*.yaml") if p.name != profiles.CHECKLIST_FILE}
+    assert set(profiles.SUITES) == on_disk
+    assert profiles.SUITES[-1] == "algorithmic_bias"
+
+
+def test_every_profiles_probes_are_a_valid_selection(profile):
+    assert single_turn_scan.profile_probes(profile)
+
+
 def test_every_rubric_grades_only_real_datasets():
     for name, rubric in RUBRICS.items():
         for dataset in rubric.get("grades", []):
@@ -58,7 +71,7 @@ def test_every_rubric_grades_only_real_datasets():
 
 def test_every_probe_in_a_profile_gets_graded(profile):
     # A probe no rubric grades is not sent, so a gap here is a silent hole in coverage.
-    probes = single_turn_scan.load_probes(profile)
+    probes = single_turn_scan.profile_probes(profile)
     rubrics = single_turn_scan.rubrics_for(probes)
     groups = single_turn_scan.group_by_rubrics(probes, rubrics, compare=bool(PAIR_RUBRICS & set(rubrics)))
     sent = {p.name for group in groups.values() for p in group}
@@ -83,8 +96,41 @@ def test_every_token_has_a_default():
 
 
 def test_matched_pairs_have_exactly_two_halves(profile):
-    pairs = Counter(p.pair_id for p in single_turn_scan.load_probes(profile) if p.pair_id)
+    pairs = Counter(p.pair_id for p in single_turn_scan.profile_probes(profile) if p.pair_id)
     assert all(count == 2 for count in pairs.values()), pairs
+
+
+# --- checklists: the profile's, then each suite's that ran ------------------------
+
+def test_every_suite_checklist_reads():
+    for suite in profiles.SUITES:
+        assert all(item and "\n" not in item for item in profiles.suite_checklist(suite)), suite
+    assert profiles.suite_checklist("algorithmic_bias")
+
+
+def test_a_suites_checklist_prints_when_its_probes_run_and_only_then(memory, monkeypatch, capsys):
+    monkeypatch.setenv("RT_PROBES", "prompt_injection")
+    _, run_id = scan_main(monkeypatch, FakeModel(), profile="internal_productivity")
+    out = capsys.readouterr().out
+    injection, = profiles.suite_checklist("prompt_injection")
+    leakage, = profiles.suite_checklist("sensitive_data_leakage")
+    assert injection in out and leakage not in out
+    # The profile's own items print whatever ran, ahead of the suites'.
+    assert out.index(PROFILES["internal_productivity"].checklist[0]) < out.index(injection)
+
+    results = memory.get_attack_results(labels={"rt_run_id": run_id})
+    text = run_summary.build_summary(results, memory, run_id)
+    assert f"- [ ] {injection}" in text and leakage not in text
+
+
+def test_a_malformed_suite_checklist_stops_the_run(tmp_path, monkeypatch):
+    (tmp_path / "01_x").mkdir()
+    (tmp_path / "01_x" / "x.yaml").write_text("seeds: []\n", encoding="utf-8")
+    (tmp_path / "01_x" / "checklist.yaml").write_text("checklist: just one string\n", encoding="utf-8")
+    monkeypatch.setattr(profiles, "DATASETS_DIR", tmp_path)
+    monkeypatch.setattr(profiles, "REPO_ROOT", tmp_path)
+    with pytest.raises(SystemExit, match="01_x/checklist.yaml needs a `checklist:` list"):
+        profiles.suite_checklist("x")
 
 
 def test_placeholder_values_come_from_env(clean_env):
@@ -99,7 +145,7 @@ def test_unknown_profile_lists_the_options():
 
 def test_placeholder_warning_names_the_env_var(capsys):
     profile = get_profile("public_conversational")
-    single_turn_scan.check_placeholders(single_turn_scan.load_probes(profile))
+    single_turn_scan.check_placeholders(single_turn_scan.profile_probes(profile))
     assert "RT_PROGRAM_NAME=" in capsys.readouterr().out
 
 
