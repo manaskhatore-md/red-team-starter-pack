@@ -372,7 +372,8 @@ def describe(profile: Profile) -> str:
     this file, when choosing a profile.
 
     The authorization warning prints for a profile that requires it, and for any run
-    against an app, whatever the profile: an app is a real system. It does not stop the run.
+    against an app, whatever the profile: an app is a real system. It names whichever
+    is the reason - the app, if both - and does not stop the run.
     """
     lines = [
         "=" * 78,
@@ -382,7 +383,13 @@ def describe(profile: Profile) -> str:
         f"datasets: {', '.join(profile.datasets)}",
         f"rubrics:  {', '.join(profile.rubrics)}",
     ]
-    if profile.requires_authorization or resolve_provider("target") == "app":
+    if resolve_provider("target") == "app":
+        lines += [
+            "",
+            "!! Runs against an app need a non-production instance, synthetic data only, and",
+            "!! written authorization from the system owner before you run them.",
+        ]
+    elif profile.requires_authorization:
         lines += [
             "",
             "!! This profile requires a non-production instance, synthetic data only, and",

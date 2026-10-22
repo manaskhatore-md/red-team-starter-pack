@@ -16,7 +16,8 @@ from harnesses.pyrit_campaigns.planted_records import records_for, records_secti
 from harnesses.pyrit_campaigns.profiles import DEFAULT_PROFILE, get_profile
 from helpers import FakeModel, nothing
 
-AUTHORIZATION_BANNER = "This profile requires a non-production instance"
+# Both wordings: "Runs against an app need a ..." and "This profile requires a ...".
+AUTHORIZATION_BANNER = "non-production instance, synthetic data only"
 
 
 class Stop(Exception):
@@ -87,6 +88,14 @@ def test_a_run_against_an_app_warns_about_authorization_with_no_profile_set(monk
     scan_until_sending(monkeypatch)
     out = capsys.readouterr().out
     assert "PROFILE: default" in out and AUTHORIZATION_BANNER in out
+    assert "Runs against an app need a non-production instance" in out
+
+
+def test_a_profile_that_requires_authorization_says_so_against_a_model(monkeypatch, clean_env, memory, capsys):
+    clean_env.setenv("RT_PROFILE", "constituent_decision")
+    scan_until_sending(monkeypatch)
+    out = capsys.readouterr().out
+    assert "This profile requires a non-production instance" in out and "Runs against an app" not in out
 
 
 def test_a_run_against_a_model_with_no_profile_set_does_not(monkeypatch, clean_env, memory, capsys):

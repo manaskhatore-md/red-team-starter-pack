@@ -45,7 +45,8 @@ RUBRICS = set(yaml.safe_load(
     (REPO_ROOT / "harnesses" / "pyrit_campaigns" / "state_policy_rubric.yaml").read_text(encoding="utf-8")
 )["rubrics"])
 UPDATE = os.getenv("UPDATE_PROFILE_SNAPSHOTS") == "1"
-AUTHORIZATION_BANNER = "This profile requires a non-production instance"
+# Both wordings: "Runs against an app need a ..." and "This profile requires a ...".
+AUTHORIZATION_BANNER = "non-production instance, synthetic data only"
 
 
 def digest(text: str) -> str:
