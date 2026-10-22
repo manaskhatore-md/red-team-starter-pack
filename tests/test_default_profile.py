@@ -1,9 +1,8 @@
 """The built-in default profile, which a run uses when RT_PROFILE is not set.
 
-What it runs is pinned in tests/fixtures/profile_snapshots/default.json. These check
-what a snapshot cannot: that nothing in it goes out as a {{ token }}, that it fits
-the call limit, that --probes replaces its `core` selection, and that a run against
-an app warns about authorization whatever the profile.
+How RT_PROFILE is read, that nothing the default sends goes out as a {{ token }}, that
+it fits the call limit, that --probes replaces its `core` selection, and that a run
+against an app warns about authorization whatever the profile.
 """
 
 import asyncio
@@ -36,6 +35,20 @@ def scan_until_sending(monkeypatch, probes_spec=None) -> None:
     monkeypatch.setattr(single_turn_scan, "build_scoring_target", lambda: FakeModel())
     with pytest.raises(Stop):
         asyncio.run(single_turn_scan.main(probes_spec))
+
+
+@pytest.mark.parametrize("setting", [None, "", "  "])
+def test_an_unset_or_blank_rt_profile_is_the_default(setting, clean_env):
+    # .env.example ships RT_PROFILE= blank.
+    if setting is not None:
+        clean_env.setenv("RT_PROFILE", setting.strip())
+    assert get_profile().key == DEFAULT_PROFILE
+
+
+def test_rt_profile_is_read_in_any_case(clean_env):
+    # An existing .env must keep working.
+    clean_env.setenv("RT_PROFILE", "Public_Conversational")
+    assert get_profile().key == "public_conversational"
 
 
 def test_nothing_the_default_sends_has_an_unfilled_token():
