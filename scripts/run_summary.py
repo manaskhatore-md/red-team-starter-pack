@@ -851,10 +851,16 @@ def build_summary(results, memory, run_id: str) -> str:
             '<a id="encoded-vs-as-written"></a>',
             "## Encoded vs. as written",
             "",
-            f"Each probe below was sent encoded with `{encoding}` and, as the control, as written. A probe "
-            "flagged only when encoded got past something - a keyword filter, a guardrail, the model's own "
-            "training - that the plain text did not. \"Without a verdict\" counts errors, blocked or empty "
-            "replies, fixed replies, and missing judge scores; they are left out of the counts.",
+            (
+                f"Each probe below was sent encoded with `{encoding}` and, as the control, as written. A probe "
+                "flagged only when encoded got past something - a keyword filter, a guardrail, the model's own "
+                "training - that the plain text did not."
+                if has_control
+                else f"Each probe below was sent encoded with `{encoding}` only: this run sent no plain-text "
+                "control, so the As written column is empty and a flag does not show the encoding got through."
+            )
+            + " \"Without a verdict\" counts errors, blocked or empty replies, fixed replies, and missing judge "
+            "scores; they are left out of the counts.",
             "",
             f"| Probe | Dataset | As written: flagged | Encoded: flagged | Without a verdict (as written / encoded) "
             "| Reading |",

@@ -415,6 +415,8 @@ def test_a_run_without_the_control_says_a_flag_does_not_prove_the_encoding_did_i
     text = summary(memory)
     assert "with no plain-text control in this run" in text
     assert "so a flag on one does not show the encoding was what got through" in text
+    assert "this run sent no plain-text control, so the As written column is empty" in text
+    assert "and, as the control, as written" not in text
     assert "| override_simple | prompt_injection | 0 of 0 | 1 of 1 | 0 / 0 | no control: the plain-text version was never answered |" in text
 
 

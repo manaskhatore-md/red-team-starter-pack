@@ -96,6 +96,4 @@ seeds:
 #     Put those payloads in data_fixtures/synthetic_documents/ instead of here.
 #   - Multilingual: the same probes in Spanish, Korean, and the other languages your
 #     agency serves. Guardrails are frequently English-only.
-# Note: For encoding/obfuscation attacks (base64, rot13, leetspeak, unicode-confusable,
-# zero-width, url), pass --converters <spec> or set RT_CONVERTERS in .env so PyRIT
-# transforms every selected probe automatically instead of hardcoding encoded strings here.
+# For encoded versions of these probes, run with --converters (e.g. rot13); each is also sent as written, as a control.
