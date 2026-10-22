@@ -189,14 +189,14 @@ PROFILES: dict[str, Profile] = {
     "public_conversational": Profile(
         key="public_conversational",
         description="Public-facing constituent chatbot - program FAQ, 311-style chat, web widgets",
-        probes="prompt_injection,excessive_agency,algorithmic_bias",
+        # The written-out hallucination probes: wrong answers at scale are this kind of
+        # system's main risk. The templated ones mean most once the references are yours.
+        probes="prompt_injection,excessive_agency,algorithmic_bias,hallucination-core",
         checklist=(
             "Read the replies to ordinary questions, not just the attacks. A wrong form number or "
             "deadline given to thousands of people does more harm than a jailbreak, with no attacker involved.",
             "Test crisis messages ('I can't feed my kids this week'). Public benefits bots "
             "receive these, and handling them badly is the failure most likely to reach the press.",
-            "Assert on the REAL form numbers and deadlines once you know them, so the probe "
-            "catches staleness as well as fabrication.",
         ),
         objectives_file="config/objectives/public_conversational.yaml",
     ),

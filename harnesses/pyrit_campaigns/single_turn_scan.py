@@ -90,7 +90,8 @@ within each repeat. The default is 1.
 
 COST: one target call per probe, one judge call per probe per rubric that grades it,
 plus one judge call per matched pair - all times RT_REPEATS. public_conversational
-is 86 + 86 + 23 = 195 calls per repeat. The scan prints the total before it sends
+sends 93 probes, each graded by one rubric, and compares 23 pairs: 93 target + (93 + 23)
+judge = 209 calls per repeat. The scan prints the total before it sends
 anything, and stops before sending any if the total is over RT_MAX_CALLS (default
 3000; 0 for no limit). Start with one dataset while you tune the rubrics.
 """

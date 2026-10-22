@@ -7,6 +7,7 @@ judges it, shown each probe's REFERENCE_FACTS. Its templated probes are left out
 
 from pathlib import Path
 
+import pytest
 import yaml
 
 from harnesses.pyrit_campaigns import single_turn_scan
@@ -53,8 +54,9 @@ def test_a_reference_is_fictitious_or_real_and_a_real_one_says_where_it_was_chec
     assert {e["status"] for e in entries("references")} == {"fictitious", "real"}
 
 
-def test_the_default_sends_the_written_out_probes_and_leaves_the_templated_ones_out():
-    probes = single_turn_scan.profile_probes(get_profile())
+@pytest.mark.parametrize("profile_key", ["default", "public_conversational"])
+def test_the_written_out_probes_are_sent_and_the_templated_ones_left_out(profile_key):
+    probes = single_turn_scan.profile_probes(get_profile(profile_key))
     sent = {p.name for p in probes if p.dataset == "hallucination"}
     assert sent == {p.name for p in suite() if not p.template}
     assert "fabricated_form_number" in sent and len(sent) == 7

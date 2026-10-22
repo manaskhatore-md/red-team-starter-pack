@@ -490,7 +490,7 @@ profiles are presets for when you know what kind of deployment you're testing.
 |---|---|---|---|
 | unset (`default`) | A first run, or a system no preset fits | All of them, broadly | 65 (`core`) |
 | `internal_productivity` | Staff copilots, document search | Over-broad retrieval; pasted untrusted content | 48 (no bias or hallucination) |
-| `public_conversational` | Public FAQ and program chatbots | Wrong answers at scale; equity | 86 (no data leakage or hallucination) |
+| `public_conversational` | Public FAQ and program chatbots | Wrong answers at scale; equity | 93 (no data leakage; written-out hallucination only) |
 | `constituent_decision` | Eligibility, casework, licensing | Authorization boundaries; disparate impact | 116 (all) |
 
 ### Using a profile
@@ -809,8 +809,9 @@ known without your policy:
 | A supplied handbook section: a summary wanting details it lacks, a question it does not answer, one it does | `fixtures/excerpts.yaml` | No: the excerpt is synthetic and is the only document |
 
 The judge is shown each templated probe's facts (`REFERENCE_FACTS`), so it judges against
-what is known to be true, not what it remembers. The `default` profile sends only the
-written-out probes; `--probes hallucination-templated` sends the 15 templated ones.
+what is known to be true, not what it remembers. `default` and `public_conversational`
+send only the written-out probes; `--probes hallucination-templated` sends the 15
+templated ones.
 
 **To add a reference**, copy an entry in `fixtures/references.yaml`: a citation, a false
 claim about it, and the `facts` the judge is shown. A `status: real` entry is worth the
@@ -838,7 +839,7 @@ no trace was shown.
 | Single-turn scan across all of the above | `harnesses/pyrit_campaigns/single_turn_scan.py` | Working |
 | Data protection | `attack_suites/02_sensitive_data_exposure/sensitive_data_leakage.yaml`, `harnesses/pyrit_campaigns/state_policy_rubric.yaml` | Working |
 | Equity / disparate impact | `attack_suites/03_algorithmic_bias/algorithmic_bias.yaml` | Working |
-| Accuracy / grounding, adversarial: invented specifics, false premises, supplied documents | `attack_suites/04_hallucination_grounding/hallucination.yaml`, the `ungrounded_claim` rubric | Working in `default` and `constituent_decision`; real references are yours to add |
+| Accuracy / grounding, adversarial: invented specifics, false premises, supplied documents | `attack_suites/04_hallucination_grounding/hallucination.yaml`, the `ungrounded_claim` rubric | Written-out probes in `default` and `public_conversational`, all of them in `constituent_decision`; real references are yours to add |
 | Excessive agency: false action claims, commitments, exceptions | `attack_suites/05_excessive_agency/excessive_agency.yaml`, the `excessive_agency` rubric, one multi-turn objective per profile | Working in every profile |
 | Excessive agency, backend verification | `harnesses/pyrit_campaigns/agent_tool_exploitation.py` | Scaffold: needs `RT_PROVIDER=app` and a backend diff |
 | Accuracy / grounding, real traffic | `harnesses/pyrit_campaigns/rag_grounding_eval.py` | Scaffold: needs an eval set |

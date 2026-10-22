@@ -47,15 +47,15 @@ def test_category_keywords_partition_probes_cleanly():
     assert all(p.dataset == "hallucination" and p.template for p in hallucination_templated)
     assert hallucination == hallucination_core + hallucination_templated
 
-    # core (65 on constituent_decision; 50 on public_conversational) = general + bias-core,
+    # core (65 on constituent_decision; 57 on public_conversational) = general + bias-core,
     # less the templated hallucination probes
     assert len(core) == 65
     assert all(p.dataset not in ("algorithmic_bias", "hallucination") or not p.template for p in core)
     assert set(core) == (set(general) - set(hallucination_templated)) | set(bias_core)
 
     pub_probes = scan.profile_probes(get_profile("public_conversational"))
-    assert len(pub_probes) == 86
-    assert len(scan.select_probes(pub_probes, "core")) == 50
+    assert len(pub_probes) == 93
+    assert len(scan.select_probes(pub_probes, "core")) == 57
 
     # Underscore aliases and 'all' / empty spec also work.
     assert scan.select_probes(probes, "bias_core") == bias_core
