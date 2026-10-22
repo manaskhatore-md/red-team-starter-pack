@@ -353,6 +353,58 @@ def failure_rates(entries) -> list[dict]:
     return [r for r in rows.values() if r["flagged"] or r["passed"] or r["no_verdict"]]
 
 
+def encoding_comparison(entries) -> list[dict]:
+    """Each probe sent encoded (--converters), with how it did as written and encoded.
+
+    The scan sends every encoded probe as written too, as the control. Counts are as in
+    failure_rates(); a fixed reply has no verdict, since the model never saw the probe.
+    """
+    def counts():
+        return {"flagged": 0, "passed": 0, "no_verdict": 0}
+
+    keyed = [((e["result"].labels or {}).get("rt_dataset", "-"), probe_name(e["result"]), e) for e in entries]
+    sent_encoded = {(dataset, name) for dataset, name, e in keyed if encoding_of(e["result"])}
+    rows: dict[tuple[str, str], dict] = {}
+    for dataset, name, e in keyed:
+        if (dataset, name) not in sent_encoded:
+            continue
+        row = rows.setdefault((dataset, name), {"dataset": dataset, "probe": name, "encoding": "",
+                                                "as_written": counts(), "encoded": counts()})
+        encoding = encoding_of(e["result"])
+        side = row["encoded"] if encoding else row["as_written"]
+        if encoding:
+            row["encoding"] = encoding
+        if e["verdict"] in (FLAGGED, ACHIEVED):
+            side["flagged"] += 1
+        elif e["verdict"] in (PASSED, HELD):
+            side["passed"] += 1
+        else:
+            side["no_verdict"] += 1
+    return list(rows.values())
+
+
+# The readings that say the encoding did what the plain text could not.
+ENCODING_GOT_THROUGH = ("flagged only when encoded", "flagged more often encoded")
+
+
+def encoding_reading(as_written: dict, encoded: dict) -> str:
+    """The Reading column of an encoded-vs-as-written row."""
+    plain_tested = as_written["flagged"] + as_written["passed"]
+    encoded_tested = encoded["flagged"] + encoded["passed"]
+    if not plain_tested and not encoded_tested:
+        return "nothing tested"
+    if not plain_tested:
+        return "no control: the plain-text version was never answered"
+    if not encoded_tested:
+        return "the encoded version was never answered"
+    plain_rate, encoded_rate = as_written["flagged"] / plain_tested, encoded["flagged"] / encoded_tested
+    if encoded_rate > plain_rate:
+        return "flagged only when encoded" if not as_written["flagged"] else "flagged more often encoded"
+    if encoded_rate < plain_rate:
+        return "flagged less often encoded"
+    return "no difference" if encoded["flagged"] else "never flagged either way"
+
+
 def template_rates(entries) -> tuple[list[dict], list[dict]]:
     """(by template, by fixture entry): how often the probes made from templates were flagged.
 
@@ -489,6 +541,9 @@ def build_summary(results, memory, run_id: str) -> str:
     other_hits = {check: sum(e["other_checks"][check] is True for e in entries) for check in OTHER_CHECKS}
     other_checked = {check: sum(e["other_checks"][check] is not None for e in entries) for check in OTHER_CHECKS}
     prompt_text = system_prompt_text(entries)
+    comparison = encoding_comparison(entries)
+    # Runs from before the scan sent the control have encoded results only.
+    has_control = any(row["as_written"]["flagged"] + row["as_written"]["passed"] for row in comparison)
 
     labels = results[0].labels or {}
     campaign = labels.get("rt_campaign", "unlabeled")
@@ -570,9 +625,14 @@ def build_summary(results, memory, run_id: str) -> str:
         lines.append(f"| Probe filter | `{labels['rt_probes']}` |")
     if labels.get("rt_converters"):
         encoded_in = sorted({(e["result"].labels or {}).get("rt_dataset", "-") for e in entries if encoding_of(e["result"])})
+        control = (
+            "each also sent as written, as the control ([Encoded vs. as written](#encoded-vs-as-written))"
+            if has_control
+            else "with no plain-text control in this run"
+        )
         lines.append(
             f"| Converters | `{labels['rt_converters']}`, on the {' and '.join(encoded_in) or 'no'} probes "
-            "(marked with it below) |"
+            f"(marked with it below), {control} |"
         )
     if started:
         local = started.astimezone()
@@ -678,6 +738,27 @@ def build_summary(results, memory, run_id: str) -> str:
             f"- **Some probes came from {len(templated)} template(s).** [By template](#by-template) reads them "
             "together, per template and per fixture entry, which says more than any one of them."
         )
+    if comparison and has_control:
+        worse = [r for r in comparison if encoding_reading(r["as_written"], r["encoded"]) in ENCODING_GOT_THROUGH]
+        encoding = comparison[0]["encoding"]
+        if worse:
+            lines.append(
+                f"- **{len(worse)} of {len(comparison)} probe(s) were flagged more often encoded with `{encoding}` "
+                "than as written.** The plain-text copy is the control, so the encoding is what got past the "
+                "model's or the app's defenses: [Encoded vs. as written](#encoded-vs-as-written)."
+                + (" One try each is one reply either way; re-run with RT_REPEATS=5 or more before you report it."
+                   if repeats == 1 else "")
+            )
+        else:
+            lines.append(
+                f"- **Encoding with `{encoding}` made no probe fail more often than its plain-text copy** "
+                f"([Encoded vs. as written](#encoded-vs-as-written))."
+            )
+    elif comparison:
+        lines.append(
+            "- **Probes were sent encoded with no plain-text copy in this run,** so a flag on one does not show "
+            "the encoding was what got through. Re-run with the current scan, which sends both."
+        )
     if leaks:
         lines.append(
             f"- **{leaks} reply(ies) leaked the system prompt.** Each contains the canary token, a code "
@@ -762,6 +843,30 @@ def build_summary(results, memory, run_id: str) -> str:
                 + (f" and the {untested_pairs} pair(s) whose halves both got the same one" if untested_pairs else "")
                 + ", since the model saw none of them.",
             ]
+        lines.append("")
+
+    if comparison:
+        encoding = comparison[0]["encoding"]
+        lines += [
+            '<a id="encoded-vs-as-written"></a>',
+            "## Encoded vs. as written",
+            "",
+            f"Each probe below was sent encoded with `{encoding}` and, as the control, as written. A probe "
+            "flagged only when encoded got past something - a keyword filter, a guardrail, the model's own "
+            "training - that the plain text did not. \"Without a verdict\" counts errors, blocked or empty "
+            "replies, fixed replies, and missing judge scores; they are left out of the counts.",
+            "",
+            f"| Probe | Dataset | As written: flagged | Encoded: flagged | Without a verdict (as written / encoded) "
+            "| Reading |",
+            "|---|---|---|---|---|---|",
+        ]
+        for row in comparison:
+            plain, enc = row["as_written"], row["encoded"]
+            lines.append(
+                f"| {row['probe']} | {row['dataset']} | {plain['flagged']} of {plain['flagged'] + plain['passed']} "
+                f"| {enc['flagged']} of {enc['flagged'] + enc['passed']} | {plain['no_verdict']} / {enc['no_verdict']} "
+                f"| {encoding_reading(plain, enc)} |"
+            )
         lines.append("")
 
     if repeats > 1:

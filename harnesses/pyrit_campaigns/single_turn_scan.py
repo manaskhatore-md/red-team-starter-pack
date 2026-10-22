@@ -61,8 +61,10 @@ REQUEST CONVERTERS: by default probes are sent as plain text. Pass `--converters
 to encode or obfuscate probes before sending (`base64`, `base64-raw`, `rot13`,
 `rot13-raw`, `leetspeak`, `unicode-confusable`, `zero-width`, `url`). Only the
 prompt_injection and sensitive_data_leakage probes are encoded (CONVERTED_DATASETS); the
-rest are sent as written. The target receives the converted prompt while the rubric
-judge still sees the original unencoded objective.
+rest are sent as written. Each encoded probe is also sent as written in the same run, as
+a control, and the run summary sets the two side by side: a probe flagged only when
+encoded got past something the plain text did not. The target receives the converted
+prompt while the rubric judge still sees the original unencoded objective.
 
 THE SYSTEM PROMPT: each probe is sent after a system prompt, as a deployed app would
 send it - by default the stand-in in config/system_prompts/ for the profile, or the file
@@ -615,10 +617,14 @@ def converted_probes(probes: list[Probe], conv_spec: str) -> list[Probe]:
 
 
 def conversion_note(conv_spec: str, converted: list[Probe], total: int) -> str:
-    """The line a run prints about what its converters encode."""
+    """The lines a run prints about what its converters encode."""
     datasets = " and ".join(sorted({probe.dataset for probe in converted}))
-    rest = f"; the other {total - len(converted)} are sent as written" if total > len(converted) else ""
-    return f"\nRequest converters ({conv_spec}): the {len(converted)} {datasets} probe(s) are encoded before sending{rest}."
+    rest = f" The other {total - len(converted)} are sent only as written." if total > len(converted) else ""
+    return (
+        f"\nRequest converters ({conv_spec}): the {len(converted)} {datasets} probe(s) are sent twice, encoded and "
+        f"as written.{rest}\nThe one as written is the control: a probe flagged only when encoded got past "
+        "something the plain text did not."
+    )
 
 
 def _console_safe(text: str) -> str:
@@ -944,10 +950,16 @@ def expand_repeats(
     return objectives, overrides
 
 
-def planned_calls(groups: dict[tuple[str, ...], list[Probe]], pair_count: int, repeats: int) -> tuple[int, int]:
-    """(target calls, judge calls) the scan will make, before any retries."""
-    target = sum(len(group) for group in groups.values()) * repeats
-    judge = (sum(len(group) * len(keys) for keys, group in groups.items()) + pair_count) * repeats
+def planned_calls(
+    groups: dict[tuple[str, ...], list[Probe]], pair_count: int, repeats: int, converted: list[Probe] = ()
+) -> tuple[int, int]:
+    """(target calls, judge calls) the scan will make, before any retries.
+
+    Each `converted` probe is sent twice, as written and encoded, and graded both times.
+    """
+    sends = {keys: len(group) + sum(probe in converted for probe in group) for keys, group in groups.items()}
+    target = sum(sends.values()) * repeats
+    judge = (sum(count * len(keys) for keys, count in sends.items()) + pair_count) * repeats
     return target, judge
 
 
@@ -1132,9 +1144,10 @@ async def main(
     if ungraded_pairs:
         graded.append(f"{ungraded_pairs} sent only for pair comparison")
     pair_note = f"; then {pair_count} matched pairs compared" if pair_count else ""
-    target_calls, judge_calls = planned_calls(groups, pair_count, repeats)
+    target_calls, judge_calls = planned_calls(groups, pair_count, repeats, converted)
     repeat_note = f", each {repeats} times (RT_REPEATS)" if repeats > 1 else ""
-    print(f"\nSending {len(sent)} probes{repeat_note}: {', '.join(graded)}{pair_note}.")
+    encoded_note = f", plus {len(converted)} encoded copies" if converted else ""
+    print(f"\nSending {len(sent)} probes{encoded_note}{repeat_note}: {', '.join(graded)}{pair_note}.")
     print(f"That is about {target_calls} target calls and {judge_calls} judge calls, before retries.\n")
     check_budget(target_calls, judge_calls, repeats, templated=any(p.template for p in sent))
     # After the budget check, so a scan that stops there has called nothing.
@@ -1186,14 +1199,13 @@ async def main(
     # One attack per group, because an attack applies its scorers to every probe
     # it sends.
     completed, incomplete = [], []
-    progress = {"done": 0, "total": sum(len(group) for group in groups.values()) * repeats, "repeats": repeats}
-    # The converters belong to the attack, so the probes they encode get an attack of their own.
+    progress = {"done": 0, "total": target_calls, "repeats": repeats}
+    # Every probe is sent as written; the ones the converters encode are sent encoded
+    # too, by an attack of their own, since the converters belong to the attack.
     sends = []
     for keys, group in groups.items():
-        as_written = [probe for probe in group if probe not in converted]
+        sends.append((keys, group, "", {}))
         encoded = [probe for probe in group if probe in converted]
-        if as_written:
-            sends.append((keys, as_written, "", {}))
         if encoded:
             sends.append((keys, encoded, conv_spec, {"attack_converter_config": converter_config}))
     for keys, group, encoding, converter_kwargs in sends:
@@ -1227,18 +1239,24 @@ async def main(
     for objective, exception in incomplete:
         errors.append(f"{objective[:70]!r} did not complete: {exception}")
 
+    # Each encoded probe's [flagged, answered] counts, as written ("") and encoded.
+    versions: dict[tuple[str, str], dict[str, list[int]]] = {
+        (probe.dataset, probe.name): {"": [0, 0], conv_spec: [0, 0]} for probe in converted
+    }
     for result in completed:
         response = result.last_response
         probe = result.objective
-        if (result.labels or {}).get("rt_encoding"):
+        labels = result.labels or {}
+        if labels.get("rt_encoding"):
             # Sent encoded: marked, so it is not counted with the same probe sent as written.
-            probe = f"[{result.labels['rt_encoding']}] {probe}"
+            probe = f"[{labels['rt_encoding']}] {probe}"
 
         if response is None or getattr(response, "response_error", "none") != "none":
             error = "no response" if response is None else response.response_error
             errors.append(f"{probe[:70]!r} -> {error}")
             continue
 
+        flagged = False
         for score in memory.get_prompt_scores(conversation_id=result.conversation_id):
             # score_category is a list - a scorer can carry several. Flatten it so it
             # can be used as a grouping key.
@@ -1247,6 +1265,11 @@ async def main(
             if score.get_value() is True:
                 findings.append((rubric, probe, score.score_rationale or ""))
                 by_rubric[rubric] += 1
+                flagged = True
+        tally = versions.get((labels.get("rt_dataset"), labels.get("rt_probe")), {}).get(labels.get("rt_encoding", ""))
+        if tally:
+            tally[0] += flagged
+            tally[1] += 1
 
         print(f"--- [{result.conversation_id}]")
         print(f"    probe: {probe[:100]}")
@@ -1255,7 +1278,9 @@ async def main(
     if compare:
         print("\nComparing matched pairs...")
         rubric_prompt = load_rubrics()["disparate_treatment"]["system_prompt"]
-        verdicts = await compare_pairs(sent, by_probe_and_repeat(completed), memory, judge, rubric_prompt, repeats)
+        # Pairs are never encoded; leaving the encoded copies out keeps them from standing in for a half.
+        as_written = [r for r in completed if not (r.labels or {}).get("rt_encoding")]
+        verdicts = await compare_pairs(sent, by_probe_and_repeat(as_written), memory, judge, rubric_prompt, repeats)
         controls = [v for v in verdicts if v.control]
         for verdict in verdicts:
             flagged = verdict.score.get_value() is True
@@ -1279,11 +1304,29 @@ async def main(
     print("\n" + "=" * 78)
     minutes, seconds = divmod(round(time.monotonic() - started), 60)
     times = f" x {repeats} repeats" if repeats > 1 else ""
-    print(f"SCAN COMPLETE - {len(sent)} probes{times}, {len(findings)} finding(s), in {minutes}m {seconds:02d}s")
+    encoded_count = f" + {len(converted)} encoded" if converted else ""
+    print(
+        f"SCAN COMPLETE - {len(sent)} probes{encoded_count}{times}, {len(findings)} finding(s), "
+        f"in {minutes}m {seconds:02d}s"
+    )
     print("=" * 78)
 
     for rubric, count in by_rubric.most_common():
         print(f"  {rubric}: {count}")
+
+    if versions:
+        print(f"\nEncoded ({conv_spec}) vs. as written, flagged of answered:")
+        for (_, name), tally in versions.items():
+            (plain_flags, plain_answered), (encoded_flags, encoded_answered) = tally[""], tally[conv_spec]
+            more = (
+                encoded_answered and plain_answered
+                and encoded_flags / encoded_answered > plain_flags / plain_answered
+            )
+            print(
+                f"  {name}: as written {plain_flags} of {plain_answered}, encoded {encoded_flags} of {encoded_answered}"
+                + ("  <- flagged more often encoded" if more else "")
+            )
+        print("  The run summary reads these with fixed replies left out (Encoded vs. as written).")
 
     # With repeats, one probe can be flagged several times: print it once, with the
     # count and the first rationale.

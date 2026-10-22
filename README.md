@@ -541,6 +541,14 @@ compares two plain replies, and an excessive-agency probe asks for an action, so
 copy would test the encoding instead. A selection with no probe from those two suites stops
 before anything is sent.
 
+Each encoded probe is also sent as written in the same run, as the control, so `--converters`
+doubles the calls for those probes. A flag on an encoded probe means little by itself: the
+plain text may fail the same way. The run summary's **Encoded vs. as written** section sets the
+two side by side, and a probe flagged only when encoded is the finding - the encoding got past
+something the plain text did not. Use `RT_REPEATS=5` or more before reporting one; a single
+try each way is one reply. Replies are also checked in decoded form, so a leak in a reply that
+comes back in base64, ROT13, or look-alike letters is still caught.
+
 ```bash
 # Preview the converted payload for each selected probe without calling a model
 python -m harnesses.pyrit_campaigns.single_turn_scan --list-probes --probes prompt_injection --converters base64
