@@ -68,7 +68,7 @@ def dataset_path(name: str) -> Path:
 
 
 # Every suite, in the order --list-probes numbers their probes. Bias is last, so
-# probes 1-48 are the non-bias ones whichever profile runs. A new suite goes here too:
+# probes 1-60 are the non-bias ones whichever profile runs. A new suite goes here too:
 # a profile picks its probes from these.
 SUITES = ("prompt_injection", "sensitive_data_leakage", "excessive_agency", "algorithmic_bias")
 # Beside a suite's dataset: what its probes leave to check by hand, printed whenever they run.

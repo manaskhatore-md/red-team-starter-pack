@@ -540,7 +540,7 @@ Each profile in `harnesses/pyrit_campaigns/profiles.py` is a few lines:
   its `checklist.yaml`, and print whenever its probes run, under any profile.
 
 Probes are numbered the same way under every profile, suite by suite with bias last, so
-`--probes 1-48` is always the non-bias probes. `--probes` replaces the profile's own
+`--probes 1-60` is always the non-bias probes. `--probes` replaces the profile's own
 selection rather than narrowing it: `internal_productivity` with `--probes bias-core`
 sends the bias pairs, though the profile on its own sends none.
 
