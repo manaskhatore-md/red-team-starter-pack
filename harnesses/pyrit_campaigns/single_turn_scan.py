@@ -49,9 +49,11 @@ PROBE SELECTION: every probe in every suite is numbered, in the order of SUITES 
 profiles.py, and the profile picks which run (`core` for the built-in default, with
 RT_PROFILE unset). Pass `--probes <spec>` (or set `RT_PROBES=<spec>` in .env) with one or
 more comma-separated selectors to run others instead, or `all` for every probe:
-  - Category keywords: `general` (non-bias probes), `core` (general + inline bias pairs,
-    skipping fixture-expanded bias templates), `bias` (all bias probes), `bias-core`
-    (inline bias pairs only), `bias-templated` (fixture-expanded bias pairs only).
+  - Category keywords: `general` (non-bias probes), `core` (everything except the
+    fixture-expanded bias and hallucination templates), `bias` (all bias probes),
+    `bias-core` (inline bias pairs only), `bias-templated` (fixture-expanded bias pairs
+    only), and `hallucination`, `hallucination-core`, `hallucination-templated` the same
+    way for the hallucination suite.
   - 1-based probe numbers or ranges from `--list-probes`: e.g. `1`, `1-15`, `16-25`. A
     probe has the same number whichever profile runs.
   - Dataset, probe, template, or pair names: e.g. `prompt_injection`, `override_simple`,
@@ -88,7 +90,7 @@ within each repeat. The default is 1.
 
 COST: one target call per probe, one judge call per probe per rubric that grades it,
 plus one judge call per matched pair - all times RT_REPEATS. public_conversational
-is 86 + 119 + 23 = 228 calls per repeat. The scan prints the total before it sends
+is 86 + 86 + 23 = 195 calls per repeat. The scan prints the total before it sends
 anything, and stops before sending any if the total is over RT_MAX_CALLS (default
 3000; 0 for no limit). Start with one dataset while you tune the rubrics.
 """
@@ -239,7 +241,7 @@ def get_repeats() -> int:
     return int(raw)
 
 
-# Above every shipped profile at RT_REPEATS=10 (constituent_decision is ~2,440
+# Above every shipped profile at RT_REPEATS=10 (constituent_decision is ~2,550
 # calls), so it stops only a scan that templates or extra datasets have made much
 # larger.
 DEFAULT_MAX_CALLS = 3000
@@ -384,13 +386,20 @@ def load_probes(datasets=None) -> list[Probe]:
 
 
 BIAS_DATASET = "algorithmic_bias"
+HALLUCINATION_DATASET = "hallucination"
+# Suites whose templated probes `core` leaves out: bias pairs need repeats to mean
+# anything, and the hallucination references are meant to be replaced with your own.
+NOT_CORE_WHEN_TEMPLATED = frozenset({BIAS_DATASET, HALLUCINATION_DATASET})
 
 PROBE_CATEGORIES = {
     "general": lambda p: p.dataset != BIAS_DATASET,
-    "core": lambda p: p.dataset != BIAS_DATASET or not p.template,
+    "core": lambda p: p.dataset not in NOT_CORE_WHEN_TEMPLATED or not p.template,
     "bias": lambda p: p.dataset == BIAS_DATASET,
     "bias-core": lambda p: p.dataset == BIAS_DATASET and not p.template,
     "bias-templated": lambda p: p.dataset == BIAS_DATASET and bool(p.template),
+    "hallucination": lambda p: p.dataset == HALLUCINATION_DATASET,
+    "hallucination-core": lambda p: p.dataset == HALLUCINATION_DATASET and not p.template,
+    "hallucination-templated": lambda p: p.dataset == HALLUCINATION_DATASET and bool(p.template),
 }
 
 RANGE_TOKEN = re.compile(r"^(-?\d+)(?:\s*-\s*(-?\d+))?$")
@@ -408,7 +417,8 @@ def select_probes(probes: list[Probe], spec: str = "") -> list[Probe]:
 
     Each comma-separated token may be:
       - `all` (or an empty `spec`): every probe in `probes`
-      - A category keyword in PROBE_CATEGORIES: `general`, `core`, `bias`, `bias-core`, `bias-templated`
+      - A category keyword in PROBE_CATEGORIES: `general`, `core`, `bias`, `bias-core`, `bias-templated`,
+        `hallucination`, `hallucination-core`, `hallucination-templated`
       - A 1-based probe number (`k`) or inclusive range (`m-n`)
       - A dataset name (`probe.dataset`), probe name (`probe.name`), template name
         (`probe.template`), or matched-pair id (`probe.pair_id`)
@@ -1407,7 +1417,8 @@ if __name__ == "__main__":
         metavar="SPEC",
         help=(
             "comma-separated probe selectors (overrides RT_PROBES): "
-            "categories (general, core, bias, bias-core, bias-templated), "
+            "categories (general, core, bias, bias-core, bias-templated, hallucination, "
+            "hallucination-core, hallucination-templated), "
             "1-based numbers or m-n ranges (e.g. 1-15), or dataset/probe/template/pair names. "
             "Paired probes automatically include their partner."
         ),

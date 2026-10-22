@@ -76,27 +76,30 @@ def test_the_default_runs_core_unless_probes_says_otherwise(monkeypatch, clean_e
     profile = get_profile()
     single_turn_scan.list_probes(profile)
     out = capsys.readouterr().out
-    assert "Probe filter (core): 58 of 94 probe(s) selected." in out
-    assert "58 of 58 probe(s) would be sent" in out
+    assert "Probe filter (core): 65 of 116 probe(s) selected." in out
+    assert "65 of 65 probe(s) would be sent" in out
 
     single_turn_scan.list_probes(profile, "all")
-    assert "94 of 94 probe(s) would be sent" in capsys.readouterr().out
+    assert "116 of 116 probe(s) would be sent" in capsys.readouterr().out
 
     single_turn_scan.list_probes(profile, "bias-templated")
-    assert "Probe filter (bias-templated): 36 of 94 probe(s) selected." in capsys.readouterr().out
+    assert "Probe filter (bias-templated): 36 of 116 probe(s) selected." in capsys.readouterr().out
 
-    clean_env.setenv("RT_PROBES", "1-48")
+    single_turn_scan.list_probes(profile, "hallucination-templated")
+    assert "Probe filter (hallucination-templated): 15 of 116 probe(s) selected." in capsys.readouterr().out
+
+    clean_env.setenv("RT_PROBES", "1-70")
     single_turn_scan.list_probes(profile)
-    assert "Probe filter (1-48): 48 of 94 probe(s) selected." in capsys.readouterr().out
+    assert "Probe filter (1-70): 70 of 116 probe(s) selected." in capsys.readouterr().out
 
 
 def test_a_named_profile_runs_its_own_selection(capsys):
     single_turn_scan.list_probes(get_profile("internal_productivity"))
     out = capsys.readouterr().out
-    assert "Probe filter (prompt_injection,sensitive_data_leakage,excessive_agency): 48 of 94" in out
+    assert "Probe filter (prompt_injection,sensitive_data_leakage,excessive_agency): 48 of 116" in out
     assert "48 of 48 probe(s) would be sent" in out
     single_turn_scan.list_probes(get_profile("constituent_decision"))
-    assert "94 of 94 probe(s) would be sent" in capsys.readouterr().out
+    assert "116 of 116 probe(s) would be sent" in capsys.readouterr().out
 
 
 def test_narrowing_the_probes_keeps_the_profiles_planted_records(monkeypatch, clean_env, memory, capsys):

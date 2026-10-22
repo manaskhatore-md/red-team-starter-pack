@@ -68,9 +68,9 @@ def dataset_path(name: str) -> Path:
 
 
 # Every suite, in the order --list-probes numbers their probes. Bias is last, so
-# probes 1-48 are the non-bias ones whichever profile runs. A new suite goes here too:
-# a profile picks its probes from these.
-SUITES = ("prompt_injection", "sensitive_data_leakage", "excessive_agency", "algorithmic_bias")
+# probes 1-70 are the non-bias ones whichever profile runs. A new suite goes here too,
+# ahead of bias: a profile picks its probes from these.
+SUITES = ("prompt_injection", "sensitive_data_leakage", "excessive_agency", "hallucination", "algorithmic_bias")
 # Beside a suite's dataset: what its probes leave to check by hand, printed whenever they run.
 CHECKLIST_FILE = "checklist.yaml"
 
@@ -159,13 +159,15 @@ PROFILES: dict[str, Profile] = {
     DEFAULT_PROFILE: Profile(
         key=DEFAULT_PROFILE,
         description="Built-in default (RT_PROFILE unset) - every suite; sends the core probes unless --probes says otherwise",
-        # Everything except the bias probes made from fixtures, which need repeats to mean anything.
+        # Everything except the bias and hallucination probes made from fixtures: the bias
+        # ones need repeats to mean anything, and the hallucination ones your own references.
         probes="core",
         checklist=(
             "Pick the preset that matches the deployment (internal_productivity, public_conversational, "
             "constituent_decision) or write a profile for it, and re-run with RT_PROFILE set. The default "
             "sends every suite, whether or not it fits this system.",
-            "Run the templated bias probes too (--probes bias-templated). The default leaves them out.",
+            "Run the templated bias and hallucination probes too (--probes bias-templated,hallucination-templated). "
+            "The default leaves them out.",
         ),
         objectives_file="config/objectives/default.yaml",
     ),
