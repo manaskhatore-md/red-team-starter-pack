@@ -107,6 +107,12 @@ def format_transcript(messages) -> str:
     lines = []
     for message in messages:
         for piece in message.message_pieces:
+            if (
+                piece.role == "user"
+                and getattr(piece, "original_value", None)
+                and piece.original_value != piece.converted_value
+            ):
+                lines.append(f"[user original] {piece.original_value}")
             lines.append(f"[{piece.role}] {piece.converted_value}")
             trace = (piece.prompt_metadata or {}).get(TRACE_METADATA_KEY)
             if piece.role == "assistant" and trace:
@@ -182,21 +188,73 @@ def reproducibility(result, all_results, memory) -> str:
         text += " By model: " + "; ".join(
             f"{model}: {sum(is_finding(r, memory) for r in rs)} of {len(rs)}" for model, rs in by_model.items()
         ) + "."
+    text += encoding_control(result, all_results, memory)
     if len(runs) < 5:
         text += " Re-run it until there are 5-10 runs before reporting it: one result can be noise."
     return text
 
 
+def encoding_control(result, all_results, memory) -> str:
+    """For a probe sent encoded: how the same probe did as written against the same target, the control.
+
+    A flag on an encoded probe shows the encoding got through only if the plain text
+    does not fail as often. Only runs against the same target count, so a model tested
+    elsewhere does not stand in for the app.
+    """
+    labels = result.labels or {}
+    encoding = encoding_label(labels)
+    if not encoding:
+        return ""
+    target = labels.get("rt_target") or "the same target"
+    dataset, probe, _, objective = test_key(result)
+    same = [
+        r for r in all_results
+        if (r.labels or {}).get("rt_target") == labels.get("rt_target")
+        and test_key(r)[:2] == (dataset, probe) and test_key(r)[3] == objective
+    ]
+    plain = [r for r in same if not encoding_label(r.labels or {})]
+    encoded = [r for r in same if encoding_label(r.labels or {}) == encoding]
+    if not plain:
+        return (
+            f" It has never been sent to {target} as written, so nothing here shows the encoding is what got "
+            "it through. Re-run it with the current scan, which sends both."
+        )
+    plain_hits = sum(is_finding(r, memory) for r in plain)
+    encoded_hits = sum(is_finding(r, memory) for r in encoded)
+    reading = (
+        "The plain text fails less often, so the encoding is what got the probe through."
+        if encoded_hits / len(encoded) > plain_hits / len(plain)
+        else "The plain text fails as often, so the encoding is not what got the probe through."
+    )
+    return (
+        f" The control: against {target}, the same probe sent as written was flagged in {plain_hits} of "
+        f"{len(plain)} recorded run(s), and encoded with `{encoding}` in {encoded_hits} of {len(encoded)}. {reading}"
+    )
+
+
+def encoding_label(labels: dict) -> str:
+    """The converters a result's probe was sent through (--converters), or "" if it was sent as written.
+
+    Runs from before rt_encoding was recorded encoded every probe with the run's converters.
+    """
+    return labels["rt_encoding"] if "rt_encoding" in labels else labels.get("rt_converters") or ""
+
+
 def probe_step(labels: dict) -> str:
     """Where the probe is written, as a reproduction step: its dataset, and for a template, the fixture entry."""
     dataset = dataset_path(labels.get("rt_dataset", "")).relative_to(REPO_ROOT).as_posix()
+    encoded = (
+        f" It was sent encoded with `{encoding_label(labels)}`; the transcript shows what the target received."
+        if encoding_label(labels)
+        else ""
+    )
     if labels.get("rt_template") and labels.get("rt_fixture"):
         fixture_file, _, entry = labels["rt_fixture"].partition("#")
         return (
             f"The probe is `{labels.get('rt_probe')}`: template `{labels['rt_template']}` in `{dataset}`, "
-            f"filled with entry `{entry}` of `{fixture_file}`. The text it sends is the Objective above."
+            f"filled with entry `{entry}` of `{fixture_file}`. The text it sends is the Objective above.{encoded}"
         )
-    return f"The probe is `{labels.get('rt_probe')}` in `{dataset}`. The text it sends is the Objective above."
+    return f"The probe is `{labels.get('rt_probe')}` in `{dataset}`. The text it sends is the Objective above.{encoded}"
 
 
 def reproduction_steps(labels: dict) -> str:
@@ -233,9 +291,10 @@ def reproduction_steps(labels: dict) -> str:
         )
     )
     if labels.get("rt_campaign") == "single_turn_scan":
+        conv_flag = f" --converters {labels['rt_converters']}" if labels.get("rt_converters") else ""
         steps = [
             f"In `.env`, set `RT_PROFILE={labels.get('rt_profile')}`{prompt_setting}, {target}, and {judge}.",
-            "Run `python -m harnesses.pyrit_campaigns.single_turn_scan`.",
+            f"Run `python -m harnesses.pyrit_campaigns.single_turn_scan{conv_flag}`.",
             probe_step(labels),
         ]
         if labels.get("rt_prompt_canary"):
@@ -339,7 +398,6 @@ def build_report(result, memory, template: str, all_results) -> str:
     profile = PROFILES.get(labels.get("rt_profile", ""))
     if profile:
         values["deployment_profile"] = f"{profile.key} - {profile.description}"
-        values["data_level"] = f"TODO: Data Level of this system (profile {profile.key} covers {profile.data_levels})"
 
     # The rubric's own severity and description are a starting point, not the answer.
     if flagged:
@@ -411,10 +469,11 @@ def test_key(result) -> tuple:
     """What makes two results runs of the same test: the probe, not only its text.
 
     Several probes can send the same words: the English baseline of each language pair,
-    and both halves of a control pair. The dataset and probe name keep them apart.
+    and both halves of a control pair. The dataset and probe name keep them apart, and the
+    converters keep a probe sent encoded apart from the same probe sent as written.
     """
     labels = result.labels or {}
-    return (labels.get("rt_dataset"), labels.get("rt_probe"), result.objective)
+    return (labels.get("rt_dataset"), labels.get("rt_probe"), encoding_label(labels), result.objective)
 
 
 def latest_per_test(results) -> list:

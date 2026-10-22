@@ -8,7 +8,7 @@ import pytest
 from pyrit.models import AttackOutcome, Message, MessagePiece
 
 from harnesses.pyrit_campaigns import multi_turn_crescendo, multi_turn_red_team, target_factory
-from harnesses.pyrit_campaigns.profiles import PROFILES, Objective, Profile
+from harnesses.pyrit_campaigns.profiles import PROFILES, Objective, Profile, placeholders
 from helpers import RUN, add_probe, nothing, summary
 
 
@@ -124,7 +124,7 @@ def test_objectives_have_their_placeholders_filled():
     profile = PROFILES["public_conversational"]
     goals = [o.goal for o in multi_turn_crescendo.load_objectives(profile)]
     assert not any("{{" in g for g in goals)
-    assert any(profile.placeholders["program_name"] in g for g in goals)
+    assert any(placeholders()["program_name"] in g for g in goals)
 
 
 def test_a_profile_without_objectives_stops_with_where_to_add_them():

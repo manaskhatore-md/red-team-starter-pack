@@ -11,7 +11,7 @@ from harnesses.pyrit_campaigns import single_turn_scan
 from harnesses.pyrit_campaigns.code_checks import CREDENTIAL_CHECK
 from harnesses.pyrit_campaigns.planted_records import RECORD_CHECK
 from harnesses.pyrit_campaigns import system_prompt as sp
-from harnesses.pyrit_campaigns.profiles import PROFILES
+from harnesses.pyrit_campaigns.profiles import PROFILES, placeholders
 from scripts import export_finding_report, run_summary
 from helpers import FakeModel, run_scan
 
@@ -62,7 +62,7 @@ def test_the_canary_scorer_records_a_hit_under_its_own_name():
 @pytest.mark.parametrize("key", sorted(PROFILES))
 def test_every_profile_has_a_stand_in_with_the_canary_slot_and_no_unfilled_tokens(key):
     profile = PROFILES[key]
-    prompt = sp.load_system_prompt(key, profile.placeholders, CANARY)
+    prompt = sp.load_system_prompt(key, placeholders(), CANARY)
     assert prompt.source == f"config/system_prompts/{key}.txt" and prompt.chosen_by == "profile"
     assert CANARY in prompt.text
     # The extraction probe asks for the text "starting with 'You are'".
@@ -104,8 +104,7 @@ def test_a_profile_without_a_stand_in_runs_without_one(capsys):
 
 
 def test_the_placeholder_check_covers_the_system_prompt(capsys):
-    profile = PROFILES["public_conversational"]
-    single_turn_scan.check_placeholders(profile, [], "Call {{ hotline }} or visit TODO phone/URL.")
+    single_turn_scan.check_placeholders([], "Call {{ hotline }} or visit TODO phone/URL.")
     out = capsys.readouterr().out
     assert "RT_CONTACT_CHANNEL=" in out and "hotline" in out
 

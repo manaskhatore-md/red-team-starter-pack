@@ -21,7 +21,8 @@ from .env:
     APP_BROWSER_PROFILE   folder that keeps your sign-in between runs. Default
                           ~/.rt_browser_profile/<browser>: Chrome and Edge cannot share one
     APP_BROWSER_HEADLESS  1 hides the window. Leave unset for the first run, so you can sign in
-    APP_BROWSER_MAX_TABS  conversations open at once. Default 4
+    APP_BROWSER_MAX_TABS  conversations open at once; more only while all of them are still
+                          waiting on a reply. Default 4
     APP_BROWSER_SETTLE    seconds a reply's text must stay unchanged to count as finished. Default 1.5
     APP_BROWSER_SIGN_IN_TIMEOUT  seconds to wait for you to sign in. Default 300
     APP_TIMEOUT           seconds to wait for a reply. Default 60
@@ -158,6 +159,9 @@ class BrowserChatTarget(PromptTarget):
         # conversation_id -> (tab, lock), least recently used first
         self._tabs: OrderedDict[str, tuple] = OrderedDict()
         self._closed: set[str] = set()
+        # Conversations with a probe on its way or a reply still coming: their tabs
+        # are never closed to make room.
+        self._answering: set[str] = set()
         self._lock = asyncio.Lock()
 
     @classmethod
@@ -195,6 +199,7 @@ class BrowserChatTarget(PromptTarget):
             await self._start()
             if conversation_id in self._tabs:
                 self._tabs.move_to_end(conversation_id)
+                self._answering.add(conversation_id)
                 return self._tabs[conversation_id]
             if conversation_id in self._closed:
                 raise RuntimeError(
@@ -205,14 +210,20 @@ class BrowserChatTarget(PromptTarget):
             in_use = {t for t, _ in self._tabs.values()}
             blank = [p for p in self._context.pages if p.url == "about:blank" and p not in in_use]
             tab = blank[0] if blank else await self._context.new_page()
-            # Close the oldest only once the new tab is open: closing a browser's last
-            # tab can close the browser.
+            # Close the oldest idle tab only once the new tab is open: closing a
+            # browser's last tab can close the browser. A tab still waiting on a reply
+            # is never closed - a slow reply would be cut off mid-answer - so with every
+            # tab busy, the browser holds one more than APP_BROWSER_MAX_TABS for a while.
             while len(self._tabs) >= self._max_tabs:
-                old_id, (old_tab, _) = self._tabs.popitem(last=False)
+                old_id = next((cid for cid in self._tabs if cid not in self._answering), None)
+                if old_id is None:
+                    break
+                old_tab, _ = self._tabs.pop(old_id)
                 self._closed.add(old_id)
                 await old_tab.close()
             await self._open_chat(tab)
             self._tabs[conversation_id] = (tab, asyncio.Lock())
+            self._answering.add(conversation_id)
             return self._tabs[conversation_id]
 
     async def _open_chat(self, tab) -> None:
@@ -272,8 +283,11 @@ class BrowserChatTarget(PromptTarget):
     async def _send_prompt_to_target_async(self, *, normalized_conversation: list[Message]) -> list[Message]:
         request = normalized_conversation[-1].message_pieces[0]
         tab, tab_lock = await self._tab_for(request.conversation_id)
-        async with tab_lock:
-            text = await self.ask(tab, request.converted_value)
+        try:
+            async with tab_lock:
+                text = await self.ask(tab, request.converted_value)
+        finally:
+            self._answering.discard(request.conversation_id)
         return [construct_response_from_request(request=request, response_text_pieces=[text])]
 
     async def cleanup_target_async(self) -> None:
@@ -284,6 +298,7 @@ class BrowserChatTarget(PromptTarget):
             await self._playwright.stop()
             self._playwright = None
         self._tabs.clear()
+        self._answering.clear()
 
 
 # Runs inside the app's page. Same-origin requests carry the page's sign-in cookies.

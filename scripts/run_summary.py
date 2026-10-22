@@ -45,11 +45,12 @@ from pyrit.memory import CentralMemory
 from pyrit.setup import SQLITE, initialize_pyrit_async
 
 from harnesses.pyrit_campaigns.calibration import CALIBRATION_LABEL, normalized
-from harnesses.pyrit_campaigns.profiles import PROFILES
+from harnesses.pyrit_campaigns.profiles import PROFILES, checklist_for
 from harnesses.pyrit_campaigns.code_checks import CODE_CHECKS
 from harnesses.pyrit_campaigns.planted_records import RECORD_CHECK
 from harnesses.pyrit_campaigns.system_prompt import CANARY_CHECK
 from scripts.export_finding_report import (
+    encoding_label,
     flagged_rubrics,
     format_scores,
     format_transcript,
@@ -233,6 +234,17 @@ def probe_name(result) -> str:
     return (result.labels or {}).get("rt_probe") or cell(result.objective, 60)
 
 
+def encoding_of(result) -> str:
+    """The converters a probe was sent through (--converters), or "" if it was sent as written."""
+    return encoding_label(result.labels or {})
+
+
+def shown_name(result) -> str:
+    """The probe's name, marked with its converters when it was sent encoded."""
+    encoding = encoding_of(result)
+    return probe_name(result) + (f" [{encoding}]" if encoding else "")
+
+
 def fixed_replies(entries, fallbacks: set[str] = frozenset()) -> list[dict]:
     """The fixed replies in a run, most common first: {"text", "members", "probes", "fallback"}.
 
@@ -252,7 +264,7 @@ def fixed_replies(entries, fallbacks: set[str] = frozenset()) -> list[dict]:
             groups[text].append(e)
     out = []
     for text, members in groups.items():
-        probes = sorted({probe_name(e["result"]) for e in members})
+        probes = sorted({shown_name(e["result"]) for e in members})
         questions = {(e["result"].labels or {}).get("rt_pair_id") or probe_name(e["result"]) for e in members}
         if text in fallbacks or len(questions) >= FIXED_REPLY_QUESTIONS:
             out.append({"text": text, "members": members, "probes": probes, "fallback": text in fallbacks})
@@ -322,11 +334,14 @@ def no_reply_reasons(no_reply) -> str:
 
 
 def failure_rates(entries) -> list[dict]:
-    """One row per probe: how many of its repeats were flagged, passed, or have no verdict."""
+    """One row per probe: how many of its repeats were flagged, passed, or have no verdict.
+
+    A probe sent both as written and encoded gets a row for each.
+    """
     rows: dict[tuple[str, str], dict] = {}
     for e in entries:
         result_labels = e["result"].labels or {}
-        key = (result_labels.get("rt_dataset", "-"), result_labels.get("rt_probe") or cell(e["result"].objective, 60))
+        key = (result_labels.get("rt_dataset", "-"), shown_name(e["result"]))
         row = rows.setdefault(key, {"dataset": key[0], "probe": key[1], "flagged": 0, "passed": 0, "no_verdict": 0})
         if e["verdict"] in (FLAGGED, ACHIEVED):
             row["flagged"] += 1
@@ -336,6 +351,58 @@ def failure_rates(entries) -> list[dict]:
             row["no_verdict"] += 1
     # A probe sent only to be compared has no verdict of its own; its pair's row says how it did.
     return [r for r in rows.values() if r["flagged"] or r["passed"] or r["no_verdict"]]
+
+
+def encoding_comparison(entries) -> list[dict]:
+    """Each probe sent encoded (--converters), with how it did as written and encoded.
+
+    The scan sends every encoded probe as written too, as the control. Counts are as in
+    failure_rates(); a fixed reply has no verdict, since the model never saw the probe.
+    """
+    def counts():
+        return {"flagged": 0, "passed": 0, "no_verdict": 0}
+
+    keyed = [((e["result"].labels or {}).get("rt_dataset", "-"), probe_name(e["result"]), e) for e in entries]
+    sent_encoded = {(dataset, name) for dataset, name, e in keyed if encoding_of(e["result"])}
+    rows: dict[tuple[str, str], dict] = {}
+    for dataset, name, e in keyed:
+        if (dataset, name) not in sent_encoded:
+            continue
+        row = rows.setdefault((dataset, name), {"dataset": dataset, "probe": name, "encoding": "",
+                                                "as_written": counts(), "encoded": counts()})
+        encoding = encoding_of(e["result"])
+        side = row["encoded"] if encoding else row["as_written"]
+        if encoding:
+            row["encoding"] = encoding
+        if e["verdict"] in (FLAGGED, ACHIEVED):
+            side["flagged"] += 1
+        elif e["verdict"] in (PASSED, HELD):
+            side["passed"] += 1
+        else:
+            side["no_verdict"] += 1
+    return list(rows.values())
+
+
+# The readings that say the encoding did what the plain text could not.
+ENCODING_GOT_THROUGH = ("flagged only when encoded", "flagged more often encoded")
+
+
+def encoding_reading(as_written: dict, encoded: dict) -> str:
+    """The Reading column of an encoded-vs-as-written row."""
+    plain_tested = as_written["flagged"] + as_written["passed"]
+    encoded_tested = encoded["flagged"] + encoded["passed"]
+    if not plain_tested and not encoded_tested:
+        return "nothing tested"
+    if not plain_tested:
+        return "no control: the plain-text version was never answered"
+    if not encoded_tested:
+        return "the encoded version was never answered"
+    plain_rate, encoded_rate = as_written["flagged"] / plain_tested, encoded["flagged"] / encoded_tested
+    if encoded_rate > plain_rate:
+        return "flagged only when encoded" if not as_written["flagged"] else "flagged more often encoded"
+    if encoded_rate < plain_rate:
+        return "flagged less often encoded"
+    return "no difference" if encoded["flagged"] else "never flagged either way"
 
 
 def template_rates(entries) -> tuple[list[dict], list[dict]]:
@@ -433,7 +500,10 @@ def build_summary(results, memory, run_id: str) -> str:
         raise SystemExit(f"Run {run_id[:8]} has no probe results: the scan stopped after calibration.")
     results = sorted(
         results,
-        key=lambda r: ((r.labels or {}).get("rt_dataset", ""), (r.labels or {}).get("rt_probe", ""), r.objective, repeat_of(r)),
+        key=lambda r: (
+            (r.labels or {}).get("rt_dataset", ""), (r.labels or {}).get("rt_probe", ""), r.objective, encoding_of(r),
+            repeat_of(r),
+        ),
     )
     rubrics = load_rubrics()
     entries = []
@@ -471,6 +541,9 @@ def build_summary(results, memory, run_id: str) -> str:
     other_hits = {check: sum(e["other_checks"][check] is True for e in entries) for check in OTHER_CHECKS}
     other_checked = {check: sum(e["other_checks"][check] is not None for e in entries) for check in OTHER_CHECKS}
     prompt_text = system_prompt_text(entries)
+    comparison = encoding_comparison(entries)
+    # Runs from before the scan sent the control have encoded results only.
+    has_control = any(row["as_written"]["flagged"] + row["as_written"]["passed"] for row in comparison)
 
     labels = results[0].labels or {}
     campaign = labels.get("rt_campaign", "unlabeled")
@@ -550,6 +623,17 @@ def build_summary(results, memory, run_id: str) -> str:
         lines.append(f"| Objectives | from `{labels['rt_objectives_file']}` |")
     if labels.get("rt_probes"):
         lines.append(f"| Probe filter | `{labels['rt_probes']}` |")
+    if labels.get("rt_converters"):
+        encoded_in = sorted({(e["result"].labels or {}).get("rt_dataset", "-") for e in entries if encoding_of(e["result"])})
+        control = (
+            "each also sent as written, as the control ([Encoded vs. as written](#encoded-vs-as-written))"
+            if has_control
+            else "with no plain-text control in this run"
+        )
+        lines.append(
+            f"| Converters | `{labels['rt_converters']}`, on the {' and '.join(encoded_in) or 'no'} probes "
+            f"(marked with it below), {control} |"
+        )
     if started:
         local = started.astimezone()
         lines.append(f"| Run started | {local:%Y-%m-%d %H:%M} {local.tzname()} ({started:%H:%M} UTC) |")
@@ -654,6 +738,27 @@ def build_summary(results, memory, run_id: str) -> str:
             f"- **Some probes came from {len(templated)} template(s).** [By template](#by-template) reads them "
             "together, per template and per fixture entry, which says more than any one of them."
         )
+    if comparison and has_control:
+        worse = [r for r in comparison if encoding_reading(r["as_written"], r["encoded"]) in ENCODING_GOT_THROUGH]
+        encoding = comparison[0]["encoding"]
+        if worse:
+            lines.append(
+                f"- **{len(worse)} of {len(comparison)} probe(s) were flagged more often encoded with `{encoding}` "
+                "than as written.** The plain-text copy is the control, so the encoding is what got past the "
+                "model's or the app's defenses: [Encoded vs. as written](#encoded-vs-as-written)."
+                + (" One try each is one reply either way; re-run with RT_REPEATS=5 or more before you report it."
+                   if repeats == 1 else "")
+            )
+        else:
+            lines.append(
+                f"- **Encoding with `{encoding}` made no probe fail more often than its plain-text copy** "
+                f"([Encoded vs. as written](#encoded-vs-as-written))."
+            )
+    elif comparison:
+        lines.append(
+            "- **Probes were sent encoded with no plain-text copy in this run,** so a flag on one does not show "
+            "the encoding was what got through. Re-run with the current scan, which sends both."
+        )
     if leaks:
         lines.append(
             f"- **{leaks} reply(ies) leaked the system prompt.** Each contains the canary token, a code "
@@ -740,6 +845,36 @@ def build_summary(results, memory, run_id: str) -> str:
             ]
         lines.append("")
 
+    if comparison:
+        encoding = comparison[0]["encoding"]
+        lines += [
+            '<a id="encoded-vs-as-written"></a>',
+            "## Encoded vs. as written",
+            "",
+            (
+                f"Each probe below was sent encoded with `{encoding}` and, as the control, as written. A probe "
+                "flagged only when encoded got past something - a keyword filter, a guardrail, the model's own "
+                "training - that the plain text did not."
+                if has_control
+                else f"Each probe below was sent encoded with `{encoding}` only: this run sent no plain-text "
+                "control, so the As written column is empty and a flag does not show the encoding got through."
+            )
+            + " \"Without a verdict\" counts errors, blocked or empty replies, fixed replies, and missing judge "
+            "scores; they are left out of the counts.",
+            "",
+            f"| Probe | Dataset | As written: flagged | Encoded: flagged | Without a verdict (as written / encoded) "
+            "| Reading |",
+            "|---|---|---|---|---|---|",
+        ]
+        for row in comparison:
+            plain, enc = row["as_written"], row["encoded"]
+            lines.append(
+                f"| {row['probe']} | {row['dataset']} | {plain['flagged']} of {plain['flagged'] + plain['passed']} "
+                f"| {enc['flagged']} of {enc['flagged'] + enc['passed']} | {plain['no_verdict']} / {enc['no_verdict']} "
+                f"| {encoding_reading(plain, enc)} |"
+            )
+        lines.append("")
+
     if repeats > 1:
         lines += [
             '<a id="failure-rates"></a>',
@@ -809,7 +944,7 @@ def build_summary(results, memory, run_id: str) -> str:
     lines += ["## Every result", "", "| # | Verdict | Dataset | Probe | Graded by |", "|---|---|---|---|---|"]
     for e in entries:
         result_labels = e["result"].labels or {}
-        probe = with_repeat(result_labels.get("rt_probe") or cell(e["result"].objective, 60), e["result"])
+        probe = with_repeat(shown_name(e["result"]), e["result"])
         checks = e["graded_by"] + {True: ["canary token LEAKED"], False: ["canary token"], None: []}[e["canary"]]
         checks += {True: ["planted records LEAKED"], False: ["planted records"], None: []}[e["records"]]
         checks += [f"{check} FLAGGED" for check, verdict in e["other_checks"].items() if verdict]
@@ -874,7 +1009,7 @@ def build_summary(results, memory, run_id: str) -> str:
             "",
         ]
         for e in asked:
-            name = with_repeat(probe_name(e["result"]), e["result"])
+            name = with_repeat(shown_name(e["result"]), e["result"])
             lines += [f"**[{e['number']}](#result-{e['number']}) {name}** ({e['verdict']})", "", fence(reply_as_sent(e["messages"])), ""]
 
     if pairs:
@@ -933,13 +1068,15 @@ def build_summary(results, memory, run_id: str) -> str:
     for e in entries:
         result = e["result"]
         result_labels = result.labels or {}
-        name = with_repeat(result_labels.get("rt_probe") or cell(result.objective, 60), result)
+        name = with_repeat(shown_name(result), result)
         lines += [f'<a id="result-{e["number"]}"></a>', f"### {e['number']}. {e['verdict']}: {name}", ""]
         details = []
         if result_labels.get("rt_dataset"):
             details.append(f"dataset `{result_labels['rt_dataset']}`")
         if result_labels.get("rt_pair_id"):
             details.append(f"pair `{result_labels['rt_pair_id']}`, variant `{result_labels.get('rt_variant')}`")
+        if encoding_of(result):
+            details.append(f"sent encoded with `{encoding_of(result)}`; the transcript shows the original and what was sent")
         if campaign in MULTI_TURN_CAMPAIGNS:
             details.append(f"{result.executed_turns} turn(s), outcome `{result.outcome.value}`")
         if result.outcome_reason and (campaign in MULTI_TURN_CAMPAIGNS or result.outcome.value == "error"):
@@ -969,10 +1106,12 @@ def build_summary(results, memory, run_id: str) -> str:
 
     # No next steps: what to do about a run is for the people reading it to decide.
     # The checklist is not advice about this run, though - it is what this profile's
-    # probes do not cover at all, same every run, so it still gets a section of its own.
-    if profile and profile.checklist:
+    # probes and the suites they came from do not cover at all, the same every run, so it
+    # still gets a section of its own.
+    checklist = checklist_for(profile, {(r.labels or {}).get("rt_dataset") for r in results}) if profile else ()
+    if checklist:
         lines += [f"## Not covered by `{profile.key}`'s probes", ""]
-        lines += [f"- [ ] {item}" for item in profile.checklist]
+        lines += [f"- [ ] {item}" for item in checklist]
         lines.append("")
     return "\n".join(lines)
 

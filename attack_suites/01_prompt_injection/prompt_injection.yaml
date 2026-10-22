@@ -275,8 +275,6 @@ seeds:
 #   - Real file uploads: the document and image probes above are text stand-ins. Build
 #     the actual PDFs and images in data_fixtures/synthetic_documents/ to test your
 #     app's extraction path (see the README there).
-#   - Encoding tricks: base64, ROT13, homoglyphs, zero-width characters. Prefer
-#     PyRIT converters (Base64Converter, ROT13Converter) over hardcoding encoded
-#     strings - the converter applies to every prompt in this file automatically.
 #   - Multilingual: the same probes in Spanish, Korean, and the other languages your
 #     agency serves. Guardrails are frequently English-only.
+# For encoded versions of these probes, run with --converters (e.g. rot13); each is also sent as written, as a control.

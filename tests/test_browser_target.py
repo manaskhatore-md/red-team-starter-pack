@@ -146,7 +146,7 @@ def test_the_scan_runs_against_a_web_page_with_one_fresh_chat_per_probe(tmp_path
     monkeypatch.setattr(single_turn_scan, "build_scoring_target", lambda: None)
     monkeypatch.setattr(single_turn_scan, "model_name", lambda t: "fake-judge" if t is None else target_factory.model_name(t))
     monkeypatch.setattr(single_turn_scan, "build_rubric_scorers",
-                        lambda profile, judge, *rest: {k: NeverFlags(category=k) for k in profile.rubrics})
+                        lambda rubrics, judge, *rest: {k: NeverFlags(category=k) for k in rubrics})
     runs = []
     monkeypatch.setattr(single_turn_scan, "write_after_run", runs.append)
 
@@ -160,6 +160,36 @@ def test_the_scan_runs_against_a_web_page_with_one_fresh_chat_per_probe(tmp_path
 
 
 # --- settings: no browser needed -------------------------------------------------
+
+def test_making_room_for_a_conversation_never_closes_a_tab_still_answering(tmp_path, memory):
+    class Tab:
+        url = "https://app.example/"
+        closed = False
+
+        async def close(self):
+            self.closed = True
+
+    class Context:
+        pages = []
+
+        async def new_page(self):
+            return Tab()
+
+    target = make_target(tmp_path, max_tabs=2)
+    target._context = Context()
+    target._start = target._open_chat = lambda *args: nothing()
+
+    async def go():
+        a, _ = await target._tab_for("a")       # a slow reply, still coming
+        b, _ = await target._tab_for("b")
+        target._answering.discard("b")          # b's reply is in
+        c, _ = await target._tab_for("c")       # room for c: b goes, not a
+        assert b.closed and not a.closed
+        await target._tab_for("d")              # a and c both answering: nothing closes
+        assert not a.closed and not c.closed and len(target._tabs) == 3
+
+    asyncio.run(go())
+
 
 @pytest.mark.parametrize("browser, note", [(True, "real multi-turn conversation"), (False, "no memory of its own")])
 def test_the_red_team_campaign_says_whether_the_app_remembers_the_conversation(browser, note, clean_env, monkeypatch, capsys):

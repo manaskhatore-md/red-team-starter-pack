@@ -9,6 +9,7 @@ from pyrit.models import AttackOutcome, construct_response_from_request
 from harnesses.pyrit_campaigns import planted_records as pr
 from harnesses.pyrit_campaigns import system_prompt as sp
 from harnesses.pyrit_campaigns.profiles import PROFILES
+from harnesses.pyrit_campaigns.single_turn_scan import profile_rubrics
 from scripts import export_finding_report, run_summary
 from helpers import RUN, FakeModel, add_probe, add_score, run_scan, summary
 
@@ -20,9 +21,8 @@ def records(seed=1):
 # --- the records ------------------------------------------------------------
 
 def test_only_profiles_judged_for_personal_data_get_records():
-    planted = {key for key, profile in PROFILES.items() if pr.records_for(profile)}
-    assert planted == {key for key, profile in PROFILES.items() if pr.PII_RUBRIC in profile.rubrics}
-    assert "public_conversational" not in planted
+    planted = {key for key, profile in PROFILES.items() if pr.records_for(profile_rubrics(profile))}
+    assert planted == {"default", "internal_productivity", "constituent_decision"}
 
 
 def test_no_record_can_belong_to_a_real_person():

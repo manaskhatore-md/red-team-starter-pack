@@ -385,7 +385,8 @@ def test_openapi_docs_exposed_reviews_signed_in_docs_and_fails_on_unauth_route()
             return httpx.Response(200, text="<html>Swagger</html>")
         return httpx.Response(404)
 
-    signed_out_safe = mock_client(lambda req: httpx.Response(302))
+    login_redirect = {"Location": "https://accounts.google.com/ServiceLogin"}
+    signed_out_safe = mock_client(lambda req: httpx.Response(302, headers=login_redirect))
     res_review = asyncio.run(
         check_openapi_docs_exposed(mock_client(signed_in_handler), signed_out_safe, cfg, session)
     )
@@ -397,7 +398,7 @@ def test_openapi_docs_exposed_reviews_signed_in_docs_and_fails_on_unauth_route()
     def signed_out_404_on_route(req: httpx.Request) -> httpx.Response:
         if req.url.path == "/api/debug_dump":
             return httpx.Response(404)
-        return httpx.Response(302)
+        return httpx.Response(302, headers=login_redirect)
 
     res_unverified = asyncio.run(
         check_openapi_docs_exposed(mock_client(signed_in_handler), mock_client(signed_out_404_on_route), cfg, session)
@@ -409,7 +410,7 @@ def test_openapi_docs_exposed_reviews_signed_in_docs_and_fails_on_unauth_route()
     def signed_out_leaky(req: httpx.Request) -> httpx.Response:
         if req.url.path == "/api/debug_dump":
             return httpx.Response(200, json={"env": "leaked"})
-        return httpx.Response(302)
+        return httpx.Response(302, headers=login_redirect)
 
     res_fail = asyncio.run(
         check_openapi_docs_exposed(mock_client(signed_in_handler), mock_client(signed_out_leaky), cfg, session)
@@ -524,6 +525,15 @@ def test_outsider_account_passes_when_blocked_and_fails_when_admitted(tmp_path: 
     assert res_pass.verdict == "PASS"
     assert "danafi2.0@gmail.com" in res_pass.summary
 
+    # Also passes when browser hit 403 access-denied and API redirects to Google sign-in
+    res_pass_iap_redirect = asyncio.run(
+        check_outsider_account(
+            mock_client(lambda r: httpx.Response(302, headers={"Location": "https://accounts.google.com/ServiceLogin"})),
+            cfg,
+        )
+    )
+    assert res_pass_iap_redirect.verdict == "PASS"
+
     res_fail = asyncio.run(check_outsider_account(mock_client(lambda r: httpx.Response(200)), cfg))
     assert res_fail.verdict == "FAIL"
 
@@ -543,6 +553,144 @@ def test_outsider_account_passes_when_blocked_and_fails_when_admitted(tmp_path: 
     res_launch_err = asyncio.run(check_outsider_account(mock_client(lambda r: httpx.Response(403)), cfg))
     assert res_launch_err.verdict == "NOT TESTED"
     assert "RuntimeError" in res_launch_err.summary
+
+
+def test_outsider_account_not_tested_when_outsider_never_signs_in(tmp_path: Path, monkeypatch):
+    class FakeLocator:
+        first = property(lambda self: self)
+
+        async def wait_for(self, **kwargs):
+            raise TimeoutError("not visible")
+
+    class UnauthenticatedLoginPage:
+        url = "https://accounts.google.com/v3/signin/identifier"
+
+        async def goto(self, url):
+            return SimpleNamespace(status=200)
+
+        async def content(self):
+            # Even if the login page HTML contains "403" (e.g. asset hash or pixel width) or
+            # "access denied" in script text, HTTP 200 is not treated as browser_denied.
+            return "<html><script src='app-403.js'></script><body>Sign in (403px access denied strings in JS)</body></html>"
+
+        def locator(self, selector):
+            return FakeLocator()
+
+    class EmptyCookieContext:
+        pages = [UnauthenticatedLoginPage()]
+
+        async def cookies(self, urls=None):
+            # Target app has no cookies when sitting on Google login screen
+            return []
+
+        async def close(self):
+            pass
+
+    class FakePlaywright:
+        async def stop(self):
+            pass
+
+    async def fake_launch(channel, profile, headless):
+        return FakePlaywright(), EmptyCookieContext()
+
+    monkeypatch.setattr(access_checks, "launch_browser", fake_launch)
+    cfg = make_config(
+        outsider_profile=tmp_path / "outsider",
+        outsider_email="danafi2.0@gmail.com",
+        headless=True,
+    )
+
+    # Even if an anonymous POST /api/chat would get a 302 to Google sign-in, Check #14 must return NOT TESTED
+    iap_redirect_client = mock_client(
+        lambda r: httpx.Response(302, headers={"Location": "https://accounts.google.com/o/oauth2/v2/auth"})
+    )
+    res = asyncio.run(check_outsider_account(iap_redirect_client, cfg))
+    assert res.verdict == "NOT TESTED"
+    assert "Outsider sign-in did not complete" in res.summary
+
+
+def test_outsider_401_without_a_refusal_in_the_browser_is_not_a_pass(tmp_path: Path, monkeypatch):
+    # The outsider's browser loads the app's own page (HTTP 200, no access-denied page)
+    # and holds a cookie, and no chat-box selector is set. The API's 401 says only that
+    # it did not recognize the request's sign-in: the outsider may well have been let in.
+    class AppPage:
+        url = "https://app.example.test/"
+
+        async def goto(self, url):
+            return SimpleNamespace(status=200)
+
+    class SignedInContext:
+        pages = [AppPage()]
+
+        async def cookies(self, urls=None):
+            return [{"name": "SESSION", "value": "redacted"}]
+
+        async def close(self):
+            pass
+
+    class FakePlaywright:
+        async def stop(self):
+            pass
+
+    async def fake_launch(channel, profile, headless):
+        return FakePlaywright(), SignedInContext()
+
+    monkeypatch.setattr(access_checks, "launch_browser", fake_launch)
+    cfg = make_config(outsider_profile=tmp_path / "outsider", outsider_email="danafi2.0@gmail.com", ready_selector="")
+
+    for refused in (httpx.Response(401), httpx.Response(302, headers={"Location": "https://accounts.google.com/o/oauth2/v2/auth"})):
+        res = asyncio.run(check_outsider_account(mock_client(lambda r, refused=refused: refused), cfg))
+        assert res.verdict == "NOT TESTED", refused.status_code
+        assert any("did not recognize the outsider's sign-in" in d for d in res.details)
+
+    # A 403 is the app knowing who asked and saying no: that is a refusal of the outsider.
+    res_403 = asyncio.run(check_outsider_account(mock_client(lambda r: httpx.Response(403)), cfg))
+    assert res_403.verdict == "PASS"
+
+
+def test_non_login_redirects_return_not_tested_instead_of_false_pass(monkeypatch):
+    cfg = make_config(alternate_urls=["https://alt.example.test/api/chat"])
+    monkeypatch.setattr(
+        access_checks,
+        "resolve_wrong_audience_token",
+        lambda configured="": ("eyJhbGciOiJSUzI1NiJ9.eyJhdWQiOiJotherIn0.sig", "APP_WRONG_TOKEN"),
+    )
+
+    # Trailing-slash redirect (/api/chat -> /api/chat/) and http->https redirect are NOT auth refusals
+    for non_auth_resp in [
+        httpx.Response(307, headers={"Location": "/api/chat/"}),
+        httpx.Response(301, headers={"Location": "https://app.example.test/api/chat"}),
+        httpx.Response(302),
+    ]:
+        client = mock_client(lambda req, r=non_auth_resp: r)
+        assert asyncio.run(check_no_credentials(client, cfg)).verdict == "NOT TESTED"
+        assert asyncio.run(check_junk_credentials(client, cfg)).verdict == "NOT TESTED"
+        assert asyncio.run(check_forged_jwt(client, cfg)).verdict == "NOT TESTED"
+        assert asyncio.run(check_wrong_audience_token(client, cfg)).verdict == "NOT TESTED"
+        assert asyncio.run(check_unauthenticated_identity_headers(client, cfg)).verdict == "NOT TESTED"
+        assert asyncio.run(check_cors_preflight(client, cfg)).verdict == "NOT TESTED"
+        assert asyncio.run(check_http_methods(client, cfg)).verdict == "NOT TESTED"
+        assert asyncio.run(check_alternate_urls(client, cfg)).verdict == "NOT TESTED"
+
+
+def test_crash_inside_check_logs_traceback_in_details_and_stderr(capsys):
+    def buggy_check():
+        raise ZeroDivisionError("simulated kit bug")
+
+    res = asyncio.run(
+        access_checks._run_check_safely(
+            "Phase 1: Signed-Out Checks (No Login)",
+            "Buggy check",
+            "API2:2023 Broken Authentication",
+            buggy_check,
+        )
+    )
+    assert res.verdict == "NOT TESTED"
+    assert "ZeroDivisionError: simulated kit bug" in res.summary
+    assert any("ZeroDivisionError" in d for d in res.details)
+    assert any("in buggy_check" in d for d in res.details)
+    captured = capsys.readouterr()
+    assert "ZeroDivisionError: simulated kit bug" in captured.err
 
 
 def test_run_all_checks_preserves_phase1_results_when_browser_signin_fails(monkeypatch):
@@ -590,3 +738,8 @@ def test_end_to_end_main_writes_markdown_report(tmp_path: Path, clean_env, monke
     content = out_file.read_text(encoding="utf-8")
     assert "# Application Access-Control & API Configuration Report" in content
     assert "API2:2023 Broken Authentication" in content
+    # --phase1-only report does not claim Phase 2 checks #9-#14 were run
+    assert "Phase 2 (Signed-In & Outsider Checks #9–#14)" not in content
+    assert "2 not tested" in content
+    assert "- **Not Tested (2):**" in content
+

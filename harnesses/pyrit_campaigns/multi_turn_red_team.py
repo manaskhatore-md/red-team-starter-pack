@@ -77,8 +77,14 @@ from pyrit.prompt_target import CapabilityName
 from pyrit.score import MessageScorer
 from pyrit.setup import SQLITE, initialize_pyrit_async
 
-from harnesses.pyrit_campaigns.profiles import describe, get_profile
-from harnesses.pyrit_campaigns.single_turn_scan import FAIL_ON_FINDING, check_placeholders, get_repeats, load_rubrics
+from harnesses.pyrit_campaigns.profiles import describe, get_profile, placeholders
+from harnesses.pyrit_campaigns.single_turn_scan import (
+    FAIL_ON_FINDING,
+    check_placeholders,
+    get_repeats,
+    load_rubrics,
+    profile_rubrics,
+)
 from harnesses.pyrit_campaigns.code_checks import CODE_CHECKS, KnownPromptLeakScorer, code_scorers
 from harnesses.pyrit_campaigns.multi_turn_crescendo import (
     ConversationRubricScorer,
@@ -160,9 +166,9 @@ async def main() -> int:
     judged_prompt: str | None = None
 
     if not is_app:
-        records = records_for(profile)
+        records = records_for(profile_rubrics(profile))
         system_prompt = load_system_prompt(
-            profile.key, profile.placeholders, new_canary(), records_section(records) if records else ""
+            profile.key, placeholders(), new_canary(), records_section(records) if records else ""
         )
         if not system_prompt:
             records = ()
@@ -170,8 +176,8 @@ async def main() -> int:
 
     # Warn about unfilled {{ placeholders }} in either case: the model's own prompt,
     # or (for an app) just the objectives, since the app's prompt is not ours to template.
-    placeholders = check_placeholders(
-        profile, [], "\n".join([o.goal for o in objectives] + ([system_prompt.text] if system_prompt else []))
+    unfilled = check_placeholders(
+        [], "\n".join([o.goal for o in objectives] + ([system_prompt.text] if system_prompt else []))
     )
 
     target = build_target()
@@ -265,7 +271,7 @@ async def main() -> int:
         "rt_repeats": str(repeats),
         "rt_max_turns": str(MAX_TURNS),
         # Settings still at "TODO ...", so the summary can say the objectives named a placeholder.
-        "rt_placeholders": ", ".join(placeholders),
+        "rt_placeholders": ", ".join(unfilled),
         # Which objectives file the attacks came from, so the report can say what was tested.
         "rt_objectives_file": profile.objectives_file,
         "rt_trace_path": os.getenv("APP_TRACE_PATH", "").strip(),

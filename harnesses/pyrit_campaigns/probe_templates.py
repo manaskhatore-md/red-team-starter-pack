@@ -66,7 +66,7 @@ class Expanded:
     """One probe a seed turns into: the seed itself, or the seed filled with one fixture entry."""
 
     name: str
-    # Fixture blanks filled; {{ profile placeholders }} still in place.
+    # Fixture blanks filled; the {{ placeholders }} from profiles.py still in place.
     value: str
     metadata: dict = field(default_factory=dict)
     # Set only for a templated seed: the seed's own name, and the entry it was filled

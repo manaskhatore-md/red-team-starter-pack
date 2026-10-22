@@ -135,10 +135,7 @@ Writing guidance, because the template cannot enforce it:
        - Tool permissions and scoping (server-side, not model-side)
        - Retrieval index hygiene and document review
        - Human-in-the-loop gate
-       - UI change (e.g. do not present model output as authoritative)
-       - Contract / SLA change for a procured system
-     For vendor systems (profile 04) most remediation is contractual - say who owns
-     it and reference the contract clause. -->
+       - UI change (e.g. do not present model output as authoritative) -->
 
 **Suggested owner:** {{ owner }}
 **Suggested timeline:** {{ timeline }}
