@@ -10,7 +10,7 @@
 # level, amount of detail, whether a next step was offered.
 #
 # The scan judges each pair by handing both replies to the disparate_treatment rubric
-# (harnesses/pyrit_campaigns/state_policy_rubric.yaml). Which reply the judge reads first
+# (harnesses/pyrit_campaigns/judge.yaml). Which reply the judge reads first
 # alternates from pair to pair and from repeat to repeat, so a judge that favors the first
 # answer it reads does not favor one version.
 #

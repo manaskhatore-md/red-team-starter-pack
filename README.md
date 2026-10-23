@@ -481,8 +481,8 @@ red-team-starter-pack/
 │       ├── browser_target.py           # An app reached through a real browser: its web page, or its API from the signed-in page
 │       ├── single_turn_scan.py         # Every dataset probe, graded by your rubrics
 │       ├── probe_templates.py          # One seed sent once per entry in a fixture file
-│       ├── state_policy_rubric.yaml    # The judge's rubrics: criteria-based Pass/Fail scoring prompts
-│       ├── rubrics.py                  # Reads and checks the rubrics; records which version judged a run
+│       ├── judge.yaml                  # Everything the judge reads: the rubrics, and the words around them
+│       ├── rubrics.py                  # Reads and checks judge.yaml; records which version judged a run
 │       ├── calibration.py              # Plain questions sent first, so a canned or blocked reply is not read as a pass
 │       ├── system_prompt.py            # The system prompt a scan sends, and the canary token check
 │       ├── planted_records.py          # Fake records of other people in the system prompt, and their leak check
@@ -717,7 +717,7 @@ probe was flagged as written, against the same target, next to how often it was 
 The pack ships generic on purpose, and generic probes find generic problems. In
 priority order:
 
-1. **`harnesses/pyrit_campaigns/state_policy_rubric.yaml`** — replace the criteria with citations to your
+1. **`harnesses/pyrit_campaigns/judge.yaml`** — replace the criteria with citations to your
    actual policy. "The judge model didn't like it" is not a defensible finding. See
    [Changing how the judge grades](#changing-how-the-judge-grades).
 2. **The YOUR AGENCY section of `.env`** — your real program, agency, and tool names,
@@ -736,10 +736,18 @@ priority order:
 
 ### Changing how the judge grades
 
-Every judge verdict comes from a rubric in `harnesses/pyrit_campaigns/state_policy_rubric.yaml`:
+Every judge verdict comes from a rubric in `harnesses/pyrit_campaigns/judge.yaml`:
 the policy, what counts as a violation, and what does not. Your fork's rubrics are yours to
 reword, extend, add to, or delete. Each rubric's `grades:` list names the suites it judges,
 so a new rubric that lists a suite judges it in every campaign, with no code change.
+
+The same file holds everything else the judge reads, under `judge_text:` at its end: the
+message a reply arrives in (and the app's trace, when there is one), what the judge is
+told when a probe has no pass criteria or facts, how a multi-turn conversation and a
+matched pair are introduced, and the grounding rubric `rag_grounding_eval.py` uses. Reword
+any of it there. It is plain text: braces are just braces, and the kit fills only the
+`[[SLOTS]]` each entry's comment names. If one of your judges keeps answering in the app's
+persona, or misreads which reply of a pair is which, this is the wording to change.
 
 Change one, then check what the change does before you trust it:
 
@@ -760,10 +768,13 @@ python -m scripts.rescore --run 937e73ef --rubric pii_disclosure
 **The check** stops a run on an edit that would break it: a `{brace}` PyRIT cannot fill
 (write a literal brace twice, `{{`), a pair rubric without `[[RESPONSE_A]]` and
 `[[RESPONSE_B]]`, no instruction to answer with `score_value`, a `grades:` entry that names
-no suite, or an unknown severity. It warns, without stopping, on an edit that probably does
-not do what you meant: a `[[SLOT]]` that no probe fills (usually a typo; it suggests the
-name), a rubric that never says `true` means a violation, or the reply-format instruction
-somewhere other than last.
+no suite, an unknown severity, or a `judge_text:` entry missing or without a slot that
+carries the evidence (`[[RESPONSE]]`, `[[TRACE]]`, `[[GOAL]]`, `[[HISTORY]]`, `[[SOURCE]]`,
+`[[ANSWER]]`), since the judge would never see it. It warns, without stopping, on an edit
+that probably does not do what you meant: a `[[SLOT]]` that no probe fills (usually a typo;
+it suggests the name), a rubric that never says `true` means a violation, the
+reply-format instruction somewhere other than last, or a `judge_text:` entry or slot with
+a name the kit does not use.
 
 Two things are fixed, because the rest of the kit depends on them: the judge answers with
 JSON holding `score_value` and `rationale` (PyRIT reads the verdict from it), and `true`
@@ -779,8 +790,10 @@ then is noise, and your edit's effect is what changes beyond it. It covers singl
 scans; a multi-turn judge steers its attack, so judging the last reply again does not
 repeat the run.
 
-Every run records the rubric file's fingerprint and the pack's version, and the run summary
-and finding reports show them, so a finding says which rubrics judged it. Before relying on
+Every run records `judge.yaml`'s fingerprint (rubrics and `judge_text:` alike) and the
+pack's version, and the run summary and finding reports show them, so a finding says which
+rubrics judged it. (Before this file was `judge.yaml` it was `state_policy_rubric.yaml`;
+git carries a fork's edits across the rename when it merges.) Before relying on
 a changed rubric, hand-label 20-30 replies, borderline ones included, and check the judge
 agrees.
 
@@ -895,7 +908,7 @@ Spanish and Chinese version before you rely on a result.
 | Prompt injection | `attack_suites/01_prompt_injection/prompt_injection.yaml` | Working |
 | Indirect prompt injection | `data_fixtures/synthetic_documents/` | TODO: instructions only, no payloads |
 | Single-turn scan across all of the above | `harnesses/pyrit_campaigns/single_turn_scan.py` | Working |
-| Data protection | `attack_suites/02_sensitive_data_exposure/sensitive_data_leakage.yaml`, `harnesses/pyrit_campaigns/state_policy_rubric.yaml` | Working |
+| Data protection | `attack_suites/02_sensitive_data_exposure/sensitive_data_leakage.yaml`, `harnesses/pyrit_campaigns/judge.yaml` | Working |
 | Equity / disparate impact | `attack_suites/03_algorithmic_bias/algorithmic_bias.yaml` | Working |
 | Excessive agency: false action claims, commitments, exceptions | `attack_suites/05_excessive_agency/excessive_agency.yaml`, the `excessive_agency` rubric, one multi-turn objective per profile | Working in every profile |
 | Excessive agency, backend verification | `harnesses/pyrit_campaigns/agent_tool_exploitation.py` | Scaffold: needs `RT_PROVIDER=app` and a backend diff |

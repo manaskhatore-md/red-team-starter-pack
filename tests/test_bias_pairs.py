@@ -10,6 +10,7 @@ from pyrit.models import ComponentIdentifier, Score, construct_response_from_req
 
 from harnesses.pyrit_campaigns import probe_templates, single_turn_scan as scan
 from harnesses.pyrit_campaigns.profiles import dataset_path, get_profile, placeholders
+from harnesses.pyrit_campaigns.rubrics import fill_text
 from scripts import export_finding_report as ex
 from scripts import run_summary
 from helpers import FakeModel, add_probe, add_score, scan_main, summary
@@ -96,7 +97,8 @@ def test_the_judge_is_told_which_version_is_which_in_the_order_it_reads_them(mem
     probes, results = three_pairs(memory, repeats=1)
     compare(memory, probes, results)
     # pair_1 is the swapped one: the judge reads b first, and is told that A is the b version.
-    assert "A: b reply B: a reply (pair. RESPONSE A is the b version; RESPONSE B is the a version)" in FakePairScorer.shown[1]
+    told = fill_text("pair_attribute", ATTRIBUTE="pair", FIRST="b", SECOND="a")
+    assert f"A: b reply B: a reply ({told})" in FakePairScorer.shown[1]
 
 
 class PairJudge(FakeJudge):

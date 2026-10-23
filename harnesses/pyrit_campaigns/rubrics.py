@@ -1,20 +1,26 @@
-"""The judge's rubrics: reading the rubric file, checking it, and saying which version judged a run.
+"""What the judge reads: reading harnesses/pyrit_campaigns/judge.yaml, checking it, and
+saying which version judged a run.
 
-Every campaign reads its rubrics from harnesses/pyrit_campaigns/state_policy_rubric.yaml
-through load_rubrics(). Before anything is sent, each campaign checks the file, so a
-mistake in an edited rubric stops the run with what to fix rather than breaking at the
-first judge call - or worse, not breaking and judging wrongly:
+The file holds everything the judge is sent. Its `rubrics:` are read through
+load_rubrics(). Its `judge_text:` - the words wrapped around the rubrics, such as the
+message a reply arrives in, and the grounding rubric - is read through fill_text(),
+which fills an entry's [[SLOTS]] as plain text, so wording edited there needs no
+brace escaping and no Python change. Before anything is sent, each campaign checks the
+file, so a mistake in an edit stops the run with what to fix rather than breaking at
+the first judge call - or worse, not breaking and judging wrongly:
 
     python -m harnesses.pyrit_campaigns.rubrics check
 
 ERRORS stop a run. They are the edits that break the kit: a `{brace}` PyRIT cannot fill,
 a pair rubric with nowhere for the two replies, no instruction to answer with
 score_value, a `grades:` entry naming no suite, a severity the reports do not know, an
-objective judged by a rubric that does not exist.
+objective judged by a rubric that does not exist, a judge_text entry missing or without
+a slot that carries the evidence ([[RESPONSE]], [[TRACE]], ...).
 
 WARNINGS do not. They are the edits that still run but probably do not do what was
 meant: a [[SLOT]] nothing fills, a rubric that never says true means a violation, the
-reply-format instruction somewhere other than last, a missing description. Your fork's
+reply-format instruction somewhere other than last, a missing description, a judge_text
+entry or slot with a misspelt name. Your fork's
 rubrics are yours to word as you like; the check only holds you to what the rest of the
 kit relies on.
 
@@ -24,9 +30,9 @@ Two things are fixed, because the rest of the kit depends on them:
   - true means a violation. The run summary, the finding export, and the CI gate all
     count true as a finding.
 
-VERSIONS: every run records the rubric file's fingerprint and the pack's git version
+VERSIONS: every run records the file's fingerprint and the pack's git version
 (version_labels()), and the run summary and finding reports print them, so a finding
-says which rubrics judged it.
+says which rubrics judged it. The fingerprint covers judge_text too.
 """
 
 import argparse
@@ -43,7 +49,7 @@ import yaml
 
 from harnesses.pyrit_campaigns.profiles import PAIR_RUBRICS, REPO_ROOT, dataset_path
 
-RUBRIC_FILE = Path(__file__).resolve().parent / "state_policy_rubric.yaml"
+RUBRIC_FILE = Path(__file__).resolve().parent / "judge.yaml"
 
 # [[SLOTS]] the kit fills itself, so a probe's judge_context cannot set them.
 # PASS_CRITERIA comes from the probe's own pass_criteria.
@@ -90,6 +96,70 @@ def read_rubric_file(path: Path | None = None) -> dict:
 def load_rubrics(path: Path | None = None) -> dict:
     """Every rubric in the rubric file, by name."""
     return read_rubric_file(path)["rubrics"]
+
+
+# --- the judge's other words ---------------------------------------------------
+
+# Each judge_text entry, and the [[SLOTS]] the kit fills in it. Those in EVIDENCE_SLOTS
+# carry what is being judged: without one, the judge never sees it.
+JUDGE_TEXT_SLOTS = {
+    "response": ("RESPONSE", "TRACE_SECTION"),
+    "trace": ("TRACE",),
+    "no_pass_criteria": (),
+    "no_judge_context": (),
+    "no_system_prompt": (),
+    "no_pattern_hits": (),
+    "pair_attribute": ("ATTRIBUTE", "FIRST", "SECOND"),
+    "pair_compare_on": ("COMPARE_ON",),
+    "conversation": ("GOAL", "HISTORY"),
+    "no_conversation": (),
+    "conversation_pass_criteria": (),
+    "grounding": ("SOURCE", "ANSWER"),
+}
+EVIDENCE_SLOTS = frozenset({"RESPONSE", "TRACE_SECTION", "TRACE", "GOAL", "HISTORY", "SOURCE", "ANSWER"})
+
+_judge_text_cache: dict[tuple, dict[str, str]] = {}
+
+
+def judge_text(path: Path | None = None) -> dict[str, str]:
+    """The rubric file's judge_text: everything the judge reads that is not a rubric.
+
+    Parsed again only when the file's contents change, since a scan asks for it once
+    per score. A missing or broken entry is the check's to report; here it is just absent.
+    """
+    path = path or RUBRIC_FILE
+    key = (str(path), hashlib.sha256(path.read_bytes()).hexdigest() if path.exists() else "")
+    if key not in _judge_text_cache:
+        raw = read_rubric_file(path).get("judge_text")
+        raw = raw if isinstance(raw, dict) else {}
+        _judge_text_cache.clear()
+        _judge_text_cache[key] = {k: v.strip() for k, v in raw.items() if isinstance(v, str)}
+    return dict(_judge_text_cache[key])
+
+
+def _entry(name: str) -> str:
+    """One judge_text entry, or SystemExit naming what to add back."""
+    found = judge_text().get(name)
+    if not found:
+        raise SystemExit(
+            f"{_shown(RUBRIC_FILE)} has no judge_text `{name}:`, which the judge is sent. Add it back, "
+            "then check with: python -m harnesses.pyrit_campaigns.rubrics check"
+        )
+    return found
+
+
+def fill_text(name: str, **slots: str) -> str:
+    """A judge_text entry with its [[SLOTS]] filled, in one pass, as plain text.
+
+    A slot alone on its line, filled with nothing, takes the line and the blank line
+    after it away, so an absent trace leaves no gap.
+    """
+    template = _entry(name)
+    for slot, value in slots.items():
+        if not value:
+            template = re.sub(rf"^[ \t]*\[\[{slot}\]\][ \t]*\n(?:[ \t]*\n)?", "", template, flags=re.MULTILINE)
+    # One pass, so a filled value that happens to contain [[ANOTHER]] is left as it is.
+    return SLOT.sub(lambda m: slots[m.group(1)] if m.group(1) in slots else m.group(0), template)
 
 
 # --- checking the file ---------------------------------------------------------
@@ -203,16 +273,64 @@ def _reply_format_problems(name: str, prompt: str) -> list[Problem]:
     return problems
 
 
-def check(rubrics: dict | None = None, probes=None, objectives: bool = False) -> list[Problem]:
-    """Everything wrong with the rubrics, errors first.
+def _judge_text_problems(entries) -> list[Problem]:
+    """Whatever in the judge_text section the kit cannot use, or the judge would misread."""
+    if not isinstance(entries, dict):
+        return [Problem(
+            "error", "judge_text",
+            "the rubric file needs a `judge_text:` section: the words the kit wraps around the rubrics. "
+            "Copy it from the starter pack's judge.yaml.",
+        )]
+    problems = []
+    for name, slots in JUDGE_TEXT_SLOTS.items():
+        where = f"judge_text.{name}"
+        value = entries.get(name)
+        if not isinstance(value, str) or not value.strip():
+            problems.append(Problem("error", where, "is missing or empty; the judge is sent it."))
+            continue
+        used = set(SLOT.findall(value))
+        for slot in slots:
+            if slot in used:
+                continue
+            if slot in EVIDENCE_SLOTS:
+                problems.append(Problem("error", where, f"needs [[{slot}]]: without it the judge never sees what fills it."))
+            else:
+                problems.append(Problem("warning", where, f"has no [[{slot}]], so the judge is not told it."))
+        for slot in sorted(used - set(slots)):
+            guess = difflib.get_close_matches(slot, slots, n=1)
+            hint = f" Did you mean [[{guess[0]}]]?" if guess else ""
+            problems.append(Problem("warning", where, f"[[{slot}]] is not filled here; the judge sees it as written.{hint}"))
+        for field in sorted(set(re.findall(r"\{(\w+)\}", value))):
+            problems.append(Problem(
+                "warning", where,
+                f"{{{field}}} reaches the judge as written: judge_text is plain text, filled only through its [[SLOTS]].",
+            ))
+    grounding = entries.get("grounding")
+    if isinstance(grounding, str) and grounding.strip() and "score_value" not in grounding:
+        problems.append(Problem(
+            "error", "judge_text.grounding",
+            'never tells the judge to answer with a JSON object with "score_value" and "rationale".',
+        ))
+    for name in sorted(set(entries) - set(JUDGE_TEXT_SLOTS)):
+        guess = difflib.get_close_matches(name, list(JUDGE_TEXT_SLOTS), n=1)
+        hint = f" Did you mean `{guess[0]}`?" if guess else ""
+        problems.append(Problem("warning", f"judge_text.{name}", f"is not one the kit uses, so the judge never reads it.{hint}"))
+    return problems
+
+
+def check(rubrics: dict | None = None, probes=None, objectives: bool = False,
+          judge_text_entries: dict | None = None) -> list[Problem]:
+    """Everything wrong with the rubrics and the judge_text section, errors first.
 
     `probes`, if given, are every probe in every suite: the check then also says when
     a [[SLOT]] is filled by none of the probes a rubric grades. With `objectives`, it
     also checks every profile's multi-turn objectives name a rubric that can judge them.
     A campaign leaves that out: the multi-turn campaigns check their own profile's when
-    they load them, and a scan uses none.
+    they load them, and a scan uses none. `judge_text_entries` defaults to the file's.
     """
     rubrics = load_rubrics() if rubrics is None else rubrics
+    if judge_text_entries is None:
+        judge_text_entries = read_rubric_file().get("judge_text")
     probe_slots: dict[str, set[str]] | None = None
     if probes is not None:
         probe_slots = {}
@@ -259,6 +377,7 @@ def check(rubrics: dict | None = None, probes=None, objectives: bool = False) ->
         problems += _slot_problems(name, prompt, pair, probe_slots, grades)
         problems += _reply_format_problems(name, prompt)
 
+    problems += _judge_text_problems(judge_text_entries)
     if objectives:
         problems += _objective_problems(rubrics)
     return sorted(problems, key=lambda p: p.level != "error")
@@ -333,7 +452,7 @@ def describe_version(labels: dict) -> str:
     sha = labels.get("rt_rubric_sha")
     if not sha:
         return "not recorded (the run predates rubric versions)"
-    return f"`state_policy_rubric.yaml` fingerprint `{sha}`, pack `{labels.get('rt_pack_version') or 'unknown'}`"
+    return f"`judge.yaml` fingerprint `{sha}`, pack `{labels.get('rt_pack_version') or 'unknown'}`"
 
 
 # --- command line ----------------------------------------------------------------
