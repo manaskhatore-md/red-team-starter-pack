@@ -44,6 +44,7 @@ judging the last reply again does not repeat the run. Preview their judge with
 import argparse
 import asyncio
 import sys
+from collections import Counter
 from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
@@ -62,7 +63,7 @@ from pyrit.setup import SQLITE, initialize_pyrit_async
 from harnesses.pyrit_campaigns import single_turn_scan as scan
 from harnesses.pyrit_campaigns.calibration import CALIBRATION_LABEL
 from harnesses.pyrit_campaigns.code_checks import CODE_CHECKS
-from harnesses.pyrit_campaigns.profiles import PAIR_RUBRICS
+from harnesses.pyrit_campaigns.profiles import PAIR_RUBRICS, dataset_path
 from harnesses.pyrit_campaigns.rubrics import describe_version, require_valid, version_labels
 from harnesses.pyrit_campaigns.target_factory import build_scoring_target, check_models, close_target, model_name
 from scripts.export_finding_report import select_run
@@ -138,6 +139,8 @@ def plan(results, memory, rubrics: dict, only_rubrics: set[str] | None, only_pro
     probes = {(p.dataset, p.name): p for p in scan.load_probes()}
     order = {key: i for i, key in enumerate(probes)}
     singles, pairs, skipped = [], {}, []
+    # Probes from a suite that is not here at all, by suite: said once per suite, not once per probe.
+    missing_suites: Counter[str] = Counter()
 
     for result in results:
         labels = result.labels or {}
@@ -150,7 +153,10 @@ def plan(results, memory, rubrics: dict, only_rubrics: set[str] | None, only_pro
             shown += f" (repeat {repeat})"
         probe = probes.get((dataset, name))
         if probe is None:
-            skipped.append(f"{shown}: no longer in any suite, so its pass criteria and facts are unknown.")
+            if not dataset_path(dataset).exists():
+                missing_suites[dataset] += 1
+            else:
+                skipped.append(f"{shown}: no longer in {dataset}, so its pass criteria and facts are unknown.")
             continue
         messages = memory.get_conversation_messages(conversation_id=result.conversation_id)
         reply = last_reply(messages)
@@ -193,7 +199,22 @@ def plan(results, memory, rubrics: dict, only_rubrics: set[str] | None, only_pro
         first_variant = (old.score_metadata or {}).get("first") if old else None
         first = b if first_variant == b.variant and a.variant != b.variant else a
         pair_tasks.append((pair_id, repeat, a, b, first, reply_a, reply_b, old))
-    return singles, pair_tasks, skipped
+
+    reasons = [
+        f"{count} probe(s) from {dataset}: that suite is not here (no attack_suites/*/{dataset}.yaml), so their "
+        "pass criteria and facts are unknown. Re-score from the branch or copy the run was made with."
+        for dataset, count in sorted(missing_suites.items())
+    ]
+    # A rubric asked for by name that judges nothing in this run: say what it judges, and what the run sent.
+    judged = {task[0] for task in singles} | ({PAIR_RUBRIC} if pair_tasks else set())
+    sent = Counter((r.labels or {}).get("rt_dataset", "") for r in results)
+    for key in sorted((only_rubrics or set()) - judged):
+        grades = ", ".join(rubrics[key].get("grades", [])) or "no suite"
+        reasons.append(
+            f"No probe in this run is judged by {key}: it grades {grades}, and the run sent "
+            + ", ".join(f"{dataset} ({n})" for dataset, n in sorted(sent.items())) + "."
+        )
+    return singles, pair_tasks, reasons + skipped
 
 
 async def rejudge(singles, pair_tasks, rubrics: dict, judge) -> list[Rejudged]:
@@ -371,7 +392,8 @@ async def main(argv=None) -> int:
     singles, pair_tasks, skipped = plan(results, memory, rubrics, only_rubrics, parse_tokens(args.probes))
     calls = len(singles) + len(pair_tasks)
     if not calls:
-        raise SystemExit("Nothing to judge again" + (": " + "; ".join(skipped) if skipped else "."))
+        reasons = "".join(f"\n  - {reason}" for reason in skipped)
+        raise SystemExit(f"Nothing to judge again in run {run_id[:8]}" + (f":{reasons}" if reasons else "."))
     print(f"Run {run_id[:8]}: {len(singles)} rubric verdict(s) and {len(pair_tasks)} pair(s) to judge again, "
           f"{calls} judge call(s). Nothing is sent to the system under test.")
     limit = scan.get_max_calls()

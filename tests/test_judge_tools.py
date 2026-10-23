@@ -269,3 +269,17 @@ def test_rescoring_names_an_unknown_rubric(scanned, monkeypatch, tmp_path):
     run_id, _ = scanned
     with pytest.raises(SystemExit, match="No rubric named nope"):
         rescore_run(monkeypatch, tmp_path, FlagsEverything(), "--run", run_id[:8], "--rubric", "nope")
+
+
+def test_rescoring_with_nothing_to_judge_says_why_once_per_suite(scanned, monkeypatch, tmp_path):
+    # A run made where a suite existed, re-scored where it does not; and a rubric that judges none of it.
+    run_id, _ = scanned
+    others = [p for p in single_turn_scan.load_probes() if p.dataset != "prompt_injection"]
+    monkeypatch.setattr(single_turn_scan, "load_probes", lambda *a, **k: others)
+    monkeypatch.setattr(rescore, "dataset_path", lambda name: tmp_path / f"{name}.yaml")
+    with pytest.raises(SystemExit) as stopped:
+        rescore_run(monkeypatch, tmp_path, FlagsEverything(), "--run", run_id[:8], "--rubric", "pii_disclosure")
+    message = str(stopped.value)
+    assert "2 probe(s) from prompt_injection: that suite is not here" in message
+    assert "No probe in this run is judged by pii_disclosure: it grades sensitive_data_leakage" in message
+    assert message.count("prompt_injection: that suite") == 1
