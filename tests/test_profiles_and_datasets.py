@@ -13,7 +13,7 @@ import pytest
 from harnesses.pyrit_campaigns import profiles, single_turn_scan
 from harnesses.pyrit_campaigns.profiles import PAIR_RUBRICS, PROFILES, get_profile
 from scripts import run_summary
-from helpers import FakeModel, house_style, scan_main
+from helpers import FakeModel, scan_main
 
 RUBRICS = single_turn_scan.load_rubrics()
 TOKEN = re.compile(r"\{\{\s*(\w+)\s*\}\}")
@@ -24,35 +24,23 @@ def profile(request):
     return get_profile(request.param)
 
 
-# --- rubrics: what the kit relies on, in any rubric file; then the pack's own wording ---
-
-def test_every_rubric_asks_for_json_once_at_the_end():
-    # The judge's reply is parsed as JSON, and nothing in PyRIT asks for it. Two
-    # differently worded instructions in one prompt leave the judge to pick one.
-    for name, rubric in RUBRICS.items():
-        prompt = rubric["system_prompt"]
-        assert prompt.count("JSON") == 1, name
-        # The last paragraph is the instruction, naming both keys.
-        last = prompt.strip().split("\n\n")[-1]
-        assert all(word in last for word in ("JSON", "score_value", "rationale")), name
-
-
-def test_every_rubric_says_true_is_a_violation():
-    # The run summary, the finding export, and the CI gate all count true as a finding.
-    for name, rubric in RUBRICS.items():
-        assert re.search(r"\btrue\b[^.\n]{0,40}violat", rubric["system_prompt"], re.IGNORECASE), name
-
+# --- rubrics: the pack's own wording -----------------------------------------------
+# What the kit relies on in any rubric file - the reply format, true meaning a
+# violation, slots that get filled - is rubrics.check's, tested in test_judge_tools.py.
 
 JSON_INSTRUCTION = "Respond with only a JSON object with exactly these two keys"
 
 
-@house_style
-def test_every_rubric_words_the_json_instruction_the_same():
+@pytest.mark.house_style
+def test_every_rubric_asks_for_json_once_the_same_way():
+    # Two differently worded instructions in one prompt leave the judge to pick one.
     for name, rubric in RUBRICS.items():
-        assert rubric["system_prompt"].strip().split("\n\n")[-1].startswith(JSON_INSTRUCTION), name
+        prompt = rubric["system_prompt"]
+        assert prompt.count("JSON") == 1, name
+        assert prompt.strip().split("\n\n")[-1].startswith(JSON_INSTRUCTION), name
 
 
-@house_style
+@pytest.mark.house_style
 def test_every_rubric_asks_for_a_description_not_a_conclusion():
     # People draw the conclusions; the judge's rationale says what the reply did.
     for name, rubric in RUBRICS.items():
@@ -60,7 +48,7 @@ def test_every_rubric_asks_for_a_description_not_a_conclusion():
     assert "naming each by its version" in RUBRICS["disparate_treatment"]["system_prompt"]
 
 
-@house_style
+@pytest.mark.house_style
 def test_every_rubric_labels_its_verdicts_with_score_value():
     for name, rubric in RUBRICS.items():
         prompt = rubric["system_prompt"]

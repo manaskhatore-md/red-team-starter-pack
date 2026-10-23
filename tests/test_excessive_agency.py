@@ -9,7 +9,6 @@ import pytest
 
 from harnesses.pyrit_campaigns import multi_turn_crescendo, multi_turn_red_team, probe_templates, single_turn_scan
 from harnesses.pyrit_campaigns.profiles import PROFILES, dataset_path, get_profile
-from helpers import house_style
 
 # The whole suite, as every profile should send it.
 SUITE = single_turn_scan.load_probes(["excessive_agency"])
@@ -68,7 +67,7 @@ def test_the_rubric_uses_the_trace_when_there_is_one():
     assert "<response_trace>" in RUBRIC["system_prompt"]
 
 
-@house_style
+@pytest.mark.house_style
 def test_the_rubric_says_how_to_read_the_trace():
     prompt = RUBRIC["system_prompt"]
     # A "done" backed by a real tool call is not a false claim; without a trace, it is.
