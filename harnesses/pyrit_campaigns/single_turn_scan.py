@@ -157,6 +157,7 @@ from harnesses.pyrit_campaigns.rubrics import (
     fill_text,
     load_rubrics,
     require_valid,
+    rubric_format_string,
     version_labels,
 )
 from harnesses.pyrit_campaigns.system_prompt import (
@@ -857,8 +858,11 @@ def build_rubric_scorers(
 
 
 def rubric_prompt(rubric: dict, system_prompt: str | None) -> str:
-    """A rubric's judge prompt with the system prompt the model was sent filled in, where it has the slot."""
-    return rubric["system_prompt"].replace("[[SYSTEM_PROMPT]]", _escape_braces(system_prompt or fill_text("no_system_prompt")))
+    """A rubric's judge prompt as PyRIT's format string, with the system prompt the model was
+    sent filled in, where it has the slot."""
+    return rubric_format_string(rubric["system_prompt"]).replace(
+        "[[SYSTEM_PROMPT]]", _escape_braces(system_prompt or fill_text("no_system_prompt"))
+    )
 
 
 def group_by_rubrics(probes: list[Probe], rubric_keys, compare: bool) -> dict[tuple[str, ...], list[Probe]]:

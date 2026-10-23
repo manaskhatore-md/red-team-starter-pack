@@ -47,8 +47,9 @@ def test_the_shipped_rubrics_pass_with_nothing_to_say():
 @pytest.mark.parametrize(
     "fields, message",
     [
-        ({"system_prompt": "Judge it: {deadline}. score_value"}, "{deadline} would break scoring"),
-        ({"system_prompt": "Judge it: { not closed. score_value"}, "a brace PyRIT cannot read"),
+        # Only a rubric written the old way, with {objective}, goes to PyRIT with its braces as written.
+        ({"system_prompt": "Judge {objective}: {deadline}. score_value"}, "{deadline} would break scoring"),
+        ({"system_prompt": "Judge {objective}: { not closed. score_value"}, "a brace PyRIT cannot read"),
         ({"system_prompt": "No reply format here."}, 'never tells the judge to answer with a JSON object'),
         ({"system_prompt": ""}, "needs a `system_prompt:`"),
         ({"grades": ["excess_agency"]}, "grades 'excess_agency', which has no attack_suites/*/excess_agency.yaml"),
@@ -84,6 +85,49 @@ def test_an_edit_that_runs_but_probably_misjudges_is_a_warning(rubric, change, m
     assert [p.level for p in found] == ["warning"] and message in found[0].message
 
 
+def test_a_rubric_is_plain_text_braces_and_all(memory):
+    # A literal brace needs no doubling: the kit fills [[PROBE]] and escapes the rest.
+    text = SHIPPED["injection_compliance"]["system_prompt"] + '\n\nA reply like {"status": "approved"} is a violation.'
+    found = [p for p in rubrics.check(edited("injection_compliance", system_prompt=text)) if "brace" in p.message]
+    assert found == []
+    system, _ = single_turn_scan.judge_messages(
+        single_turn_scan.rubric_prompt({"system_prompt": text}, None), "THE PROBE", "a reply"
+    )
+    assert '{"status": "approved"}' in system and "THE PROBE" in system and "[[PROBE]]" not in system
+
+
+def test_an_old_style_rubric_still_judges_the_same_and_says_how_to_update():
+    old = "Judge <probe>{objective}</probe>, quoting {{\"a\": 1}}. score_value"
+    assert single_turn_scan.rubric_prompt({"system_prompt": old}, None) == old
+    [warning] = [p for p in rubrics.check(edited("excessive_agency", system_prompt=old)) if "old way" in p.message]
+    assert warning.level == "warning" and "change {objective} to [[PROBE]]" in warning.message
+
+
+def test_a_rubric_without_its_probe_is_a_warning():
+    text = SHIPPED["excessive_agency"]["system_prompt"].replace("[[PROBE]]", "the probe")
+    [warning] = [p for p in rubrics.check(edited("excessive_agency", system_prompt=text)) if p.level == "warning"]
+    assert "has no [[PROBE]]" in warning.message
+
+
+def test_a_field_the_kit_never_reads_is_a_warning():
+    # It looks like a setting, so changing it and seeing nothing happen is the trap.
+    [warning] = rubrics.check(edited("pii_disclosure", requires="two responses"))
+    assert (warning.level, warning.rubric) == ("warning", "pii_disclosure")
+    assert "`requires:` is not read by the kit, so changing it changes nothing" in warning.message
+    [typo] = rubrics.check(edited("pii_disclosure", grade=["x"]))
+    assert "Did you mean `grades`?" in typo.message
+
+
+def test_a_section_the_kit_never_reads_is_a_warning(tmp_path, monkeypatch):
+    data = rubrics.read_rubric_file()
+    data["scoring_convention"] = "false = violation"
+    path = tmp_path / "judge.yaml"
+    path.write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
+    monkeypatch.setattr(rubrics, "RUBRIC_FILE", path)
+    [warning] = rubrics.check(SHIPPED)
+    assert warning.rubric == "" and "the `scoring_convention:` section is not read by the kit" in warning.message
+
+
 def test_a_missing_description_is_a_warning_not_an_error():
     found = rubrics.check(edited("pii_disclosure", description=""))
     assert [(p.level, p.rubric) for p in found] == [("warning", "pii_disclosure")]
@@ -99,7 +143,7 @@ def test_objectives_are_checked_only_when_asked():
 
 
 def test_a_broken_rubric_stops_the_scan_before_anything_is_sent(memory, monkeypatch, capsys):
-    broken = edited("injection_compliance", system_prompt="Judge {reply}. score_value")
+    broken = edited("injection_compliance", system_prompt="Judge {objective} and {reply}. score_value")
     monkeypatch.setattr(single_turn_scan, "load_rubrics", lambda: broken)
     monkeypatch.setenv("RT_PROBES", "prompt_injection")
     target = FakeModel()
@@ -202,7 +246,7 @@ def test_judge_text_edited_in_the_rubric_file_is_what_the_judge_reads(rubric_fil
         pair_attribute="[[ATTRIBUTE]]; A=[[FIRST]], B=[[SECOND]]",
         pair_compare_on="; compare [[COMPARE_ON]]",
     )
-    prompt = single_turn_scan.rubric_prompt({"system_prompt": "Told: [[SYSTEM_PROMPT]]. Probe: {objective}"}, None)
+    prompt = single_turn_scan.rubric_prompt({"system_prompt": "Told: [[SYSTEM_PROMPT]]. Probe: [[PROBE]]"}, None)
     system, message = single_turn_scan.judge_messages(prompt, "the probe", "a {reply}", "a trace")
     assert system == "Told: No instructions were given.. Probe: the probe"
     assert message == 'Grade this reply:\n<response>\na {reply}\n</response>\n\nThe trace:\na trace\n\nAnswer {"score_value": ...}.'

@@ -765,16 +765,22 @@ python -m scripts.rescore --run 937e73ef                      # every rubric
 python -m scripts.rescore --run 937e73ef --rubric pii_disclosure
 ```
 
-**The check** stops a run on an edit that would break it: a `{brace}` PyRIT cannot fill
-(write a literal brace twice, `{{`), a pair rubric without `[[RESPONSE_A]]` and
-`[[RESPONSE_B]]`, no instruction to answer with `score_value`, a `grades:` entry that names
-no suite, an unknown severity, or a `judge_text:` entry missing or without a slot that
-carries the evidence (`[[RESPONSE]]`, `[[TRACE]]`, `[[GOAL]]`, `[[HISTORY]]`, `[[SOURCE]]`,
-`[[ANSWER]]`), since the judge would never see it. It warns, without stopping, on an edit
-that probably does not do what you meant: a `[[SLOT]]` that no probe fills (usually a typo;
-it suggests the name), a rubric that never says `true` means a violation, the
-reply-format instruction somewhere other than last, or a `judge_text:` entry or slot with
-a name the kit does not use.
+A rubric's `system_prompt` is plain text too: write braces as they are, and put
+`[[PROBE]]` where the judge should see the message sent to the assistant. The other slots
+the kit fills, and the four fields a rubric has, are listed at the top of `judge.yaml`. A
+rubric written the old way, with PyRIT's `{objective}` and every literal brace doubled
+(`{{`), still works; the check says how to update it.
+
+**The check** stops a run on an edit that would break it: a pair rubric without
+`[[RESPONSE_A]]` and `[[RESPONSE_B]]`, no instruction to answer with `score_value`, a
+`grades:` entry that names no suite, an unknown severity, a `judge_text:` entry missing or
+without a slot that carries the evidence (`[[RESPONSE]]`, `[[TRACE]]`, `[[GOAL]]`,
+`[[HISTORY]]`, `[[SOURCE]]`, `[[ANSWER]]`), or, in an old-style rubric, a `{brace}` PyRIT
+cannot fill. It warns, without stopping, on an edit that probably does not do what you
+meant: a `[[SLOT]]` that no probe fills (usually a typo; it suggests the name), a rubric
+without `[[PROBE]]`, a rubric that never says `true` means a violation, the reply-format
+instruction somewhere other than last, a field, section, `judge_text:` entry or slot the
+kit never reads (so changing it would change nothing), or a rubric still written the old way.
 
 Two things are fixed, because the rest of the kit depends on them: the judge answers with
 JSON holding `score_value` and `rationale` (PyRIT reads the verdict from it), and `true`

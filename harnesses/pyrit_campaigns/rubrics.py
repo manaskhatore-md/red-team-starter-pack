@@ -11,18 +11,23 @@ the first judge call - or worse, not breaking and judging wrongly:
 
     python -m harnesses.pyrit_campaigns.rubrics check
 
-ERRORS stop a run. They are the edits that break the kit: a `{brace}` PyRIT cannot fill,
-a pair rubric with nowhere for the two replies, no instruction to answer with
-score_value, a `grades:` entry naming no suite, a severity the reports do not know, an
-objective judged by a rubric that does not exist, a judge_text entry missing or without
-a slot that carries the evidence ([[RESPONSE]], [[TRACE]], ...).
+A rubric's system_prompt is plain text with a [[PROBE]] slot (rubric_format_string()
+makes it PyRIT's format string). One written the old way, with {objective} and doubled
+braces, is passed as written and draws a warning saying how to update it.
+
+ERRORS stop a run. They are the edits that break the kit: a pair rubric with nowhere
+for the two replies, no instruction to answer with score_value, a `grades:` entry
+naming no suite, a severity the reports do not know, an objective judged by a rubric
+that does not exist, a judge_text entry missing or without a slot that carries the
+evidence ([[RESPONSE]], [[TRACE]], ...), and in an old-style rubric, a `{brace}` PyRIT
+cannot fill.
 
 WARNINGS do not. They are the edits that still run but probably do not do what was
-meant: a [[SLOT]] nothing fills, a rubric that never says true means a violation, the
-reply-format instruction somewhere other than last, a missing description, a judge_text
-entry or slot with a misspelt name. Your fork's
-rubrics are yours to word as you like; the check only holds you to what the rest of the
-kit relies on.
+meant: a [[SLOT]] nothing fills, a rubric without [[PROBE]], a rubric that never says
+true means a violation, the reply-format instruction somewhere other than last, a
+missing description, a field, section, judge_text entry or slot the kit never reads,
+a rubric still written the old way. Your fork's rubrics are yours to word as you like;
+the check only holds you to what the rest of the kit relies on.
 
 Two things are fixed, because the rest of the kit depends on them:
   - The judge answers with a JSON object with "score_value" and "rationale". PyRIT
@@ -58,6 +63,7 @@ RUBRIC_FILE = Path(__file__).resolve().parent / "judge.yaml"
 # [[SLOTS]] the kit fills itself, so a probe's judge_context cannot set them.
 # PASS_CRITERIA comes from the probe's own pass_criteria.
 KIT_SLOTS = frozenset({
+    "PROBE",
     "SYSTEM_PROMPT",
     "PATTERN_CHECK",
     "RESPONSE_A",
@@ -72,6 +78,13 @@ SLOT = re.compile(r"\[\[([A-Z][A-Z0-9_]*)\]\]")
 # What PyRIT fills when it runs .format() over a rubric: the probe, the reply, and the
 # reply's message object.
 FORMAT_FIELDS = frozenset({"objective", "prompt", "message_piece"})
+# A rubric written the old way: PyRIT's own {objective}, with literal braces doubled.
+# One with [[PROBE]] is plain text, and the kit escapes its braces.
+OLD_STYLE_FIELD = re.compile(r"(?<!\{)\{(?:objective|prompt|message_piece)\}(?!\})")
+# The fields of a rubric the kit reads. Any other is never seen by the judge or a report.
+RUBRIC_FIELDS = ("description", "grades", "severity", "system_prompt")
+# The rubric file's sections.
+FILE_SECTIONS = ("rubrics", "judge_text")
 # In the order the finding reports rank them.
 SEVERITIES = ("low", "medium", "high", "critical")
 
@@ -121,6 +134,19 @@ def read_rubric_file(path: Path | None = None) -> dict:
 def load_rubrics(path: Path | None = None) -> dict:
     """Every rubric in the rubric file, by name."""
     return read_rubric_file(path)["rubrics"]
+
+
+def old_style(text: str) -> bool:
+    """Whether a rubric is written the old way, with {objective} and doubled braces, not [[PROBE]]."""
+    return "[[PROBE]]" not in text and bool(OLD_STYLE_FIELD.search(text))
+
+
+def rubric_format_string(text: str) -> str:
+    """A rubric's text as the format string PyRIT fills: [[PROBE]] becomes {objective}, and
+    every other brace is the kit's to escape. An old-style rubric is already one."""
+    if old_style(text):
+        return text
+    return text.replace("{", "{{").replace("}", "}}").replace("[[PROBE]]", "{objective}")
 
 
 # --- the judge's other words ---------------------------------------------------
@@ -193,28 +219,38 @@ class Problem:
 
 
 def _format_problems(name: str, prompt: str, pair: bool) -> list[Problem]:
-    """The {braces} in a rubric that PyRIT's .format() would trip on."""
+    """An old-style rubric, and the {braces} in it that PyRIT's .format() would trip on.
+
+    A rubric with [[PROBE]] is plain text, so none of its braces can be a problem; nor
+    can a pair rubric's, whose braces are all escaped before PyRIT sees them.
+    """
+    if pair:
+        return [
+            Problem(
+                "warning", name,
+                f"{field.group(0)} reaches the judge as written: a pair rubric is shown two replies, not a probe. "
+                "Use [[RESPONSE_A]], [[RESPONSE_B]] and [[ATTRIBUTE]].",
+            )
+            for field in OLD_STYLE_FIELD.finditer(prompt)
+        ]
+    if not old_style(prompt):
+        return []
+    problems = [Problem(
+        "warning", name,
+        "is written the old way, with {objective} and doubled braces. It still works. To write braces "
+        "as they are, change {objective} to [[PROBE]] and every {{ or }} to a single brace.",
+    )]
     try:
         fields = [field for _, field, _, _ in string.Formatter().parse(prompt) if field is not None]
     except ValueError as e:
-        if pair:
-            # A pair rubric's braces are all escaped before PyRIT sees them.
-            return []
-        return [Problem(
+        return problems + [Problem(
             "error", name,
             f"a brace PyRIT cannot read ({e}). Scoring would fail at the first judge call. "
-            "Write a literal brace twice - {{ or }} - or remove it.",
+            "Write a literal brace twice - {{ or }} - or write [[PROBE]] for {objective}, and braces as they are.",
         )]
-    problems = []
     for field in fields:
         base = re.split(r"[.\[]", field, maxsplit=1)[0]
-        if pair:
-            problems.append(Problem(
-                "warning", name,
-                f"{{{field}}} reaches the judge as written: a pair rubric is shown two replies, not a probe. "
-                "Use [[RESPONSE_A]], [[RESPONSE_B]] and [[ATTRIBUTE]].",
-            ))
-        elif base not in FORMAT_FIELDS:
+        if base not in FORMAT_FIELDS:
             problems.append(Problem(
                 "error", name,
                 f"{{{field}}} would break scoring at run time: PyRIT fills only "
@@ -248,6 +284,10 @@ def _slot_problems(name: str, prompt: str, pair: bool, probe_slots: dict[str, se
     for slot in sorted(used & PAIR_SLOTS):
         problems.append(Problem(
             "warning", name, f"[[{slot}]] is filled only in a pair rubric; this rubric's judge sees it as written.",
+        ))
+    if "PROBE" not in used and not old_style(prompt):
+        problems.append(Problem(
+            "warning", name, "has no [[PROBE]], so its judge is not shown the probe the reply answers.",
         ))
     if probe_slots is None:
         return problems
@@ -389,15 +429,26 @@ def check(rubrics: dict | None = None, probes=None, objectives: bool = False,
             problems.append(Problem(
                 "warning", name, "has no `description:`; the run summary and finding reports show it.",
             ))
+        for field in sorted(set(rubric) - set(RUBRIC_FIELDS)):
+            problems.append(_unread(name, f"`{field}:`", field, RUBRIC_FIELDS))
 
         problems += _format_problems(name, prompt, pair)
         problems += _slot_problems(name, prompt, pair, probe_slots, grades)
         problems += _reply_format_problems(name, prompt)
 
     problems += _judge_text_problems(judge_text_entries)
+    for section in sorted(set(read_rubric_file()) - set(FILE_SECTIONS)):
+        problems.append(_unread("", f"the `{section}:` section", section, FILE_SECTIONS))
     if objectives:
         problems += _objective_problems(rubrics)
     return sorted(problems, key=lambda p: p.level != "error")
+
+
+def _unread(rubric: str, what: str, name: str, known) -> Problem:
+    """A warning that the kit never reads something in the file, so changing it changes nothing."""
+    guess = difflib.get_close_matches(name, list(known), n=1)
+    hint = f" Did you mean `{guess[0]}`?" if guess else " To keep it as a note, make it a # comment."
+    return Problem("warning", rubric, f"{what} is not read by the kit, so changing it changes nothing.{hint}")
 
 
 def _objective_problems(rubrics: dict) -> list[Problem]:
