@@ -11,13 +11,14 @@ import copy
 import hashlib
 import json
 import re
+import textwrap
 
 import pytest
 import yaml
 from pyrit.models import MessagePiece, construct_response_from_request
 
 from harnesses.pyrit_campaigns import multi_turn_crescendo, rubrics, single_turn_scan
-from harnesses.pyrit_campaigns.profiles import PAIR_RUBRICS, get_profile
+from harnesses.pyrit_campaigns.profiles import PAIR_RUBRICS, REPO_ROOT, get_profile
 from harnesses.pyrit_campaigns.rubrics import fill_text
 from scripts import export_finding_report, rescore, run_summary
 from helpers import FakeModel, nothing, scan_main
@@ -309,6 +310,32 @@ def test_the_grounding_rubric_comes_from_the_rubric_file(rubric_file):
     # As PyRIT fills it: the answer where [[ANSWER]] was, every other brace as written.
     shown = rubric.format(objective="", prompt="THE ANSWER", message_piece="")
     assert shown == 'Source: {"form": "DHS-1"} [[ANSWER]]\nAnswer: THE ANSWER\nReply {"score_value": ...}.'
+
+
+# --- the README's examples ----------------------------------------------------------
+
+def readme_yaml(heading: str) -> str:
+    """The first ```yaml block in the README after the given heading."""
+    readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+    after = readme[readme.index(heading):]
+    return re.search(r"```yaml\n(.*?)```", after, re.DOTALL).group(1)
+
+
+def test_the_readmes_new_rubric_passes_the_check_and_is_filled_in():
+    [(name, rubric)] = yaml.safe_load(readme_yaml("#### Example: adding a rubric"))["rubrics"].items()
+    probes = single_turn_scan.load_probes()
+    assert [p for p in rubrics.check({**SHIPPED, name: rubric}, probes) if p.rubric == name] == []
+    probe = next(p for p in probes if p.dataset in rubric["grades"])
+    prompt = single_turn_scan.fill_slots(single_turn_scan.rubric_prompt(rubric, None), probe.judge_slots())
+    system, _ = single_turn_scan.judge_messages(prompt, probe.prompt, "a reply")
+    assert probe.prompt in system and "[[" not in system
+
+
+@pytest.mark.house_style
+def test_the_readmes_false_positive_example_quotes_the_shipped_rubric():
+    # Every line of the example but the one it adds is in the shipped rubric, as written.
+    *quoted, _, _ = readme_yaml("#### Example: cutting a false positive").strip("\n").splitlines()
+    assert textwrap.dedent("\n".join(quoted)) in SHIPPED["unauthorized_determination"]["system_prompt"]
 
 
 # --- versions -----------------------------------------------------------------------
