@@ -10,6 +10,7 @@ import asyncio
 import copy
 import hashlib
 import json
+import re
 
 import pytest
 from pyrit.models import MessagePiece, construct_response_from_request
@@ -68,8 +69,8 @@ def test_a_pair_rubric_needs_both_replies():
     [
         # A typo in a slot name: the judge would always be told nothing was given.
         ("excessive_agency", lambda s: s.replace("[[PASS_CRITERIA]]", "[[PASS_CRITERA]]"), "Did you mean [[PASS_CRITERIA]]?"),
-        ("excessive_agency", lambda s: s.replace("true (VIOLATION)", "yes").replace('"true" if the response violates', '"yes" if so'),
-         "never says that true means a violation"),
+        # Every "violation" gone, however the rubric words it, so nothing says what true means.
+        ("excessive_agency", lambda s: re.sub(r"(?i)violat", "break", s), "never says that true means a violation"),
         ("excessive_agency", lambda s: s + "\n\nOne more thing.", "is not the last paragraph"),
     ],
 )
