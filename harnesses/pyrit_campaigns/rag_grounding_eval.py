@@ -45,7 +45,7 @@ truststore.inject_into_ssl()
 from pyrit.score import SelfAskGeneralTrueFalseScorer
 from pyrit.setup import SQLITE, initialize_pyrit_async
 
-from harnesses.pyrit_campaigns.rubrics import SLOT, fill_text
+from harnesses.pyrit_campaigns.rubrics import SLOT, fill_text, require_valid
 from harnesses.pyrit_campaigns.target_factory import build_scoring_target, check_models, close_target
 
 # TODO: point this at your own evaluation set.
@@ -134,6 +134,9 @@ async def get_answer_and_context(case: GroundingCase) -> GroundingCase:
 
 
 async def evaluate(cases: list[GroundingCase]) -> list[GroundingCase]:
+    # A broken edit stops here, before any call: a grounding rubric without [[ANSWER]]
+    # would still return verdicts, on answers its judge never saw.
+    require_valid()
     judge = build_scoring_target()
     await check_models(judge=judge)
 

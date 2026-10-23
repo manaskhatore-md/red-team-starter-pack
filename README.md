@@ -792,7 +792,8 @@ repeat the run.
 
 Every run records `judge.yaml`'s fingerprint (rubrics and `judge_text:` alike) and the
 pack's version, and the run summary and finding reports show them, so a finding says which
-rubrics judged it. (Before this file was `judge.yaml` it was `state_policy_rubric.yaml`;
+rubrics judged it. A run reads `judge.yaml` once, when it starts, so an edit made during a
+run takes effect at the next one. (Before this file was `judge.yaml` it was `state_policy_rubric.yaml`;
 git carries a fork's edits across the rename when it merges.) Before relying on
 a changed rubric, hand-label 20-30 replies, borderline ones included, and check the judge
 agrees.

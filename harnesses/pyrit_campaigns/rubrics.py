@@ -32,10 +32,14 @@ Two things are fixed, because the rest of the kit depends on them:
 
 VERSIONS: every run records the file's fingerprint and the pack's git version
 (version_labels()), and the run summary and finding reports print them, so a finding
-says which rubrics judged it. The fingerprint covers judge_text too.
+says which rubrics judged it. The fingerprint covers judge_text too. A run reads the
+file once (read_rubric_file()), so the text it checked, the fingerprint it records,
+and the text that judges every reply are the same; an edit during a run takes effect
+at the next one.
 """
 
 import argparse
+import copy
 import difflib
 import hashlib
 import re
@@ -79,18 +83,39 @@ def _shown(path: Path) -> str:
         return str(path)
 
 
+# Each rubric file as this process first read it: its bytes, and once parsed, its contents.
+# A run reads the file once, so the text it checks before sending, the fingerprint it
+# records, and the text that judges every reply are the same. An edit during a run
+# takes effect at the next run.
+_READ: dict[str, dict] = {}
+
+
+def _first_read(path: Path) -> dict:
+    key = str(path)
+    if key not in _READ:
+        try:
+            _READ[key] = {"bytes": path.read_bytes()}
+        except FileNotFoundError:
+            raise SystemExit(f"No rubric file at {_shown(path)}.") from None
+    return _READ[key]
+
+
 def read_rubric_file(path: Path | None = None) -> dict:
-    """The rubric file's contents, or SystemExit saying why it cannot be read."""
+    """The rubric file's contents as this process first read it, or SystemExit saying why it cannot be read."""
     path = path or RUBRIC_FILE
-    try:
-        data = yaml.safe_load(path.read_text(encoding="utf-8"))
-    except FileNotFoundError:
-        raise SystemExit(f"No rubric file at {_shown(path)}.") from None
-    except yaml.YAMLError as e:
-        raise SystemExit(f"{_shown(path)} is not valid YAML: {e}") from None
-    if not isinstance(data, dict) or not isinstance(data.get("rubrics"), dict):
-        raise SystemExit(f"{_shown(path)} needs a `rubrics:` section mapping each rubric's name to its fields.")
-    return data
+    read = _first_read(path)
+    if "data" not in read:
+        try:
+            data = yaml.safe_load(read["bytes"].decode("utf-8"))
+        except (UnicodeDecodeError, yaml.YAMLError) as e:
+            raise SystemExit(f"{_shown(path)} is not valid YAML: {e}") from None
+        if not isinstance(data, dict) or not isinstance(data.get("rubrics"), dict):
+            raise SystemExit(f"{_shown(path)} needs a `rubrics:` section mapping each rubric's name to its fields.")
+        raw = data.get("judge_text")
+        read["data"] = data
+        read["judge_text"] = {k: v.strip() for k, v in raw.items() if isinstance(v, str)} if isinstance(raw, dict) else {}
+    # A copy, so a caller that changes what it was given does not change the run's rubrics.
+    return copy.deepcopy(read["data"])
 
 
 def load_rubrics(path: Path | None = None) -> dict:
@@ -118,23 +143,15 @@ JUDGE_TEXT_SLOTS = {
 }
 EVIDENCE_SLOTS = frozenset({"RESPONSE", "TRACE_SECTION", "TRACE", "GOAL", "HISTORY", "SOURCE", "ANSWER"})
 
-_judge_text_cache: dict[tuple, dict[str, str]] = {}
-
-
 def judge_text(path: Path | None = None) -> dict[str, str]:
     """The rubric file's judge_text: everything the judge reads that is not a rubric.
 
-    Parsed again only when the file's contents change, since a scan asks for it once
-    per score. A missing or broken entry is the check's to report; here it is just absent.
+    As the run first read the file, like the rubrics. A missing or broken entry is the
+    check's to report; here it is just absent.
     """
     path = path or RUBRIC_FILE
-    key = (str(path), hashlib.sha256(path.read_bytes()).hexdigest() if path.exists() else "")
-    if key not in _judge_text_cache:
-        raw = read_rubric_file(path).get("judge_text")
-        raw = raw if isinstance(raw, dict) else {}
-        _judge_text_cache.clear()
-        _judge_text_cache[key] = {k: v.strip() for k, v in raw.items() if isinstance(v, str)}
-    return dict(_judge_text_cache[key])
+    read_rubric_file(path)
+    return dict(_READ[str(path)]["judge_text"])
 
 
 def _entry(name: str) -> str:
@@ -429,9 +446,10 @@ def rubric_fingerprint(path: Path | None = None) -> str:
     """The first 12 characters of the rubric file's SHA-256: the same text gives the same fingerprint.
 
     Line endings are made \\n first, so a Windows checkout (CRLF) and a Linux CI runner
-    give the same fingerprint for the same committed file.
+    give the same fingerprint for the same committed file. Of the file as the run first
+    read it, so it names the text that judged the run.
     """
-    return hashlib.sha256((path or RUBRIC_FILE).read_bytes().replace(b"\r\n", b"\n")).hexdigest()[:12]
+    return hashlib.sha256(_first_read(path or RUBRIC_FILE)["bytes"].replace(b"\r\n", b"\n")).hexdigest()[:12]
 
 
 def version_labels() -> dict[str, str]:

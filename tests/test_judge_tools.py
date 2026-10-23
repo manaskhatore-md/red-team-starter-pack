@@ -140,6 +140,8 @@ def rubric_file(tmp_path, monkeypatch):
         path = tmp_path / "judge.yaml"
         path.write_text(yaml.safe_dump(data, allow_unicode=True, sort_keys=False), encoding="utf-8")
         monkeypatch.setattr(rubrics, "RUBRIC_FILE", path)
+        # Read afresh, as the next run would.
+        monkeypatch.delitem(rubrics._READ, str(path), raising=False)
 
     return write
 
@@ -225,6 +227,34 @@ def test_a_missing_judge_text_entry_at_run_time_names_what_to_add_back(rubric_fi
     rubric_file(no_pattern_hits="")
     with pytest.raises(SystemExit, match="has no judge_text `no_pattern_hits:`"):
         fill_text("no_pattern_hits")
+
+
+def test_a_run_judges_with_the_file_it_checked_and_fingerprinted(rubric_file):
+    # Edited mid-run, even into a broken file: the run carries on with the text it
+    # checked before sending, and its fingerprint still names that text.
+    rubric_file(no_pattern_hits="First words.")
+    checked = rubrics.rubric_fingerprint()
+    rubrics.require_valid(SHIPPED)
+    assert fill_text("no_pattern_hits") == "First words."
+
+    data = rubrics.read_rubric_file()
+    data["judge_text"]["no_pattern_hits"] = ""
+    data["rubrics"].pop("pii_disclosure")
+    rubrics.RUBRIC_FILE.write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
+
+    assert fill_text("no_pattern_hits") == "First words."
+    assert rubrics.rubric_fingerprint() == checked
+    assert "pii_disclosure" in rubrics.load_rubrics()
+    rubrics.require_valid(SHIPPED)
+
+
+def test_the_grounding_eval_checks_the_file_before_judging(rubric_file, monkeypatch):
+    from harnesses.pyrit_campaigns import rag_grounding_eval
+
+    rubric_file(grounding=SHIPPED_TEXT["grounding"].replace("[[ANSWER]]", "the answer"))
+    monkeypatch.setattr(rag_grounding_eval, "build_scoring_target", lambda: pytest.fail("a judge was built"))
+    with pytest.raises(SystemExit, match=r"judge_text.grounding: needs \[\[ANSWER\]\]"):
+        asyncio.run(rag_grounding_eval.evaluate([]))
 
 
 def test_the_grounding_rubric_comes_from_the_rubric_file(rubric_file):
