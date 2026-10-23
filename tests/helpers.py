@@ -4,9 +4,11 @@ Fixtures live in conftest.py; this module holds what tests import by name.
 """
 
 import asyncio
+import hashlib
 import uuid
 from datetime import datetime, timedelta, timezone
 
+import pytest
 from pyrit.models import AttackOutcome, AttackResult, Message, MessagePiece, Score, construct_response_from_request
 from pyrit.models.identifiers.component_identifier import ComponentIdentifier
 from pyrit.prompt_target import PromptTarget, TargetCapabilities, TargetConfiguration
@@ -19,6 +21,28 @@ from scripts import run_summary
 
 async def nothing(*args, **kwargs):
     """Stands in for any async setup step a test skips: the database, the model check."""
+
+
+# --- the pack's own rubric wording ---------------------------------------------
+
+# The fingerprint of state_policy_rubric.yaml as the pack ships it: sha256 of its text
+# with LF line endings, so a Windows checkout gives the same one.
+SHIPPED_RUBRICS = "3faf2a0d2bdfaf5f857e84e2e71b727c8358e76b8b29ebf1af52c8300796a748"
+
+
+def rubric_fingerprint() -> str:
+    return hashlib.sha256(single_turn_scan.RUBRIC_FILE.read_bytes().replace(b"\r\n", b"\n")).hexdigest()
+
+
+# For a test of the pack's house style: wording the shipped rubrics hold to that the
+# kit itself does not rely on. Runs only on the rubric file the pack ships, because a
+# fork rewords its rubrics for its own deployment and the wording is then its own; the
+# tests without this mark hold every rubric file to what the kit does rely on.
+house_style = pytest.mark.skipif(
+    rubric_fingerprint() != SHIPPED_RUBRICS,
+    reason="the pack's rubric wording; state_policy_rubric.yaml is not the shipped file. "
+    "If you edited the pack's rubrics, set SHIPPED_RUBRICS in tests/helpers.py to the new rubric_fingerprint().",
+)
 
 
 # --- a fake model and judge -------------------------------------------------
