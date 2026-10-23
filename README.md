@@ -450,6 +450,7 @@ red-team-starter-pack/
 │       ├── single_turn_scan.py         # Every dataset probe, graded by your rubrics
 │       ├── probe_templates.py          # One seed sent once per entry in a fixture file
 │       ├── state_policy_rubric.yaml    # The judge's rubrics: criteria-based Pass/Fail scoring prompts
+│       ├── rubrics.py                  # Reads and checks the rubrics; records which version judged a run
 │       ├── calibration.py              # Plain questions sent first, so a canned or blocked reply is not read as a pass
 │       ├── system_prompt.py            # The system prompt a scan sends, and the canary token check
 │       ├── planted_records.py          # Fake records of other people in the system prompt, and their leak check
@@ -465,6 +466,7 @@ red-team-starter-pack/
 ├── scripts/
 │   ├── smoke_test.py                   # Connectivity check - run this first
 │   ├── run_summary.py                  # One run in full: every probe, reply, and verdict
+│   ├── rescore.py                      # Judges a past scan's replies again with the rubrics as they are now
 │   └── export_finding_report.py        # Turns results in PyRIT's database into Playbook Markdown
 │
 ├── tests/                              # pytest checks of the pack's own code - offline, no keys needed
@@ -684,7 +686,8 @@ The pack ships generic on purpose, and generic probes find generic problems. In
 priority order:
 
 1. **`harnesses/pyrit_campaigns/state_policy_rubric.yaml`** — replace the criteria with citations to your
-   actual policy. "The judge model didn't like it" is not a defensible finding.
+   actual policy. "The judge model didn't like it" is not a defensible finding. See
+   [Changing how the judge grades](#changing-how-the-judge-grades).
 2. **The YOUR AGENCY section of `.env`** — your real program, agency, and tool names,
    which fill the `{{ placeholders }}` in the probes, stand-in prompts, and goals. To
    share them across a team, change the defaults in `PLACEHOLDERS` in
@@ -698,6 +701,56 @@ priority order:
 5. **`attack_suites/*/*.yaml`** — add probes in your system's own language and policy terms.
    For the same question asked about many things, write it once as a template (below).
 6. **`RT_PROVIDER=app`**, pointed at a test instance of your deployment, so you test it rather than a bare model.
+
+### Changing how the judge grades
+
+Every judge verdict comes from a rubric in `harnesses/pyrit_campaigns/state_policy_rubric.yaml`:
+the policy, what counts as a violation, and what does not. Your fork's rubrics are yours to
+reword, extend, add to, or delete. Each rubric's `grades:` list names the suites it judges,
+so a new rubric that lists a suite judges it in every campaign, with no code change.
+
+Change one, then check what the change does before you trust it:
+
+```bash
+# 1. Check the file. Every campaign also does this before it sends anything.
+python -m harnesses.pyrit_campaigns.rubrics check
+
+# 2. See exactly what the judge will read for a probe, a matched pair, or a multi-turn goal
+python -m harnesses.pyrit_campaigns.single_turn_scan --show-judge-prompt override_simple
+python -m harnesses.pyrit_campaigns.single_turn_scan --show-judge-prompt dialect_01
+python -m harnesses.pyrit_campaigns.multi_turn_crescendo --show-judge-prompt 3
+
+# 3. Judge a past scan's replies again with the rubrics as they are now
+python -m scripts.rescore --run 937e73ef                      # every rubric
+python -m scripts.rescore --run 937e73ef --rubric pii_disclosure
+```
+
+**The check** stops a run on an edit that would break it: a `{brace}` PyRIT cannot fill
+(write a literal brace twice, `{{`), a pair rubric without `[[RESPONSE_A]]` and
+`[[RESPONSE_B]]`, no instruction to answer with `score_value`, a `grades:` entry that names
+no suite, or an unknown severity. It warns, without stopping, on an edit that probably does
+not do what you meant: a `[[SLOT]]` that no probe fills (usually a typo; it suggests the
+name), a rubric that never says `true` means a violation, or the reply-format instruction
+somewhere other than last.
+
+Two things are fixed, because the rest of the kit depends on them: the judge answers with
+JSON holding `score_value` and `rationale` (PyRIT reads the verdict from it), and `true`
+means a violation (the run summary, the finding reports, and the CI gate all count `true` as
+a finding).
+
+**Re-scoring** (`scripts/rescore.py`) judges every reply a scan stored again, the way the
+scan judged it, and writes `findings/<date>_rescore_<run>.md`: which verdicts changed, with
+the old and new rationale side by side. It sends nothing to the system under test, leaves
+the run's own scores as they were, and costs one judge call per verdict. The judge does not
+give the same verdict every time, so **re-score once before you edit anything**: what changes
+then is noise, and your edit's effect is what changes beyond it. It covers single-turn
+scans; a multi-turn judge steers its attack, so judging the last reply again does not
+repeat the run.
+
+Every run records the rubric file's fingerprint and the pack's version, and the run summary
+and finding reports show them, so a finding says which rubrics judged it. Before relying on
+a changed rubric, hand-label 20-30 replies, borderline ones included, and check the judge
+agrees.
 
 ### Your own multi-turn objectives
 

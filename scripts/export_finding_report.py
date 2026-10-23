@@ -51,17 +51,17 @@ load_dotenv()
 import truststore
 truststore.inject_into_ssl()
 
-import yaml
 from pyrit.memory import CentralMemory
 from pyrit.models import ConversationType
 from pyrit.setup import SQLITE, initialize_pyrit_async
 
 from harnesses.pyrit_campaigns.profiles import PROFILES, REPO_ROOT, dataset_path
 from harnesses.pyrit_campaigns.code_checks import CODE_CHECKS
+from harnesses.pyrit_campaigns.rubrics import SEVERITIES, describe_version
+from harnesses.pyrit_campaigns.rubrics import load_rubrics as load_judge_rubrics
 from harnesses.pyrit_campaigns.target_factory import TRACE_METADATA_KEY
 
 TEMPLATE = Path(__file__).resolve().parents[1] / "templates" / "finding_report_template.md"
-RUBRIC_FILE = Path(__file__).resolve().parents[1] / "harnesses" / "pyrit_campaigns" / "state_policy_rubric.yaml"
 
 # TODO: fill these in once for your agency; they are the same on every report.
 DEFAULTS = {
@@ -87,7 +87,7 @@ ANALYST_FIELDS = {
     "retest_notes": "TODO: how to verify the fix; add a regression case to attack_suites/.",
 }
 
-SEVERITY_ORDER = ["low", "medium", "high", "critical"]
+SEVERITY_ORDER = list(SEVERITIES)
 
 
 def render(template: str, values: dict) -> str:
@@ -143,7 +143,7 @@ def load_rubrics() -> dict:
     # The code checks (canary, planted records, credentials, ...) are not judge rubrics,
     # but they flag findings like one, so they are listed with them: --rubric any exports
     # their hits, and reports show their severity.
-    return {**yaml.safe_load(RUBRIC_FILE.read_text(encoding="utf-8"))["rubrics"], **CODE_CHECKS}
+    return {**load_judge_rubrics(), **CODE_CHECKS}
 
 
 def rubric_names() -> set[str]:
@@ -290,6 +290,13 @@ def reproduction_steps(labels: dict) -> str:
             else ""
         )
     )
+    version_step = (
+        f"The judge used {describe_version(labels)}. If `python -m harnesses.pyrit_campaigns.rubrics check` "
+        "prints a different fingerprint, the rubrics have changed since, and the verdict may differ for that "
+        "reason alone."
+        if labels.get("rt_rubric_sha")
+        else ""
+    )
     if labels.get("rt_campaign") == "single_turn_scan":
         conv_flag = f" --converters {labels['rt_converters']}" if labels.get("rt_converters") else ""
         steps = [
@@ -297,6 +304,8 @@ def reproduction_steps(labels: dict) -> str:
             f"Run `python -m harnesses.pyrit_campaigns.single_turn_scan{conv_flag}`.",
             probe_step(labels),
         ]
+        if version_step:
+            steps.append(version_step)
         if labels.get("rt_prompt_canary"):
             steps.append(canary_step)
         if labels.get("rt_pair_id"):
@@ -319,6 +328,8 @@ def reproduction_steps(labels: dict) -> str:
             "The attacker writes new turns on every run, so the transcript will not repeat word "
             "for word. What should reproduce is the outcome.",
         ]
+        if version_step:
+            steps.append(version_step)
         if labels.get("rt_prompt_canary"):
             steps.append(canary_step)
     else:

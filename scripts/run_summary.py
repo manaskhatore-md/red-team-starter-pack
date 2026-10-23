@@ -48,6 +48,7 @@ from harnesses.pyrit_campaigns.calibration import CALIBRATION_LABEL, normalized
 from harnesses.pyrit_campaigns.profiles import PROFILES, checklist_for
 from harnesses.pyrit_campaigns.code_checks import CODE_CHECKS
 from harnesses.pyrit_campaigns.planted_records import RECORD_CHECK
+from harnesses.pyrit_campaigns.rubrics import describe_version
 from harnesses.pyrit_campaigns.system_prompt import CANARY_CHECK
 from scripts.export_finding_report import (
     encoding_label,
@@ -654,6 +655,7 @@ def build_summary(results, memory, run_id: str) -> str:
     elif campaign == "single_turn_scan":
         lines.append("| System prompt | not recorded (the scan sent none before it recorded this) |")
     lines.append(f"| Judge | {recorded(labels.get('rt_judge'))} (RT_JUDGE_PROVIDER={recorded(labels.get('rt_judge_provider'))}) |")
+    lines.append(f"| Rubrics | {describe_version(labels)} |")
     if labels.get("rt_adversarial"):
         lines.append(f"| Attacker | {labels['rt_adversarial']} (RT_ADVERSARIAL_PROVIDER={recorded(labels.get('rt_adversarial_provider'))}) |")
     if labels.get("rt_objectives_file"):

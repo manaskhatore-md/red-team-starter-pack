@@ -51,7 +51,6 @@ per repeat.  10 turns × 5 objectives is about 150 calls.  Start with
 RT_MAX_TURNS=5.
 """
 
-import argparse
 import asyncio
 import os
 import sys
@@ -80,7 +79,6 @@ from pyrit.setup import SQLITE, initialize_pyrit_async
 
 from harnesses.pyrit_campaigns.profiles import describe, get_profile, placeholders
 from harnesses.pyrit_campaigns.single_turn_scan import (
-    CONVERTER_BUILDERS,
     FAIL_ON_FINDING,
     build_converter_config,
     check_placeholders,
@@ -101,8 +99,11 @@ from harnesses.pyrit_campaigns.multi_turn_crescendo import (
     load_objectives,
     multi_turn_conversion_note,
     objective_rubrics,
+    parse_args,
+    show_judge_prompt,
 )
 from harnesses.pyrit_campaigns.planted_records import RECORD_CHECK, PlantedRecordScorer, records_for, records_section
+from harnesses.pyrit_campaigns.rubrics import require_valid, version_labels
 from harnesses.pyrit_campaigns.system_prompt import (
     CANARY_CHECK,
     AppPrompt,
@@ -168,6 +169,8 @@ async def main(
     await initialize_pyrit_async(memory_db_type=SQLITE)
 
     print(describe(profile))
+    # A broken rubric stops the run here, before anything is sent.
+    require_valid(load_rubrics())
     print(f"objectives: {len(objectives)} from {profile.objectives_file}")
     if conv_spec:
         print(multi_turn_conversion_note(conv_spec, len(objectives), pass_names, control=control))
@@ -291,6 +294,8 @@ async def main(
         # Which objectives file the attacks came from, so the report can say what was tested.
         "rt_objectives_file": profile.objectives_file,
         "rt_trace_path": os.getenv("APP_TRACE_PATH", "").strip(),
+        # Which rubrics judged the run: the rubric file's fingerprint and the pack's version.
+        **version_labels(),
     }
 
     attack_passes: list[tuple[str, dict]] = []
@@ -421,20 +426,7 @@ async def main(
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Run adaptive RedTeamingAttack campaigns against the profile's objectives.")
-    parser.add_argument(
-        "--converters",
-        default=None,
-        metavar="SPEC",
-        help=(
-            "comma-separated PyRIT request converters applied to every attacker turn sent to the target "
-            f"(overrides RT_CONVERTERS): {', '.join(CONVERTER_BUILDERS)}, 'all', or 'none'."
-        ),
-    )
-    parser.add_argument(
-        "--no-control",
-        action="store_true",
-        help="when --converters is set, run only the encoded attack(s) and skip the unencoded control pass (or set RT_CONTROL=0)",
-    )
-    args = parser.parse_args()
+    args = parse_args(campaign="red team")
+    if args.show_judge_prompt is not None:
+        sys.exit(show_judge_prompt(get_profile(), args.show_judge_prompt))
     sys.exit(asyncio.run(main(args.converters, args.no_control)))
