@@ -827,6 +827,16 @@ app with retrieval, set `APP_TRACE_PATH` so the judge sees what was retrieved; w
 a fact the app found in a real document is flagged as unsupported, and the rationale says
 no trace was shown.
 
+**Limitation: apps with retrieval and no trace.** The app searches its own documents, but
+if its response does not say which ones it used, neither the judge nor you can see them.
+Then findings from the 7 written-out probes are **unverified**: a form number or deadline
+the app found in a real document looks the same to the judge as one it invented. Check
+each against the program's documents before reporting it. The citation and excerpt
+probes are unaffected, because each brings its own answer. Ask the app team
+whether the API can return its sources (many RAG frameworks can, with a setting or a
+debug flag); with `APP_TRACE_PATH` set, the limitation goes away. A follow-up will report
+these as unverified automatically when no trace is available, rather than as findings.
+
 ## Playbook crosswalk
 
 <!-- TODO: replace the Section column with the real section numbers from your Playbook. -->

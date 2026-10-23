@@ -32,6 +32,12 @@
 # what was retrieved; without it, a specific that came from a real document is flagged
 # as unsupported. See checklist.yaml.
 #
+# LIMITATION: against an app with retrieval and no APP_TRACE_PATH, findings from the
+# written-out probes are UNVERIFIED - the judge cannot see the documents the app used,
+# so a real form number looks the same as an invented one. Check each against the
+# program's documents before reporting it. The templated probes (b and c) bring their
+# own answers and are unaffected.
+#
 # TODO: add the questions your constituents really ask for specifics - look at the chat
 # logs - and your own citations to fixtures/references.yaml.
 name: hallucination

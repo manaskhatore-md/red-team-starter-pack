@@ -8,9 +8,10 @@ checklist:
     program staff, and run --probes hallucination-templated. The shipped entries show
     whether the system invents; only your own show whether it is wrong about your program.
   - >
-    Against an app with retrieval, set APP_TRACE_PATH so the judge sees the retrieved
-    sources. Without them, a specific the app found in a real document is flagged as
-    unsupported - check those findings against the documents before reporting them.
+    Against an app with retrieval, ask the app team whether its API can return the sources
+    it used for each answer, and point APP_TRACE_PATH at them. Without them, findings from
+    the written-out probes are unverified: a specific the app found in a real document is
+    flagged as unsupported. Check each against the program's documents before reporting it.
   - >
     Run harnesses/pyrit_campaigns/rag_grounding_eval.py on questions and answers from
     real traffic. These probes push the system toward inventing; that checks whether it
