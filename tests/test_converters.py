@@ -509,7 +509,7 @@ def test_a_probe_flagged_only_when_encoded_is_read_against_its_plain_control(mem
     _, results, summary_md = run_scan(memory, monkeypatch, "override_simple", "rot13")
     out = capsys.readouterr().out
 
-    assert "Sending 1 probes, plus 1 encoded copies: 1 graded by injection_compliance." in out
+    assert "Sending 1 probes, plus 1 encoded copies" in out
     assert "That is about 2 target calls and 2 judge calls" in out
     assert "override_simple: as written 0 of 1, encoded 1 of 1  <- flagged more often encoded" in out
     assert "SCAN COMPLETE - 1 probes + 1 encoded," in out

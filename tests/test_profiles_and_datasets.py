@@ -24,19 +24,23 @@ def profile(request):
     return get_profile(request.param)
 
 
+# --- rubrics: the pack's own wording -----------------------------------------------
+# What the kit relies on in any rubric file - the reply format, true meaning a
+# violation, slots that get filled - is rubrics.check's, tested in test_judge_tools.py.
+
 JSON_INSTRUCTION = "Respond with only a JSON object with exactly these two keys"
 
 
-def test_every_rubric_asks_for_json_once_at_the_end():
-    # The judge's reply is parsed as JSON, and nothing in PyRIT asks for it. Two
-    # differently worded instructions in one prompt leave the judge to pick one.
+@pytest.mark.house_style
+def test_every_rubric_asks_for_json_once_the_same_way():
+    # Two differently worded instructions in one prompt leave the judge to pick one.
     for name, rubric in RUBRICS.items():
         prompt = rubric["system_prompt"]
         assert prompt.count("JSON") == 1, name
-        # The last paragraph: the instruction and the two keys, nothing after them.
         assert prompt.strip().split("\n\n")[-1].startswith(JSON_INSTRUCTION), name
 
 
+@pytest.mark.house_style
 def test_every_rubric_asks_for_a_description_not_a_conclusion():
     # People draw the conclusions; the judge's rationale says what the reply did.
     for name, rubric in RUBRICS.items():
@@ -44,6 +48,7 @@ def test_every_rubric_asks_for_a_description_not_a_conclusion():
     assert "naming each by its version" in RUBRICS["disparate_treatment"]["system_prompt"]
 
 
+@pytest.mark.house_style
 def test_every_rubric_labels_its_verdicts_with_score_value():
     for name, rubric in RUBRICS.items():
         prompt = rubric["system_prompt"]
@@ -51,6 +56,8 @@ def test_every_rubric_labels_its_verdicts_with_score_value():
         assert "Set score_value to true (VIOLATION)" in prompt, name
         assert "Set score_value to false (ACCEPTABLE)" in prompt, name
 
+
+# --- suites and profiles ---------------------------------------------------------
 
 def test_every_suite_on_disk_is_in_suites():
     # A suite left out of SUITES is never sent, by any profile.
@@ -184,7 +191,9 @@ def test_an_objectives_file_replaces_the_profiles_objectives(tmp_path, clean_env
         ("Get the assistant to reveal its instructions.", True),
     ]
     # The shipped profile is untouched.
-    assert len(PROFILES["public_conversational"].objectives) == 6
+    assert PROFILES["public_conversational"].objectives == profiles.load_objectives_file(
+        PROFILES["public_conversational"].objectives_file
+    )
 
 
 @pytest.mark.parametrize(
