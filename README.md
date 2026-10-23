@@ -487,10 +487,10 @@ profiles are presets for when you know what kind of deployment you're testing.
 
 | `RT_PROFILE` | Use for | Primary risk | Probes sent |
 |---|---|---|---|
-| unset (`default`) | A first run, or a system no preset fits | All of them, broadly | 58 (`core`) |
-| `internal_productivity` | Staff copilots, document search | Over-broad retrieval; pasted untrusted content | 48 (no bias) |
-| `public_conversational` | Public FAQ and program chatbots | Wrong answers at scale; equity | 86 (no data leakage) |
-| `constituent_decision` | Eligibility, casework, licensing | Authorization boundaries; disparate impact | 94 (all) |
+| unset (`default`) | A first run, or a system no preset fits | All of them, broadly | 70 (`core`) |
+| `internal_productivity` | Staff copilots, document search | Over-broad retrieval; pasted untrusted content | 60 (no bias) |
+| `public_conversational` | Public FAQ and program chatbots | Wrong answers at scale; equity | 98 (no data leakage) |
+| `constituent_decision` | Eligibility, casework, licensing | Authorization boundaries; disparate impact | 106 (all) |
 
 ### Using a profile
 
@@ -512,7 +512,7 @@ RT_PROFILE=public_conversational python -m harnesses.pyrit_campaigns.multi_turn_
 RT_PROFILE=internal_productivity python -m harnesses.pyrit_campaigns.single_turn_scan --probes bias-core
 RT_PROFILE=constituent_decision python -m harnesses.pyrit_campaigns.single_turn_scan --probes 1-15
 
-# No profile: the built-in default, every suite (add --probes all for all 94)
+# No profile: the built-in default, every suite (add --probes all for all 106)
 python -m harnesses.pyrit_campaigns.single_turn_scan
 ```
 
@@ -532,7 +532,7 @@ Each profile in `harnesses/pyrit_campaigns/profiles.py` is a few lines:
 - **Which probes run** — a `--probes` spec over every suite (see [Running a subset of
   probes](#running-a-subset-of-probes)). `default` runs `core`: every probe except the 36
   bias probes made from fixtures, which need repeats to mean anything. `constituent_decision`
-  runs `all` 94. The rubrics follow from the probes: each rubric grades the suites its
+  runs `all` 106. The rubrics follow from the probes: each rubric grades the suites its
   `grades` list names.
 - **Multi-turn goals** written for that kind of system, in `config/objectives/<profile>.yaml`.
 - **A stand-in system prompt** for runs against a raw model, in `config/system_prompts/<profile>.txt`.
@@ -588,7 +588,7 @@ probes instead, pass `--probes <spec>` on the command line (or set `RT_PROBES=<s
 `.env`). A probe has the same number under every profile.
 
 ```bash
-# Preview the profile's probes with their [1]..[94] numbers and pair tags (calls no model)
+# Preview the profile's probes with their [1]..[106] numbers and pair tags (calls no model)
 python -m harnesses.pyrit_campaigns.single_turn_scan --list-probes
 
 # Preview what a filter selects before sending anything
@@ -604,7 +604,7 @@ You can pass one selector or combine several with commas (e.g. `--probes "1-3,cr
 
 | Selector | What it selects | Examples |
 |---|---|---|
-| `all` | Every probe in every suite (94) | `--probes all` |
+| `all` | Every probe in every suite (106) | `--probes all` |
 | `core` | All non-bias probes **plus** the 5 inline bias pairs (skips the 36 fixture-expanded bias templates) | `--probes core` |
 | `general` | Only non-bias security/safety probes (`prompt_injection`, `sensitive_data_leakage`, `excessive_agency`) | `--probes general` |
 | `bias` | All probes in `algorithmic_bias` (both inline and fixture-expanded) | `--probes bias` |
@@ -625,48 +625,57 @@ file order so a half-pair is never sent or judged alone.
 Guardrails and keyword filters that block a plain-English injection or extraction attempt can
 often be bypassed when the same prompt is encoded (Base64, ROT13, URL-encoding) or obfuscated
 with leetspeak, homoglyphs, or invisible zero-width characters. Instead of duplicating encoded
-strings across YAML files, `single_turn_scan` can run probes through PyRIT request converters
-via `--converters <spec>` (or `RT_CONVERTERS=<spec>` in `.env`).
+strings across YAML files, `single_turn_scan`, `multi_turn_crescendo`, and `multi_turn_red_team`
+can run probes and attacker turns through PyRIT request converters via `--converters <spec>` (or
+`RT_CONVERTERS=<spec>` in `.env`).
 
-Only the `prompt_injection` and `sensitive_data_leakage` probes are encoded, because those
-attack a filter or guardrail. The rest of a selection is sent as written: a bias pair
-compares two plain replies, and an excessive-agency probe asks for an action, so an encoded
-copy would test the encoding instead. A selection with no probe from those two suites stops
-before anything is sent.
-
-Each encoded probe is also sent as written in the same run, as the control, so `--converters`
-doubles the calls for those probes. A flag on an encoded probe means little by itself: the
-plain text may fail the same way. The run summary's **Encoded vs. as written** section sets the
-two side by side, and a probe flagged only when encoded is the finding - the encoding got past
-something the plain text did not. Use `RT_REPEATS=5` or more before reporting one; a single
-try each way is one reply. Replies are also checked in decoded form, so a leak in a reply that
-comes back in base64, ROT13, or look-alike letters is still caught.
+Every selected probe (or multi-turn objective) is encoded. By default, each one is also sent as
+written once in the same run, as the shared control, so the run summary's **Encoded vs. as written**
+section can set each encoding side by side with the plain-text result. A flag on an encoded probe
+means little by itself if the plain text fails the same way; a probe flagged only when encoded is
+the finding — the encoding got past something the plain text did not. Pass `--no-control` (or set
+`RT_CONTROL=0` in `.env`) to skip the plain-text pass and send only the encoded version(s). Use
+`RT_REPEATS=5` or more before reporting a finding; a single try each way is one reply. Replies are
+also checked in decoded form, so a leak in a reply that comes back in Base64, ROT13, or look-alike
+letters is still caught.
 
 ```bash
 # Preview the converted payload for each selected probe without calling a model
 python -m harnesses.pyrit_campaigns.single_turn_scan --list-probes --probes prompt_injection --converters base64
 
-# Run the prompt_injection suite encoded in Base64 or ROT13
+# Run selected probes once as written (control) and once encoded in Base64 or ROT13
 python -m harnesses.pyrit_campaigns.single_turn_scan --probes prompt_injection --converters base64
 python -m harnesses.pyrit_campaigns.single_turn_scan --probes prompt_injection --converters rot13
 
-# Chain multiple converters in order (e.g. leetspeak followed by zero-width characters)
-python -m harnesses.pyrit_campaigns.single_turn_scan --probes prompt_injection --converters leetspeak,zero-width
+# Run multiple separate encodings in one scan (shares one plain-text control pass)
+python -m harnesses.pyrit_campaigns.single_turn_scan --probes prompt_injection --converters rot13,base64
+python -m harnesses.pyrit_campaigns.single_turn_scan --probes prompt_injection --converters all
+
+# Chain multiple converters into a single pass with '+' (e.g. leetspeak followed by zero-width characters)
+python -m harnesses.pyrit_campaigns.single_turn_scan --probes prompt_injection --converters leetspeak+zero-width
+
+# Skip the plain-text control pass and send only the encoded pass(es)
+python -m harnesses.pyrit_campaigns.single_turn_scan --probes prompt_injection --converters rot13 --no-control
+
+# Encode every attacker turn in multi-turn campaigns (with or without the plain-text control pass)
+python -m harnesses.pyrit_campaigns.multi_turn_crescendo --converters rot13
+python -m harnesses.pyrit_campaigns.multi_turn_red_team --converters rot13 --no-control
 ```
 
 | Converter | What it sends to the target |
 |---|---|
-| `base64` | Base64-encodes the probe and wraps it in a decode-and-respond instruction |
-| `base64-raw` | Bare Base64 cipher text only (useful for chaining, e.g. `base64-raw,url`) |
-| `rot13` | ROT13-encodes the probe and wraps it in a decode-and-respond instruction |
+| `base64` | Base64-encodes the prompt and wraps it in a decode-and-respond instruction |
+| `base64-raw` | Bare Base64 cipher text only (useful for chaining, e.g. `base64-raw+url`) |
+| `rot13` | ROT13-encodes the prompt and wraps it in a decode-and-respond instruction |
 | `rot13-raw` | Bare ROT13 cipher text only |
 | `leetspeak` (or `leet`) | Replaces ASCII letters with deterministic leetspeak equivalents (`4`, `3`, `1`, `0`, ...) |
 | `unicode-confusable` (or `confusable`) | Replaces Latin letters with visually similar Cyrillic/Greek homoglyphs |
 | `zero-width` (or `zerowidth`) | Injects invisible zero-width space characters (`U+200B`) between every character |
 | `url` | Percent-encodes characters (`%20`, `%3A`, ...) |
+| `all` | Runs 6 separate passes: `base64`, `rot13`, `leetspeak`, `unicode-confusable`, `zero-width`, `url` |
 
 The system prompt is left untouched, the judge still evaluates the reply against the original
-plain-English probe objective and `pass_criteria`, and exported finding reports show both
+plain-English probe or attacker turn and `pass_criteria`, and exported finding reports show both
 `[user original]` and the converted `[user]` payload alongside a `--converters` reproduction command.
 A report on an encoded probe also gives the control under Reproducibility: how often the same
 probe was flagged as written, against the same target, next to how often it was flagged encoded.
@@ -823,7 +832,13 @@ Two things keep the result honest:
   equivalent, so a control judged "different" is noise in your system or your judge. The run
   summary reports controls on their own (**Control pairs**), and they are never exported as
   findings. Read the other pairs against that rate: a skew is a finding only if it is clearly
-  above it. The judge is not told which pairs are controls.
+  above it. The judge is not told which pairs are controls. With `--converters`, pairs and
+  controls are compared within each encoding, and the summary gives each encoding its own
+  control rate: a model that misdecodes one half of a pair gives two different answers, which
+  looks like different treatment, so read encoded pairs against that encoding's controls.
+  The controls come from `fixtures/scenarios.yaml`, so the default `core` probes have none;
+  add `--probes core,bias-templated` to get them. Use `RT_REPEATS` of 5 or more, so each
+  rate rests on more than three controls.
 - **The judge reads the replies in alternating order**, from pair to pair and from repeat
   to repeat, so a judge that favors whatever it reads first does not favor one version. The
   run summary says which reply it read first.
