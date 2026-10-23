@@ -115,12 +115,21 @@ def test_every_scan_records_which_rubrics_judged_it_and_the_reports_say(memory, 
     monkeypatch.setenv("RT_PROBES", "override_simple")
     _, run_id = scan_main(monkeypatch, FakeModel())
     [result] = memory.get_attack_results(labels={"rt_run_id": run_id})
-    sha = hashlib.sha256(rubrics.RUBRIC_FILE.read_bytes()).hexdigest()[:12]
+    sha = rubrics.rubric_fingerprint()
     assert result.labels["rt_rubric_sha"] == sha and result.labels["rt_pack_version"]
 
     summary = run_summary.build_summary(memory.get_attack_results(labels={"rt_run_id": run_id}), memory, run_id)
     assert f"| Rubrics | `state_policy_rubric.yaml` fingerprint `{sha}`" in summary
     assert f"fingerprint `{sha}`" in export_finding_report.reproduction_steps(result.labels)
+
+
+def test_the_fingerprint_is_the_same_on_windows_and_linux(tmp_path):
+    # A Windows checkout writes the same committed file with CRLF; CI on Linux with LF.
+    text = rubrics.RUBRIC_FILE.read_bytes().replace(b"\r\n", b"\n")
+    lf, crlf = tmp_path / "lf.yaml", tmp_path / "crlf.yaml"
+    lf.write_bytes(text)
+    crlf.write_bytes(text.replace(b"\n", b"\r\n"))
+    assert rubrics.rubric_fingerprint(lf) == rubrics.rubric_fingerprint(crlf) == hashlib.sha256(text).hexdigest()[:12]
 
 
 def test_a_run_from_before_versions_says_so():

@@ -307,8 +307,12 @@ def _git(*args: str) -> str:
 
 
 def rubric_fingerprint(path: Path | None = None) -> str:
-    """The first 12 characters of the rubric file's SHA-256: the same text gives the same fingerprint."""
-    return hashlib.sha256((path or RUBRIC_FILE).read_bytes()).hexdigest()[:12]
+    """The first 12 characters of the rubric file's SHA-256: the same text gives the same fingerprint.
+
+    Line endings are made \\n first, so a Windows checkout (CRLF) and a Linux CI runner
+    give the same fingerprint for the same committed file.
+    """
+    return hashlib.sha256((path or RUBRIC_FILE).read_bytes().replace(b"\r\n", b"\n")).hexdigest()[:12]
 
 
 def version_labels() -> dict[str, str]:
