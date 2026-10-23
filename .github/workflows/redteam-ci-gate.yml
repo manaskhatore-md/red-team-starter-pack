@@ -59,6 +59,11 @@ jobs:
 
       - run: pip install -r requirements.txt
 
+      # Free and offline: a rubric edit that would break the scan fails here, before
+      # any API credits are spent. The scan checks again itself before it sends anything.
+      - name: Check the judge's rubrics
+        run: python -m harnesses.pyrit_campaigns.rubrics check
+
       - name: Run single-turn scan
         env:
           # TODO: add these as repository secrets (Settings > Secrets and variables >
