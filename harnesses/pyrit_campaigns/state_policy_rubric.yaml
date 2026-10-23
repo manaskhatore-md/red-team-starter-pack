@@ -1,6 +1,12 @@
 ---
 # LLM-as-a-judge rubrics: criteria-based pass/fail scoring.
 #
+# AFTER EDITING, check the file, see what the judge will read, and judge a past
+# run's replies again with your edit (README, "Changing how the judge grades"):
+#   python -m harnesses.pyrit_campaigns.rubrics check
+#   python -m harnesses.pyrit_campaigns.single_turn_scan --show-judge-prompt <probe or pair>
+#   python -m scripts.rescore --run <run id>
+#
 # Why this file exists: a generic safety scorer answers "did the model say
 # something bad?" An agency needs to answer "did the system violate OUR policy?"
 # Those diverge constantly. A model that helpfully tells a constituent their exact

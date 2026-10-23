@@ -45,6 +45,11 @@ send, numbered among every suite's, without calling any model:
 
     python -m harnesses.pyrit_campaigns.single_turn_scan --list-probes
 
+And to see exactly what the judge reads for one probe or matched pair, every slot
+filled, also without calling any model:
+
+    python -m harnesses.pyrit_campaigns.single_turn_scan --show-judge-prompt override_simple
+
 PROBE SELECTION: every probe in every suite is numbered, in the order of SUITES in
 profiles.py, and the profile picks which run (`core` for the built-in default, with
 RT_PROFILE unset). Pass `--probes <spec>` (or set `RT_PROBES=<spec>` in .env) with one or
@@ -104,7 +109,6 @@ from collections import Counter, defaultdict
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import NamedTuple
-from pathlib import Path
 
 # Load .env file
 from dotenv import load_dotenv
@@ -113,8 +117,6 @@ load_dotenv()
 # Fix for corporate TLS-inspecting proxies
 import truststore
 truststore.inject_into_ssl()
-
-import yaml
 
 from pyrit.converter import (
     AskToDecodeConverter,
@@ -148,6 +150,7 @@ from harnesses.pyrit_campaigns.profiles import (
 )
 from harnesses.pyrit_campaigns.code_checks import KnownPromptLeakScorer, code_scorers, fill_pattern_check
 from harnesses.pyrit_campaigns.planted_records import PlantedRecordScorer, records_for, records_section
+from harnesses.pyrit_campaigns.rubrics import KIT_SLOTS, RUBRIC_FILE, SLOT, load_rubrics, require_valid, version_labels
 from harnesses.pyrit_campaigns.system_prompt import (
     CanaryLeakScorer,
     load_app_prompt,
@@ -166,8 +169,6 @@ from harnesses.pyrit_campaigns.target_factory import (
     model_name,
     resolve_provider,
 )
-
-RUBRIC_FILE = Path(__file__).resolve().parent / "state_policy_rubric.yaml"
 
 # TODO: raise once you know your provider's rate limit; lower it if you are being
 # throttled. Judge calls count against the same quota.
@@ -309,19 +310,6 @@ class Probe:
         if self.pass_criteria:
             slots["PASS_CRITERIA"] = self.pass_criteria
         return slots
-
-
-# [[SLOTS]] the kit fills itself, so a probe's judge_context cannot set them.
-# PASS_CRITERIA comes from the probe's own pass_criteria.
-KIT_SLOTS = frozenset({
-    "SYSTEM_PROMPT",
-    "PATTERN_CHECK",
-    "RESPONSE_A",
-    "RESPONSE_B",
-    "ATTRIBUTE",
-    "PASS_CRITERIA",
-})
-SLOT = re.compile(r"\[\[([A-Z][A-Z0-9_]*)\]\]")
 
 
 def judge_context(raw, where: str, placeholders: dict[str, str]) -> tuple[tuple[str, str], ...]:
@@ -639,10 +627,6 @@ def _console_safe(text: str) -> str:
         return text.encode(encoding, errors="replace").decode(encoding, errors="replace")
 
 
-def load_rubrics() -> dict:
-    return yaml.safe_load(RUBRIC_FILE.read_text(encoding="utf-8"))["rubrics"]
-
-
 def rubrics_for(probes: list[Probe]) -> tuple[str, ...]:
     """The rubrics that grade these probes: every rubric whose `grades` names one of their datasets."""
     datasets = {probe.dataset for probe in probes}
@@ -715,6 +699,37 @@ def framed_response(reply: str, trace: str = "") -> str:
     return _escape_braces(RESPONSE_FRAME.format(response=neutralize_tags(reply), trace_section=trace_section))
 
 
+def fill_slots(rubric_prompt: str, slots: dict[str, str]) -> str:
+    """A rubric with one probe's [[SLOTS]] filled: its pass criteria and judge_context.
+
+    A slot the probe has nothing for tells the judge so, rather than reaching it as
+    "[[REFERENCE_FACTS]]". The slots the kit fills elsewhere are left for it.
+    """
+
+    def filled(match: re.Match) -> str:
+        slot = match.group(1)
+        if slot in KIT_SLOTS - {"PASS_CRITERIA"}:
+            return match.group(0)
+        fallback = NO_PASS_CRITERIA if slot == "PASS_CRITERIA" else NO_JUDGE_CONTEXT
+        return _escape_braces(slots.get(slot) or fallback)
+
+    # One pass, so a slot's text that happens to contain [[ANOTHER]] is left as it is.
+    return SLOT.sub(filled, rubric_prompt)
+
+
+def judge_messages(rubric_prompt: str, objective: str, reply: str, trace: str = "") -> tuple[str, str]:
+    """(system prompt, message) as the judge receives them, for a rubric whose slots are filled.
+
+    The same steps as RubricScorer, then PyRIT's own: the pattern check filled in, and
+    .format() run over both. For --show-judge-prompt and scripts/rescore.py to show
+    exactly what a judge reads.
+    """
+    values = {"objective": objective, "prompt": reply, "message_piece": "(the reply's message)"}
+    system = fill_pattern_check(rubric_prompt, reply).format(**values)
+    message = framed_response(reply, trace).format(**values) if trace else reply
+    return system, message
+
+
 class RubricScorer(MessageTrueFalseScorer):
     """A rubric from harnesses/pyrit_campaigns/state_policy_rubric.yaml, with each probe's own facts filled in.
 
@@ -744,17 +759,7 @@ class RubricScorer(MessageTrueFalseScorer):
         )
 
     def rubric_for(self, objective: str | None) -> str:
-        slots = self._judge_context.get(objective or "", {})
-
-        def filled(match: re.Match) -> str:
-            slot = match.group(1)
-            if slot in KIT_SLOTS - {"PASS_CRITERIA"}:
-                return match.group(0)
-            fallback = NO_PASS_CRITERIA if slot == "PASS_CRITERIA" else NO_JUDGE_CONTEXT
-            return _escape_braces(slots.get(slot) or fallback)
-
-        # One pass, so a slot's text that happens to contain [[ANOTHER]] is left as it is.
-        return SLOT.sub(filled, self._rubric_prompt)
+        return fill_slots(self._rubric_prompt, self._judge_context.get(objective or "", {}))
 
     async def _score_piece_async(self, message_piece: MessagePiece, *, objective: str | None = None) -> list[Score]:
         reply = message_piece.converted_value or ""
@@ -870,6 +875,32 @@ class PairVerdict(NamedTuple):
         return self.a.control and self.b.control
 
 
+def reading_order(a: Probe, b: Probe, index: int, repeat: int) -> tuple[Probe, Probe]:
+    """(first, second): which half's reply the judge reads first, for the pair at `index` in this repeat."""
+    return (b, a) if (index + repeat - 1) % 2 else (a, b)
+
+
+def pair_prompt(rubric_prompt: str, a: Probe, b: Probe, first: Probe, reply_first: str, reply_second: str) -> str:
+    """The pair rubric with both replies, in reading order, and what differed between them."""
+    second = b if first is a else a
+    # Pair ids look like "dialect_01"; the prefix names the attribute, unless the
+    # probe says. Says which response is which version: told only "english vs.
+    # spanish", the judge guessed, and twice described the english reply as the
+    # spanish one.
+    attribute = (
+        f"{a.attribute or b.attribute or a.pair_id.rsplit('_', 1)[0]}. "
+        f"RESPONSE A is the {first.variant} version; RESPONSE B is the {second.variant} version"
+    )
+    compare_on = a.compare_on or b.compare_on
+    if compare_on:
+        attribute += f". Compare especially: {compare_on}"
+    return (
+        rubric_prompt.replace("[[RESPONSE_A]]", reply_first)
+        .replace("[[RESPONSE_B]]", reply_second)
+        .replace("[[ATTRIBUTE]]", attribute)
+    )
+
+
 async def compare_pairs(
     probes: list[Probe], results: dict, memory, judge, rubric_prompt: str, repeats: int = 1
 ) -> list[PairVerdict]:
@@ -906,24 +937,11 @@ async def compare_pairs(
                 print(f"  {name}: a reply is missing - not compared")
                 continue
 
-            first, second = (b, a) if (index + repeat - 1) % 2 else (a, b)
+            first, second = reading_order(a, b, index, repeat)
             reply_first, reply_second = (result_b, result_a) if first is b else (result_a, result_b)
-
-            # Pair ids look like "dialect_01"; the prefix names the attribute, unless the
-            # probe says. Says which response is which version: told only "english vs.
-            # spanish", the judge guessed, and twice described the english reply as the
-            # spanish one.
-            attribute = (
-                f"{a.attribute or b.attribute or pair_id.rsplit('_', 1)[0]}. "
-                f"RESPONSE A is the {first.variant} version; RESPONSE B is the {second.variant} version"
-            )
-            compare_on = a.compare_on or b.compare_on
-            if compare_on:
-                attribute += f". Compare especially: {compare_on}"
-            filled = (
-                rubric_prompt.replace("[[RESPONSE_A]]", reply_first.last_response.converted_value or "")
-                .replace("[[RESPONSE_B]]", reply_second.last_response.converted_value or "")
-                .replace("[[ATTRIBUTE]]", attribute)
+            filled = pair_prompt(
+                rubric_prompt, a, b, first,
+                reply_first.last_response.converted_value or "", reply_second.last_response.converted_value or "",
             )
             scorer = PairScorer(
                 system_prompt_format_string=_escape_braces(filled),
@@ -1027,6 +1045,82 @@ def check_placeholders(probes: list[Probe], system_prompt: str = "") -> list[str
     return [env_var(key) for key in unfilled]
 
 
+PREVIEW_REPLY = "[the assistant's reply to this probe goes here]"
+PREVIEW_TRACE = "[the app's trace for this turn goes here (APP_TRACE_PATH)]"
+
+
+def judged_prompt_for(profile: Profile) -> str | None:
+    """The system prompt a scan under this profile would show the judge, as main() decides it.
+
+    The stand-in it sends a model, with a new canary and records each run, or the text
+    known of an app's own prompt (APP_SYSTEM_PROMPT_FILE).
+    """
+    if resolve_provider("target") == "app":
+        return load_app_prompt().text or None
+    records = records_for(profile_rubrics(profile))
+    prompt = load_system_prompt(profile.key, placeholders(), new_canary(), records_section(records) if records else "")
+    return prompt.text if prompt else None
+
+
+def _print_judge_prompt(title: str, system: str, message: str) -> None:
+    print(f"\n{'=' * 78}\n{title}\n{'=' * 78}")
+    print("--- the judge's instructions (system prompt) ---")
+    print(_console_safe(system))
+    print("--- the judge's message ---")
+    print(_console_safe(message))
+
+
+def show_judge_prompt(profile: Profile, name: str) -> int:
+    """Print what the judge reads for one probe or matched pair, filled in, without calling any model.
+
+    Built by the same functions the scorers use, so it is what a run sends, apart from
+    the reply (a placeholder here) and the canary and records (new each run).
+    """
+    all_probes = load_probes()
+    require_valid(load_rubrics(), all_probes)
+    rubrics = load_rubrics()
+    pair = [p for p in all_probes if p.pair_id and p.pair_id == name]
+    matches = pair or [p for p in all_probes if p.name == name]
+    if not matches:
+        raise SystemExit(
+            f"No probe or matched pair is named {name!r}. --list-probes shows every probe's name and pair."
+        )
+    system_prompt = judged_prompt_for(profile)
+    trace = PREVIEW_TRACE if os.getenv("APP_TRACE_PATH", "").strip() else ""
+    print(f"PROFILE: {profile.key}. Each run plants a new canary token (and records), so those differ from a real run.")
+    if not trace:
+        print("No APP_TRACE_PATH, so no trace is shown, as in a run without one.")
+
+    if pair:
+        if len(pair) != 2:
+            raise SystemExit(f"Pair {name!r} has {len(pair)} probe(s), not 2, so it is never compared.")
+        a, b = pair
+        reply_a, reply_b = f"[the reply to {a.name} ({a.variant})]", f"[the reply to {b.name} ({b.variant})]"
+        system = pair_prompt(rubrics[next(iter(PAIR_RUBRICS))]["system_prompt"], a, b, a, reply_a, reply_b)
+        print(
+            "Shown with the first half's reply read first. In a run the order alternates from pair to pair "
+            "and repeat to repeat."
+        )
+        # The verdict is recorded against the second half's reply, which PyRIT sends as the message.
+        _print_judge_prompt(f"pair {name}: {a.name} vs. {b.name}, judged by {next(iter(PAIR_RUBRICS))}", system, reply_b)
+        return 0
+
+    probe = matches[0]
+    keys = [key for key in rubrics_for([probe]) if key not in PAIR_RUBRICS]
+    if not keys:
+        print(f"\nNo rubric grades {probe.dataset}, so {probe.name} is not sent" + (
+            f" except as half of pair {probe.pair_id!r}: --show-judge-prompt {probe.pair_id}." if probe.pair_id else "."
+        ))
+        return 0
+    for key in keys:
+        prompt = fill_slots(rubric_prompt(rubrics[key], system_prompt), probe.judge_slots())
+        system, message = judge_messages(prompt, probe.prompt, PREVIEW_REPLY, trace)
+        _print_judge_prompt(f"{probe.dataset} / {probe.name}, judged by {key}", system, message)
+    if probe.pair_id:
+        print(f"\nIt is also half of pair {probe.pair_id!r}, compared after the scan: --show-judge-prompt {probe.pair_id}")
+    return 0
+
+
 def list_probes(
     profile: Profile,
     probes_spec: str | None = None,
@@ -1094,6 +1188,8 @@ async def main(
     print(describe(profile))
 
     all_probes = load_probes()
+    # A broken rubric stops the run here, before anything is sent.
+    require_valid(load_rubrics(), all_probes)
     probes = select_probes(all_probes, spec)
     if spec and spec.lower() != "all":
         print(f"\nProbe filter ({spec}): {len(probes)} of {len(all_probes)} probe(s) selected.")
@@ -1199,6 +1295,8 @@ async def main(
         # Settings still at "TODO ...", so the summary can say the probes named a placeholder.
         "rt_placeholders": ", ".join(unfilled),
         "rt_trace_path": os.getenv("APP_TRACE_PATH", "").strip(),
+        # Which rubrics judged the run: the rubric file's fingerprint and the pack's version.
+        **version_labels(),
     }
 
     # An app can answer with a fixed message instead of its model. Learn what that
@@ -1423,7 +1521,18 @@ if __name__ == "__main__":
             "Aliases: leet, confusable, zerowidth."
         ),
     )
+    parser.add_argument(
+        "--show-judge-prompt",
+        default=None,
+        metavar="NAME",
+        help=(
+            "print exactly what the judge reads for one probe (by name) or matched pair (by pair id), "
+            "with every slot filled, then stop without calling any model"
+        ),
+    )
     args = parser.parse_args()
+    if args.show_judge_prompt:
+        sys.exit(show_judge_prompt(get_profile(), args.show_judge_prompt))
     if args.list_probes:
         sys.exit(list_probes(get_profile(), args.probes, args.converters))
     sys.exit(asyncio.run(main(args.probes, args.converters)))

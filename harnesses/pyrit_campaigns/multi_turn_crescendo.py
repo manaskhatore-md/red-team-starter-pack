@@ -61,6 +61,7 @@ about 100 calls per repeat, before backtracks. Start with RT_MAX_TURNS=3.
 RT_MAX_CONCURRENCY (default 3) attacks run at once; each turn takes about 30 seconds.
 """
 
+import argparse
 import asyncio
 import contextlib
 import os
@@ -106,6 +107,7 @@ from harnesses.pyrit_campaigns.single_turn_scan import (
 )
 from harnesses.pyrit_campaigns.code_checks import CODE_CHECKS, KnownPromptLeakScorer, code_scorers, fill_pattern_check
 from harnesses.pyrit_campaigns.planted_records import RECORD_CHECK, PlantedRecordScorer, records_for, records_section
+from harnesses.pyrit_campaigns.rubrics import require_valid, version_labels
 from harnesses.pyrit_campaigns.system_prompt import (
     CANARY_CHECK,
     CanaryLeakScorer,
@@ -208,6 +210,55 @@ def conversation_before(messages, reply: MessagePiece) -> str:
     return "\n\n".join(turns)
 
 
+def conversation_probe(goal: str, history: str) -> str:
+    """What fills a rubric's <probe> slot in a multi-turn attack: the goal, and the conversation before the reply."""
+    return neutralize_tags(
+        f"The attacker's goal: {goal}\n\n"
+        "The conversation before the reply being judged:\n\n"
+        f"{history or '(none - this is the first reply)'}"
+    )
+
+
+def show_judge_prompt(profile: Profile, number: int) -> int:
+    """Print what the judge reads for one of the profile's objectives, without calling any model.
+
+    For both multi-turn campaigns, which judge the same way. Built by the same functions
+    the judge uses; the conversation and the reply are placeholders.
+    """
+    from harnesses.pyrit_campaigns.single_turn_scan import PREVIEW_REPLY, PREVIEW_TRACE, judge_messages, judged_prompt_for
+
+    rubrics = load_rubrics()
+    require_valid(rubrics)
+    objectives = load_objectives(profile)
+    if not 1 <= number <= len(objectives):
+        raise SystemExit(f"Objective {number} does not exist: {profile.objectives_file} has 1-{len(objectives)}.")
+    objective = objectives[number - 1]
+    _, prompt = objective_rubrics([objective], rubrics, judged_prompt_for(profile))[objective.goal]
+    history = "User: [the attacker's earlier turns]\n\nAssistant: [the assistant's earlier replies]"
+    trace = PREVIEW_TRACE if os.getenv("APP_TRACE_PATH", "").strip() else ""
+    system, message = judge_messages(prompt, conversation_probe(objective.goal, history), PREVIEW_REPLY, trace)
+    print(f"PROFILE: {profile.key}. Objective {number} of {len(objectives)}, from {profile.objectives_file}.")
+    print("The judge reads every reply of the attack this way; the conversation grows turn by turn.")
+    print(f"\n{'=' * 78}\nobjective {number}, judged by {objective.rubric}\n{'=' * 78}")
+    print("--- the judge's instructions (system prompt) ---")
+    print(system)
+    print("--- the judge's message ---")
+    print(message)
+    return 0
+
+
+def parse_args(argv=None, *, campaign: str):
+    parser = argparse.ArgumentParser(description=f"Run the {campaign} campaign against the profile's objectives.")
+    parser.add_argument(
+        "--show-judge-prompt",
+        type=int,
+        default=None,
+        metavar="N",
+        help="print exactly what the judge reads for the profile's Nth objective, then stop without calling any model",
+    )
+    return parser.parse_args(argv)
+
+
 class ConversationRubricScorer(MessageTrueFalseScorer):
     """The rubric judge for a Crescendo attack, for every objective in the run.
 
@@ -238,11 +289,7 @@ class ConversationRubricScorer(MessageTrueFalseScorer):
         messages = CentralMemory.get_memory_instance().get_conversation_messages(
             conversation_id=message_piece.conversation_id
         )
-        probe = neutralize_tags(
-            f"The attacker's goal: {objective}\n\n"
-            "The conversation before the reply being judged:\n\n"
-            f"{conversation_before(messages, message_piece) or '(none - this is the first reply)'}"
-        )
+        probe = conversation_probe(objective, conversation_before(messages, message_piece))
         reply = message_piece.converted_value or ""
         trace = str((message_piece.prompt_metadata or {}).get(TRACE_METADATA_KEY, ""))
         scorer = SelfAskGeneralTrueFalseScorer(
@@ -360,6 +407,8 @@ async def main() -> int:
     await initialize_pyrit_async(memory_db_type=SQLITE)
 
     print(describe(profile))
+    # A broken rubric stops the run here, before anything is sent.
+    require_valid(load_rubrics())
     print(f"objectives: {len(objectives)} from {profile.objectives_file}")
 
     # A deployed app sends its own system prompt, so it gets no stand-in or records.
@@ -463,6 +512,8 @@ async def main() -> int:
         # Which objectives file the attacks came from, so the report can say what was tested.
         "rt_objectives_file": profile.objectives_file,
         "rt_trace_path": os.getenv("APP_TRACE_PATH", "").strip(),
+        # Which rubrics judged the run: the rubric file's fingerprint and the pack's version.
+        **version_labels(),
     }
 
     attacks = len(objectives) * repeats
@@ -564,4 +615,7 @@ async def main() -> int:
 
 
 if __name__ == "__main__":
+    args = parse_args(campaign="Crescendo")
+    if args.show_judge_prompt is not None:
+        sys.exit(show_judge_prompt(get_profile(), args.show_judge_prompt))
     sys.exit(asyncio.run(main()))

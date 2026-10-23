@@ -94,8 +94,11 @@ from harnesses.pyrit_campaigns.multi_turn_crescendo import (
     leaked,
     load_objectives,
     objective_rubrics,
+    parse_args,
+    show_judge_prompt,
 )
 from harnesses.pyrit_campaigns.planted_records import RECORD_CHECK, PlantedRecordScorer, records_for, records_section
+from harnesses.pyrit_campaigns.rubrics import require_valid, version_labels
 from harnesses.pyrit_campaigns.system_prompt import (
     CANARY_CHECK,
     AppPrompt,
@@ -155,6 +158,8 @@ async def main() -> int:
     await initialize_pyrit_async(memory_db_type=SQLITE)
 
     print(describe(profile))
+    # A broken rubric stops the run here, before anything is sent.
+    require_valid(load_rubrics())
     print(f"objectives: {len(objectives)} from {profile.objectives_file}")
 
     is_app = resolve_provider("target") == "app"
@@ -275,6 +280,8 @@ async def main() -> int:
         # Which objectives file the attacks came from, so the report can say what was tested.
         "rt_objectives_file": profile.objectives_file,
         "rt_trace_path": os.getenv("APP_TRACE_PATH", "").strip(),
+        # Which rubrics judged the run: the rubric file's fingerprint and the pack's version.
+        **version_labels(),
     }
 
     attacks = len(objectives) * repeats
@@ -387,4 +394,7 @@ async def main() -> int:
 
 
 if __name__ == "__main__":
+    args = parse_args(campaign="red team")
+    if args.show_judge_prompt is not None:
+        sys.exit(show_judge_prompt(get_profile(), args.show_judge_prompt))
     sys.exit(asyncio.run(main()))
