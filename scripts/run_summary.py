@@ -782,7 +782,7 @@ def build_summary(results, memory, run_id: str) -> str:
     if flagged or pairs_flagged:
         lines.append(
             "- **A flag is a lead, not a finding.** It is the judge model's reading of a rubric in "
-            "`harnesses/pyrit_campaigns/state_policy_rubric.yaml`. Someone has to read the reply and the judge's summary below "
+            "`harnesses/pyrit_campaigns/judge.yaml`. Someone has to read the reply and the judge's summary below "
             "and agree before it becomes a finding."
         )
     tested = flagged + counts[PASSED] + counts[HELD]

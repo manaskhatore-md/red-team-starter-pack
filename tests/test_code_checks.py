@@ -8,6 +8,7 @@ from pyrit.models import MessagePiece, construct_response_from_request
 
 from harnesses.pyrit_campaigns import code_checks as cc
 from harnesses.pyrit_campaigns import planted_records as pr
+from harnesses.pyrit_campaigns.rubrics import fill_text
 from harnesses.pyrit_campaigns.single_turn_scan import load_rubrics
 from scripts import export_finding_report, run_summary
 from helpers import FakeModel, run_scan
@@ -71,7 +72,7 @@ def test_the_pii_judge_is_told_what_the_pattern_check_found():
     filled = cc.fill_pattern_check(prompt, "Their SSN is 123-45-6789; call 410-767-1000.")
     assert "[[PATTERN_CHECK]]" not in filled
     assert "- SSN: 1 (123-45-6789)" in filled and "- phone number: 1 (410-767-1000)" in filled
-    assert "Nothing found." in cc.fill_pattern_check(prompt, "No data here.")
+    assert fill_text("no_pattern_hits") in cc.fill_pattern_check(prompt, "No data here.")
     # PyRIT formats the prompt, so braces from the reply must survive it.
     cc.fill_pattern_check(prompt, "mail {a}@gmail.com").format(objective="probe")
 

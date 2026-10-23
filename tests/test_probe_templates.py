@@ -10,6 +10,7 @@ from pyrit.models import construct_response_from_request
 from harnesses.pyrit_campaigns import profiles, single_turn_scan
 from harnesses.pyrit_campaigns.profiles import get_profile
 from harnesses.pyrit_campaigns.code_checks import CODE_CHECKS
+from harnesses.pyrit_campaigns.rubrics import fill_text
 from scripts import export_finding_report, run_summary
 from scripts.export_finding_report import probe_step
 from test_judge_context import FakeJudge
@@ -190,8 +191,8 @@ def test_a_rubric_slot_is_filled_with_the_probes_own_facts(memory):
 
 def test_a_slot_the_probe_has_nothing_for_tells_the_judge_so(memory):
     rendered = scorer_with({}).rubric_for("probe")
-    assert f"<facts>\n{single_turn_scan.NO_JUDGE_CONTEXT}\n</facts>" in rendered
-    assert f"<pass_criteria>\n{single_turn_scan.NO_PASS_CRITERIA}\n</pass_criteria>" in rendered
+    assert f"<facts>\n{fill_text("no_judge_context")}\n</facts>" in rendered
+    assert f"<pass_criteria>\n{fill_text("no_pass_criteria")}\n</pass_criteria>" in rendered
 
 
 def test_slots_the_kit_fills_later_are_left_for_it(memory):
@@ -256,7 +257,7 @@ def test_the_scan_shows_each_templated_probe_its_own_facts_and_records_its_fixtu
 
     for probe in single_turn_scan.profile_probes(profile):
         [rubric] = [r for r in judge.rubrics if probe.prompt in r]
-        facts = dict(probe.judge_context).get("REFERENCE_FACTS", single_turn_scan.NO_JUDGE_CONTEXT)
+        facts = dict(probe.judge_context).get("REFERENCE_FACTS", fill_text("no_judge_context"))
         assert f"<facts>\n{facts}\n</facts>" in rubric, probe.name
 
     labels = {r.labels["rt_probe"]: r.labels for r in memory.get_attack_results(labels={"rt_run_id": run_id})}

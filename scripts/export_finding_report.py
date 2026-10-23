@@ -584,7 +584,7 @@ async def main():
     parser.add_argument(
         "--rubric",
         help="Export single-turn scan findings: results a rubric judge flagged. "
-        "Give a rubric name from harnesses/pyrit_campaigns/state_policy_rubric.yaml, or 'any'. Ignores --outcome.",
+        "Give a rubric name from harnesses/pyrit_campaigns/judge.yaml, or 'any'. Ignores --outcome.",
     )
     runs = parser.add_mutually_exclusive_group()
     runs.add_argument("--run-id", help="Only this campaign run. The first 8 characters are enough (see --list).")

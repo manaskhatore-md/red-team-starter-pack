@@ -2,12 +2,15 @@
 
 import json
 
+import pytest
+
 from pyrit.models import construct_response_from_request
 from pyrit.prompt_target import PromptTarget, TargetCapabilities, TargetConfiguration
 
 from harnesses.pyrit_campaigns import single_turn_scan
 from harnesses.pyrit_campaigns.code_checks import CODE_CHECKS
 from harnesses.pyrit_campaigns.profiles import PAIR_RUBRICS, get_profile
+from harnesses.pyrit_campaigns.rubrics import fill_text
 from helpers import FakeModel, run_scan
 
 RUBRICS = single_turn_scan.load_rubrics()
@@ -65,7 +68,7 @@ def test_the_rubric_gets_the_criteria_of_the_probe_it_is_judging(memory):
     # PyRIT runs .format() over the rubric, so braces in the criteria must survive it.
     rendered = scorer.rubric_for("probe one").format(objective="probe one", prompt="", message_piece=None)
     assert '<pass_criteria>\nReply may quote {"role": "helper"} back.\n</pass_criteria>' in rendered
-    assert single_turn_scan.NO_PASS_CRITERIA in scorer.rubric_for("a probe with none")
+    assert fill_text("no_pass_criteria") in scorer.rubric_for("a probe with none")
 
 
 def test_the_scan_shows_the_judge_each_probes_pass_criteria(memory, monkeypatch):
@@ -76,7 +79,7 @@ def test_the_scan_shows_the_judge_each_probes_pass_criteria(memory, monkeypatch)
     judged = [p for p in probes if any(p.prompt in r for r in judge.rubrics)]
     assert judged
     for probe in judged:
-        expected = probe.pass_criteria or single_turn_scan.NO_PASS_CRITERIA
+        expected = probe.pass_criteria or fill_text("no_pass_criteria")
         assert all(expected in r for r in rubrics_seen_for(judge, probe.prompt)), probe.name
 
     # The verdicts are stored under the rubric's name, which is how the reports find them.
@@ -119,7 +122,7 @@ def test_a_bare_model_run_tells_the_judge_there_was_no_system_prompt(memory, mon
     run_scan(monkeypatch, FakeModel(), judge=judge)
     injection = [r for r in judge.rubrics if "obeyed an injected instruction" in r]
     assert injection
-    assert all(f"<system_prompt>\n{single_turn_scan.NO_SYSTEM_PROMPT}\n</system_prompt>" in r for r in injection)
+    assert all(f"<system_prompt>\n{fill_text("no_system_prompt")}\n</system_prompt>" in r for r in injection)
 
 
 # --- response trace (APP_TRACE_PATH) --------------------------------------------
@@ -154,8 +157,14 @@ def test_single_turn_rubric_scorer_shows_response_trace_to_judge(memory):
     asyncio.run(scorer._score_piece_async(piece, objective="how many page views?"))
 
     user_text = [text for role, text in sent[0] if role == "user"][-1]
-    assert '<response>\nPage views were 500.\n</response>' in user_text
-    assert '<response_trace>\n{"tool": "run_report", "pageViews": 500}\n</response_trace>' in user_text
-    assert '"[truncated]"' in user_text
+    # judge_text's response frame, holding the reply and the trace, braces intact.
+    trace = fill_text("trace", TRACE='{"tool": "run_report", "pageViews": 500}')
+    assert user_text == fill_text("response", RESPONSE="Page views were 500.", TRACE_SECTION=trace)
+
+
+@pytest.mark.house_style
+def test_the_judge_is_told_a_truncated_trace_is_partial():
+    # target_factory cuts a long trace short with "[truncated]"; the shipped trace text says what that means.
+    assert '"[truncated]"' in fill_text("trace", TRACE="")
 
 
