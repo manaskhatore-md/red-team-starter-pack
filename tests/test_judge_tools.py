@@ -15,7 +15,7 @@ import pytest
 from pyrit.models import MessagePiece, construct_response_from_request
 
 from harnesses.pyrit_campaigns import multi_turn_crescendo, rubrics, single_turn_scan
-from harnesses.pyrit_campaigns.profiles import get_profile
+from harnesses.pyrit_campaigns.profiles import PAIR_RUBRICS, get_profile
 from scripts import export_finding_report, rescore, run_summary
 from helpers import FakeModel, nothing, scan_main
 from test_bias_pairs import PairJudge
@@ -74,7 +74,10 @@ def test_a_pair_rubric_needs_both_replies():
     ],
 )
 def test_an_edit_that_runs_but_probably_misjudges_is_a_warning(rubric, change, message):
-    found = rubrics.check(edited(rubric, system_prompt=change(SHIPPED[rubric]["system_prompt"])), single_turn_scan.load_probes())
+    shipped = SHIPPED[rubric]["system_prompt"]
+    # A reworded rubric would make the edit a no-op: say so, rather than "no warning".
+    assert change(shipped) != shipped, f"the edit no longer changes {rubric}'s text; update this test"
+    found = rubrics.check(edited(rubric, system_prompt=change(shipped)), single_turn_scan.load_probes())
     assert [p.level for p in found] == ["warning"] and message in found[0].message
 
 
@@ -104,7 +107,7 @@ def test_a_broken_rubric_stops_the_scan_before_anything_is_sent(memory, monkeypa
 
 def test_the_command_exits_one_on_an_error(monkeypatch, capsys):
     assert rubrics.main(["check"]) == 0
-    assert "5 rubric(s), 0 error(s), 0 warning(s)" in capsys.readouterr().out
+    assert f"{len(SHIPPED)} rubric(s), 0 error(s), 0 warning(s)" in capsys.readouterr().out
     monkeypatch.setattr(rubrics, "load_rubrics", lambda: edited("pii_disclosure", severity="urgent"))
     assert rubrics.main(["check"]) == 1
 
@@ -226,10 +229,14 @@ def scanned(memory, monkeypatch):
 def test_rescoring_shows_the_verdicts_a_changed_judge_changes(scanned, memory, monkeypatch, tmp_path, capsys):
     run_id, scores_before = scanned
     report = rescore_run(monkeypatch, tmp_path, FlagsEverything(), "--run", run_id[:8])
-    # injection_compliance on 2 probes, unauthorized_determination on the pair's 2 halves, and the pair:
-    # the scan's judge passed each half and called the pair different, so only the halves change.
-    assert "| injection_compliance | 2 | 0 | 0 | 2 | 0 | 0 |" in report
-    assert "| unauthorized_determination | 2 | 0 | 0 | 2 | 0 | 0 |" in report
+    # Every rubric grading the 2 injection probes or the pair's 2 halves, and the pair: the scan's
+    # judge passed each reply and called the pair different, so only the single-reply verdicts change.
+    graders = [k for k, r in SHIPPED.items() if k not in PAIR_RUBRICS
+               for dataset in r.get("grades", []) if dataset in ("prompt_injection", "algorithmic_bias")]
+    assert "injection_compliance" in graders and "unauthorized_determination" in graders
+    for key in set(graders):
+        judged = 2 * graders.count(key)
+        assert f"| {key} | {judged} | 0 | 0 | {judged} | 0 | 0 |" in report
     assert "| disparate_treatment | 1 | 1 | 0 | 0 | 0 | 0 |" in report
     assert "prompt_injection / override_simple - injection_compliance: false (passed) → true (flagged)" in report
     assert "Rationale now: flagged on the second look" in report
@@ -237,7 +244,8 @@ def test_rescoring_shows_the_verdicts_a_changed_judge_changes(scanned, memory, m
     assert "every change below is the judge varying, not an edit" in report
     # The run's own scores are untouched.
     assert len(memory.get_prompt_scores()) == scores_before
-    assert "4 of 5 verdict(s) changed." in capsys.readouterr().out
+    changed = 2 * len(graders)
+    assert f"{changed} of {changed + 1} verdict(s) changed." in capsys.readouterr().out
 
 
 def test_rescoring_a_pair_keeps_the_order_the_judge_read_it_in(scanned, memory, monkeypatch, tmp_path):
