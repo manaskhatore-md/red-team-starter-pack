@@ -18,6 +18,38 @@ Built on [PyRIT](https://github.com/Azure/PyRIT), with two AI passes over the sy
 Single-turn scans catch the obvious failures cheaply and are what you re-run on a
 schedule. Multi-turn campaigns catch the ones that need patience. You want both.
 
+## Contents
+
+- [Get started](#get-started)
+  - [1. Install, and add one API key](#1-install-and-add-one-api-key)
+  - [2. Confirm credentials and network](#2-confirm-credentials-and-network)
+  - [3. Scan your app](#3-scan-your-app)
+  - [4. Read the results](#4-read-the-results)
+- [Fine-tuning](#fine-tuning)
+- [Choosing a target](#choosing-a-target)
+- [Testing your app in depth](#testing-your-app-in-depth)
+- [Access-control & OAuth/API checks](#access-control--oauthapi-checks)
+  - [What it tests](#what-it-tests)
+- [Running on Bedrock](#running-on-bedrock)
+- [The system prompt, and the canary token in it](#the-system-prompt-and-the-canary-token-in-it)
+- [Repeats: how often a probe fails, not just whether it did](#repeats-how-often-a-probe-fails-not-just-whether-it-did)
+- [Structure](#structure)
+- [Deployment profiles](#deployment-profiles)
+  - [Using a profile](#using-a-profile)
+  - [What a profile holds](#what-a-profile-holds)
+  - [Writing your own profile](#writing-your-own-profile)
+- [Running a subset of probes](#running-a-subset-of-probes)
+- [Encoding and obfuscating probes (request converters)](#encoding-and-obfuscating-probes-request-converters)
+- [What to customize first](#what-to-customize-first)
+  - [Changing how the judge grades](#changing-how-the-judge-grades)
+  - [Your own multi-turn objectives](#your-own-multi-turn-objectives)
+  - [Writing probes from templates](#writing-probes-from-templates)
+  - [Bias pairs: controls, reading order, and adding your own](#bias-pairs-controls-reading-order-and-adding-your-own)
+- [Playbook crosswalk](#playbook-crosswalk)
+- [Safety and handling](#safety-and-handling)
+- [Testing the pack itself](#testing-the-pack-itself)
+- [Notes](#notes)
+
 ## Get started
 
 Four steps to a scan running against your app. Everything past **Fine-tuning** below is
