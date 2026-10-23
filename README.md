@@ -69,7 +69,7 @@ Run the single-turn scan:
 python -m harnesses.pyrit_campaigns.single_turn_scan
 ```
 
-With no `RT_PROFILE` set, it runs the built-in `default` profile: every attack suite, 65
+With no `RT_PROFILE` set, it runs the built-in `default` profile: every attack suite, 77
 `core` probes. Once you know what kind of deployment you're testing, a preset can narrow
 it — see [Deployment profiles](#deployment-profiles).
 
@@ -488,10 +488,10 @@ profiles are presets for when you know what kind of deployment you're testing.
 
 | `RT_PROFILE` | Use for | Primary risk | Probes sent |
 |---|---|---|---|
-| unset (`default`) | A first run, or a system no preset fits | All of them, broadly | 65 (`core`) |
-| `internal_productivity` | Staff copilots, document search | Over-broad retrieval; pasted untrusted content | 48 (no bias or hallucination) |
-| `public_conversational` | Public FAQ and program chatbots | Wrong answers at scale; equity | 93 (no data leakage; written-out hallucination only) |
-| `constituent_decision` | Eligibility, casework, licensing | Authorization boundaries; disparate impact | 116 (all) |
+| unset (`default`) | A first run, or a system no preset fits | All of them, broadly | 77 (`core`) |
+| `internal_productivity` | Staff copilots, document search | Over-broad retrieval; pasted untrusted content | 60 (no bias or hallucination) |
+| `public_conversational` | Public FAQ and program chatbots | Wrong answers at scale; equity | 105 (no data leakage; written-out hallucination only) |
+| `constituent_decision` | Eligibility, casework, licensing | Authorization boundaries; disparate impact | 128 (all) |
 
 ### Using a profile
 
@@ -513,7 +513,7 @@ RT_PROFILE=public_conversational python -m harnesses.pyrit_campaigns.multi_turn_
 RT_PROFILE=internal_productivity python -m harnesses.pyrit_campaigns.single_turn_scan --probes bias-core
 RT_PROFILE=constituent_decision python -m harnesses.pyrit_campaigns.single_turn_scan --probes 1-15
 
-# No profile: the built-in default, every suite (add --probes all for all 116)
+# No profile: the built-in default, every suite (add --probes all for all 128)
 python -m harnesses.pyrit_campaigns.single_turn_scan
 ```
 
@@ -534,7 +534,7 @@ Each profile in `harnesses/pyrit_campaigns/profiles.py` is a few lines:
   probes](#running-a-subset-of-probes)). `default` runs `core`: every probe except the 36
   bias probes made from fixtures, which need repeats to mean anything, and the 15
   hallucination probes made from fixtures, which mean most once the references are yours.
-  `constituent_decision` runs `all` 116. The rubrics follow from the probes: each rubric grades the suites its
+  `constituent_decision` runs `all` 128. The rubrics follow from the probes: each rubric grades the suites its
   `grades` list names.
 - **Multi-turn goals** written for that kind of system, in `config/objectives/<profile>.yaml`.
 - **A stand-in system prompt** for runs against a raw model, in `config/system_prompts/<profile>.txt`.
@@ -544,7 +544,7 @@ Each profile in `harnesses/pyrit_campaigns/profiles.py` is a few lines:
   its `checklist.yaml`, and print whenever its probes run, under any profile.
 
 Probes are numbered the same way under every profile, suite by suite with bias last, so
-`--probes 1-70` is always the non-bias probes. `--probes` replaces the profile's own
+`--probes 1-82` is always the non-bias probes. `--probes` replaces the profile's own
 selection rather than narrowing it: `internal_productivity` with `--probes bias-core`
 sends the bias pairs, though the profile on its own sends none.
 
@@ -590,7 +590,7 @@ probes instead, pass `--probes <spec>` on the command line (or set `RT_PROBES=<s
 `.env`). A probe has the same number under every profile.
 
 ```bash
-# Preview the profile's probes with their [1]..[116] numbers and pair tags (calls no model)
+# Preview the profile's probes with their [1]..[128] numbers and pair tags (calls no model)
 python -m harnesses.pyrit_campaigns.single_turn_scan --list-probes
 
 # Preview what a filter selects before sending anything
@@ -606,7 +606,7 @@ You can pass one selector or combine several with commas (e.g. `--probes "1-3,cr
 
 | Selector | What it selects | Examples |
 |---|---|---|
-| `all` | Every probe in every suite (116) | `--probes all` |
+| `all` | Every probe in every suite (128) | `--probes all` |
 | `core` | Everything except the fixture-expanded templates of the bias suite (36) and the hallucination suite (15) | `--probes core` |
 | `general` | Only non-bias probes (`prompt_injection`, `sensitive_data_leakage`, `excessive_agency`, `hallucination`) | `--probes general` |
 | `bias` | All probes in `algorithmic_bias` (both inline and fixture-expanded) | `--probes bias` |
