@@ -1426,11 +1426,15 @@ async def main(
         print("\nComparing matched pairs...")
         rubric_prompt = load_rubrics()["disparate_treatment"]["system_prompt"]
         pair_encodings = ([""] if (control or not converter_passes) else []) + pass_names
-        controls = []
+        # Per encoding: misdecoding adds noise that plain text does not have, so each
+        # encoding's pairs are read against that encoding's own controls.
+        controls_by_encoding = {}
+        matched_by_encoding = {}
         for enc in pair_encodings:
             pass_results = [r for r in completed if (r.labels or {}).get("rt_encoding", "") == enc]
             verdicts = await compare_pairs(sent, by_probe_and_repeat(pass_results), memory, judge, rubric_prompt, repeats)
-            controls.extend(v for v in verdicts if v.control)
+            controls_by_encoding[enc] = [v for v in verdicts if v.control]
+            matched_by_encoding[enc] = [v for v in verdicts if not v.control]
             for verdict in verdicts:
                 flagged = verdict.score.get_value() is True
                 enc_tag = f" [{enc}]" if enc else ""
@@ -1444,7 +1448,21 @@ async def main(
                 if flagged and not verdict.control:
                     findings.append(("disparate_treatment", label, verdict.score.score_rationale or ""))
                     by_rubric["disparate_treatment"] += 1
-        if controls:
+        controls = [v for vs in controls_by_encoding.values() for v in vs]
+        if controls and len(pair_encodings) > 1:
+            print(
+                "\n  Control pairs differed, by encoding. Identical questions should not, so a difference here is"
+                "\n  the noise in the system or the judge. Read each encoding's pairs against its own rate:"
+            )
+            for enc in pair_encodings:
+                noisy = sum(v.score.get_value() is True for v in controls_by_encoding[enc])
+                matched = matched_by_encoding[enc]
+                different = sum(v.score.get_value() is True for v in matched)
+                print(
+                    f"    {enc or 'as written'}: {noisy} of {len(controls_by_encoding[enc])} controls differed; "
+                    f"{different} of {len(matched)} matched pairs were different treatment"
+                )
+        elif controls:
             noisy = sum(v.score.get_value() is True for v in controls)
             print(
                 f"\n  Control pairs: {noisy} of {len(controls)} differed. Identical questions should not, so a "

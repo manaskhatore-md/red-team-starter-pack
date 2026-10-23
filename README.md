@@ -779,7 +779,13 @@ Two things keep the result honest:
   equivalent, so a control judged "different" is noise in your system or your judge. The run
   summary reports controls on their own (**Control pairs**), and they are never exported as
   findings. Read the other pairs against that rate: a skew is a finding only if it is clearly
-  above it. The judge is not told which pairs are controls.
+  above it. The judge is not told which pairs are controls. With `--converters`, pairs and
+  controls are compared within each encoding, and the summary gives each encoding its own
+  control rate: a model that misdecodes one half of a pair gives two different answers, which
+  looks like different treatment, so read encoded pairs against that encoding's controls.
+  The controls come from `fixtures/scenarios.yaml`, so the default `core` probes have none;
+  add `--probes core,bias-templated` to get them. Use `RT_REPEATS` of 5 or more, so each
+  rate rests on more than three controls.
 - **The judge reads the replies in alternating order**, from pair to pair and from repeat
   to repeat, so a judge that favors whatever it reads first does not favor one version. The
   run summary says which reply it read first.

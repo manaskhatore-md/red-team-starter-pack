@@ -127,8 +127,8 @@ def test_the_stored_score_says_which_version_the_judge_read_first(memory):
 
 # --- a control that differs is noise, never a finding --------------------------------
 
-def control_pair(memory, differs):
-    labels = dict(rt_dataset=BIAS, rt_pair_id="control_x", rt_control="true")
+def control_pair(memory, differs, **extra):
+    labels = dict(rt_dataset=BIAS, rt_pair_id="control_x", rt_control="true", **extra)
     first, _ = add_probe(memory, "same words", "answer one", "unauthorized_determination",
                          rt_probe="c_first", rt_variant="first", **labels)
     second, reply = add_probe(memory, "same words", "answer two", "unauthorized_determination",
@@ -159,6 +159,17 @@ def test_a_control_that_comes_out_equal_says_so(memory):
     out = summary(memory)
     assert "### Pair control_x: control equivalent" in out
     assert "None of the 1 control pairs" in out
+
+
+def test_the_summary_gives_each_encoding_its_own_control_rate(memory):
+    # A decoding slip makes identical encoded questions differ, so pooling would hide it.
+    control_pair(memory, differs=False, rt_encoding="")
+    control_pair(memory, differs=True, rt_encoding="rot13")
+    out = summary(memory)
+    assert "| Control pairs | 2 compared, 1 differed (as written 0 of 1, rot13 1 of 1)." in out
+    assert "- as written: **0 of 1** controls differed; 0 of 0 matched pairs were different treatment" in out
+    assert "- rot13: **1 of 1** controls differed; 0 of 0 matched pairs were different treatment" in out
+    assert "**1 of 2** control pairs" not in out
 
 
 def test_a_pair_the_judge_read_in_swapped_order_says_so_in_the_summary(memory):
@@ -199,6 +210,25 @@ def test_a_scan_compares_every_pair_and_keeps_controls_out_of_the_findings(memor
     text = run_summary.build_summary(results, CentralMemory.get_memory_instance(), run_id)
     assert f"| Control pairs | {len(controls) * 2} compared, {len(controls) * 2} differed." in text
     assert re.search(r"The judge read the \*\*\w+\*\* reply first\.", text)
+
+
+def test_an_encoded_scan_reports_the_control_rate_per_encoding(memory, monkeypatch, capsys):
+    monkeypatch.setenv("RT_PROBES", "control_hours,dialect_hours")
+    monkeypatch.setenv("RT_CONVERTERS", "rot13")
+    exit_code, run_id = scan_main(monkeypatch, FakeModel(), PairJudge(), profile="public_conversational")
+    out = capsys.readouterr().out
+
+    assert exit_code == 0
+    assert "Read each encoding's pairs against its own rate:" in out
+    assert "    as written: 1 of 1 controls differed; 1 of 1 matched pairs were different treatment" in out
+    assert "    rot13: 1 of 1 controls differed; 1 of 1 matched pairs were different treatment" in out
+    assert "Control pairs: 2 of 2 differed" not in out
+
+    results = [r for r in CentralMemory.get_memory_instance().get_attack_results()
+               if (r.labels or {}).get("rt_run_id") == run_id]
+    text = run_summary.build_summary(results, CentralMemory.get_memory_instance(), run_id)
+    assert "| Control pairs | 2 compared, 2 differed (as written 1 of 1, rot13 1 of 1)." in text
+    assert "- rot13: **1 of 1** controls differed; 1 of 1 matched pairs were different treatment" in text
 
 
 # --- the pairs built from fixtures ---------------------------------------------------------

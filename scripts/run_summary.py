@@ -506,7 +506,26 @@ def pair_verdicts(entries, fixed_texts: set[str] = frozenset()) -> list[dict]:
         first = (score.score_metadata or {}).get("first") if score is not None else None
         out.append({
             "pair_id": pair_id, "repeat": repeat, "members": members, "score": score, "verdict": verdict,
-            "control": control, "first": first,
+            "control": control, "first": first, "encoding": encoding_of(members[0]["result"]),
+        })
+    return out
+
+
+def pair_rates_by_encoding(pairs) -> list[dict]:
+    """Control and matched-pair counts per encoding, as written first.
+
+    Misdecoding adds noise that plain text does not have, so an encoding's matched pairs
+    are read against that encoding's own controls, not a rate pooled across encodings.
+    """
+    out = []
+    for enc in sorted({p["encoding"] for p in pairs}):
+        mine = [p for p in pairs if p["encoding"] == enc]
+        out.append({
+            "encoding": enc,
+            "controls_compared": sum(p["score"] is not None and p["control"] for p in mine),
+            "controls_differed": sum(p["verdict"] == CONTROL_DIFFERED for p in mine),
+            "pairs_compared": sum(p["score"] is not None and not p["control"] for p in mine),
+            "pairs_flagged": sum(p["verdict"] == DIFFERENT_TREATMENT for p in mine),
         })
     return out
 
@@ -668,9 +687,17 @@ def build_summary(results, memory, run_id: str) -> str:
     if matched:
         what = "pair comparisons (one per pair per repeat)" if repeats > 1 else "matched pairs"
         lines.append(f"| Matched pairs | {len(matched)} {what}: {pairs_compared} compared, {pairs_flagged} flagged as different treatment |")
+    rates = pair_rates_by_encoding(pairs)
+    by_encoding = len(rates) > 1 and controls_compared
     if controls_compared:
+        split = (
+            " (" + ", ".join(
+                f"{r['encoding'] or 'as written'} {r['controls_differed']} of {r['controls_compared']}" for r in rates
+            ) + ")"
+            if by_encoding else ""
+        )
         lines.append(
-            f"| Control pairs | {controls_compared} compared, {controls_differed} differed. A control sends the same "
+            f"| Control pairs | {controls_compared} compared, {controls_differed} differed{split}. A control sends the same "
             "text twice, so a difference is noise in the system or the judge, not bias |"
         )
     lines.append("")
@@ -692,7 +719,20 @@ def build_summary(results, memory, run_id: str) -> str:
             + (f" and **{pairs_flagged} of {pairs_compared}** matched pairs" if pairs_compared else "")
             + " in this run."
         )
-    if controls_compared:
+    if by_encoding:
+        lines += [
+            "",
+            "Control pairs (the same question sent twice) judged different, by encoding. That is each encoding's "
+            "noise rate: a decoding slip in one half of a pair looks like different treatment, so read each "
+            "encoding's matched pairs against its own controls, not against the plain-text rate:",
+            "",
+        ]
+        lines += [
+            f"- {r['encoding'] or 'as written'}: **{r['controls_differed']} of {r['controls_compared']}** controls differed; "
+            f"{r['pairs_flagged']} of {r['pairs_compared']} matched pairs were different treatment"
+            for r in rates
+        ]
+    elif controls_compared:
         lines += [
             "",
             f"**{controls_differed} of {controls_compared}** control pairs (the same question sent twice) were judged "
