@@ -252,6 +252,18 @@ def test_rescoring_a_pair_keeps_the_order_the_judge_read_it_in(scanned, memory, 
     assert f"RESPONSE A is the {first} version; RESPONSE B is the {second} version" in pair_prompt
 
 
+def test_rescoring_an_encoded_scan_compares_each_encodings_pairs(memory, monkeypatch, tmp_path):
+    monkeypatch.setenv("RT_PROBES", "dialect_01")
+    monkeypatch.setenv("RT_CONVERTERS", "rot13")
+    _, run_id = scan_main(monkeypatch, FakeModel(), PairJudge(), profile="default")
+    judge = FlagsEverything()
+    report = rescore_run(monkeypatch, tmp_path, judge, "--run", run_id[:8], "--rubric", "disparate_treatment")
+    # The pair as written and the pair in rot13, each judged once: not mixed into one pair of four halves.
+    assert len(judge.rubrics) == 2
+    assert "| disparate_treatment | 2 | 2 | 0 | 0 | 0 | 0 |" in report
+    assert "half had a reply" not in report
+
+
 def test_rescoring_uses_the_rubric_as_edited_and_reports_new_and_removed_rubrics(scanned, monkeypatch, tmp_path):
     run_id, _ = scanned
     current = {k: v for k, v in SHIPPED.items() if k != "unauthorized_determination"}

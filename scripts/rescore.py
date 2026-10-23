@@ -171,8 +171,9 @@ def plan(results, memory, rubrics: dict, only_rubrics: set[str] | None, only_pro
         if prompt_note:
             notes.append(prompt_note)
 
-        if probe.pair_id and not encoding and wanted(only_rubrics, PAIR_RUBRIC) and wanted(only_probes, name, probe.pair_id, dataset):
-            pairs.setdefault((probe.pair_id, repeat), []).append((order[(dataset, name)], probe, reply, scores))
+        # Each encoding pass compares its own pairs, as the scan did.
+        if probe.pair_id and wanted(only_rubrics, PAIR_RUBRIC) and wanted(only_probes, name, probe.pair_id, dataset):
+            pairs.setdefault((probe.pair_id, encoding, repeat), []).append((order[(dataset, name)], probe, reply, scores))
 
         if not wanted(only_probes, name, probe.pair_id, dataset):
             continue
@@ -187,18 +188,19 @@ def plan(results, memory, rubrics: dict, only_rubrics: set[str] | None, only_pro
             singles.append((key, probe, result.objective, reply, system_prompt, old.get(key), shown, notes))
 
     pair_tasks = []
-    for (pair_id, repeat), members in pairs.items():
+    for (pair_id, encoding, repeat), members in pairs.items():
+        tag = f" [{encoding}]" if encoding else ""
         if PAIR_RUBRIC not in rubrics:
-            skipped.append(f"pair {pair_id}: the pair rubric is no longer in the rubric file.")
+            skipped.append(f"pair {pair_id}{tag}: the pair rubric is no longer in the rubric file.")
             continue
         if len(members) != 2:
-            skipped.append(f"pair {pair_id} (repeat {repeat}): only {len(members)} half had a reply.")
+            skipped.append(f"pair {pair_id}{tag} (repeat {repeat}): only {len(members)} half had a reply.")
             continue
         (_, a, reply_a, _), (_, b, reply_b, scores_b) = sorted(members, key=lambda m: m[0])
         old = next((s for s in scores_b if PAIR_RUBRIC in (s.score_category or [])), None)
         first_variant = (old.score_metadata or {}).get("first") if old else None
         first = b if first_variant == b.variant and a.variant != b.variant else a
-        pair_tasks.append((pair_id, repeat, a, b, first, reply_a, reply_b, old))
+        pair_tasks.append((pair_id, encoding, repeat, a, b, first, reply_a, reply_b, old))
 
     reasons = [
         f"{count} probe(s) from {dataset}: that suite is not here (no attack_suites/*/{dataset}.yaml), so their "
@@ -240,9 +242,9 @@ async def rejudge(singles, pair_tasks, rubrics: dict, judge) -> list[Rejudged]:
                 item.error = f"{type(e).__name__}: {str(e)[:200]}"
         return item
 
-    async def pair(pair_id, repeat, a, b, first, reply_a, reply_b, old) -> Rejudged:
+    async def pair(pair_id, encoding, repeat, a, b, first, reply_a, reply_b, old) -> Rejudged:
         reply_first, reply_second = (reply_b, reply_a) if first is b else (reply_a, reply_b)
-        shown = f"pair {pair_id} ({a.variant} vs. {b.variant})" + (f", repeat {repeat}" if repeat > 1 else "")
+        shown = f"pair {pair_id}" + (f" [{encoding}]" if encoding else "") + f" ({a.variant} vs. {b.variant})" + (f", repeat {repeat}" if repeat > 1 else "")
         both = (f"{first.variant}, read first:\n{reply_first.converted_value or ''}\n\n"
                 f"{(b if first is a else a).variant}, read second:\n{reply_second.converted_value or ''}")
         item = Rejudged(PAIR_RUBRIC, shown, both, control=a.control and b.control)
