@@ -46,6 +46,7 @@ schedule. Multi-turn campaigns catch the ones that need patience. You want both.
   - [Writing probes from templates](#writing-probes-from-templates)
   - [Bias pairs: controls, reading order, and adding your own](#bias-pairs-controls-reading-order-and-adding-your-own)
 - [Playbook crosswalk](#playbook-crosswalk)
+- [Scrubbing personal data from reports](#scrubbing-personal-data-from-reports)
 - [Safety and handling](#safety-and-handling)
 - [Testing the pack itself](#testing-the-pack-itself)
 - [Notes](#notes)
@@ -59,6 +60,7 @@ optional — reach for it only when you need it.
 
 ```bash
 pip install -r requirements.txt
+npm install                   # installs @nationaldesignstudio/rampart for report PII scrubbing
 cp .env.example .env          # use `copy` on Windows
 ```
 
@@ -119,12 +121,15 @@ it — see [Deployment profiles](#deployment-profiles).
 ### 4. Read the results
 
 Every run writes a full summary to `findings/` — every probe, reply, verdict, and the
-judge's reasons. To regenerate or export:
+judge's reasons — and automatically scrubs personal data with `@nationaldesignstudio/rampart`
+(see [Scrubbing personal data from reports](#scrubbing-personal-data-from-reports)). To
+regenerate, export, or scrub existing reports:
 
 ```bash
 python -m scripts.run_summary                                                     # re-write the newest run's summary
 python -m scripts.export_finding_report --rubric any --latest-run --out findings/ # export the last scan's findings
 python -m scripts.export_finding_report --list                                    # what's in the database
+python -m scripts.scrub findings/                                                 # scrub existing .md reports in place
 ```
 
 Once the scan runs, add the multi-turn campaigns — attacks that build over a conversation:
@@ -147,6 +152,7 @@ The rest of this README is reference — reach for a section when you need it:
 - **[Deployment profiles](#deployment-profiles)** — the built-in default and the presets: which probes run, and what's left to check by hand
 - **[Running a subset of probes](#running-a-subset-of-probes)** — filter probes by category (`core`, `general`, `bias`, `bias-core`, `bias-templated`), `m-n` range, or name
 - **[What to customize first](#what-to-customize-first)** — making generic probes specific to your system
+- **[Scrubbing personal data from reports](#scrubbing-personal-data-from-reports)** — how Rampart redacts PII in generated reports, how to scrub existing files, and `--no-scrub` / `RT_SCRUB=0`
 
 ## Choosing a target
 
@@ -1017,6 +1023,56 @@ python -m harnesses.pyrit_campaigns.rag_grounding_eval
 The CI gate (`.github/workflows/redteam-ci-gate.yml`) is switched off with `if: false`,
 so a fork does not start spending API credits on every PR. Work through the checklist
 at the bottom of that file before you enable it.
+
+## Scrubbing personal data from reports
+
+Finding reports, run summaries, re-score reports, and access-check reports include full
+conversation transcripts and judge explanations. When testing against a deployed application,
+replies or rationales may contain constituent names, street addresses, phone numbers, email
+addresses, SSNs, or payment card numbers.
+
+Every report generator (`scripts/run_summary.py`, `scripts/export_finding_report.py`,
+`scripts/rescore.py`, and `harnesses/access_checks.py`) automatically runs
+[National Design Studio's Rampart](https://www.npmjs.com/package/@nationaldesignstudio/rampart)
+(`@nationaldesignstudio/rampart`) via `scripts/scrub.py` before writing Markdown to disk:
+
+- **Consistent numbered placeholders:** Rampart combines deterministic validators (Luhn card
+  numbers, SSA-valid SSNs, email addresses, IP addresses) with a local 14.7 MB ONNX
+  token-classification model (`@huggingface/transformers`). All transcripts, replies, and
+  rationales in a report are scrubbed in a single session so the first person is replaced with
+  `[GIVEN_NAME_1] [SURNAME_1]`, the second with `[GIVEN_NAME_2] [SURNAME_2]`, and repeated
+  mentions reuse the same placeholder across both the transcript and the judge's rationale.
+- **What stays readable:** Coarse geography (`CITY`, `STATE`, `ZIP_CODE`), URL origins/domains
+  (while still scrubbing URL paths and query strings for exfiltrated PII), and the kit's own
+  synthetic test fixtures (`Jordan Testcase`, `666-xx-xxxx` and `987-65-432x` SSNs, `555-01xx`
+  phones, `Sample Court` / `Testing Lane` / `Example Avenue` / `Fixture Road`, `RTC-...`
+  canary tokens, `TC-...` case IDs, and processor test cards) are preserved so findings remain
+  easy to interpret.
+- **Encoded replies:** PII hidden in Base64 chunks, URL `%XX` escapes, zero-width characters, and
+  Unicode look-alikes is always decoded and scrubbed. ROT13 and leetspeak are decoded only in
+  runs that used those converters (`--converters`), and a ROT13 line only when decoding makes it
+  read more like English, so plain lines stay readable. A decoded replacement is marked:
+  `[base64 reply, decoded and scrubbed: ...]`.
+- **Fails closed:** Requires Node.js (`node`) and `npm install` from the repo root. If Node or
+  Rampart is missing, report generation stops with an error instead of writing an unscrubbed
+  report. After scrubbing, a final check looks over the whole report for a real-looking SSN,
+  card number, phone number, or email address; if one is left, the report is not written and
+  the error gives the line number, not the value.
+
+```bash
+# Install the Node dependencies once per clone
+npm install
+
+# Scrub an existing report or every .md file in findings/ in place
+python -m scripts.scrub findings/2026-09-30_0951_scan_public_conversational_7f264395.md
+python -m scripts.scrub findings/
+
+# Skip scrubbing on a synthetic-only run (or set RT_SCRUB=0 in .env)
+python -m scripts.run_summary --no-scrub
+python -m scripts.export_finding_report --no-scrub --rubric any --latest-run
+python -m scripts.rescore --no-scrub
+python -m harnesses.access_checks --no-scrub
+```
 
 ## Safety and handling
 

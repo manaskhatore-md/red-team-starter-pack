@@ -1,0 +1,8 @@
+{
+  "private": true,
+  "description": "Report PII scrubber dependencies for red-team-starter-pack",
+  "dependencies": {
+    "@huggingface/transformers": "^4.3.1",
+    "@nationaldesignstudio/rampart": "^0.1.3"
+  }
+}
