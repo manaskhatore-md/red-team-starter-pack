@@ -60,6 +60,7 @@ from scripts.export_finding_report import (
     load_rubrics,
     select_run,
 )
+from scripts.scrub import encodings_from_labels, scrub_report
 
 # Graded by comparing two replies, so its verdict belongs to the pair, not to the
 # reply it happens to be recorded against.
@@ -1185,13 +1186,15 @@ def build_summary(results, memory, run_id: str) -> str:
     return "\n".join(lines)
 
 
-def write_summary(memory, run_id: str, out: Path | None = None) -> Path:
+def write_summary(memory, run_id: str, out: Path | None = None, *, no_scrub: bool = False) -> Path:
     """Write the summary of one run, given its id or the start of it. Returns the file's path."""
     results, full_id = select_run(memory.get_attack_results(), run_id, latest=False)
     out = out or DEFAULT_OUT
     out.mkdir(parents=True, exist_ok=True)
     path = out / summary_filename(results, full_id)
-    path.write_text(build_summary(results, memory, full_id), encoding="utf-8")
+    encodings = encodings_from_labels(*(r.labels for r in results))
+    text = scrub_report(build_summary(results, memory, full_id), no_scrub=no_scrub, encodings=encodings)
+    path.write_text(text, encoding="utf-8")
     return path
 
 
@@ -1234,6 +1237,11 @@ async def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--run-id", help="The run to summarize. The first 8 characters are enough. Default: the newest run.")
     parser.add_argument("--out", type=Path, help="Output directory (default: findings/)")
+    parser.add_argument(
+        "--no-scrub",
+        action="store_true",
+        help="Write the summary without running the Rampart PII scrubber (or set RT_SCRUB=0)",
+    )
     args = parser.parse_args()
 
     # Must match the memory_db_type the campaign used, or the run will not be here.
@@ -1241,7 +1249,7 @@ async def main():
     memory = CentralMemory.get_memory_instance()
 
     _, run_id = select_run(memory.get_attack_results(), args.run_id, latest=not args.run_id)
-    print(f"wrote {write_summary(memory, run_id, args.out)}")
+    print(f"wrote {write_summary(memory, run_id, args.out, no_scrub=args.no_scrub)}")
 
 
 if __name__ == "__main__":

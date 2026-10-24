@@ -68,6 +68,7 @@ from harnesses.pyrit_campaigns.rubrics import describe_version, require_valid, v
 from harnesses.pyrit_campaigns.target_factory import build_scoring_target, check_models, close_target, model_name
 from scripts.export_finding_report import select_run
 from scripts.run_summary import DEFAULT_OUT, cell, fence
+from scripts.scrub import encodings_from_labels, scrub_report
 
 PAIR_RUBRIC = next(iter(PAIR_RUBRICS))
 
@@ -368,6 +369,11 @@ async def main(argv=None) -> int:
     parser.add_argument("--rubric", help="Only these rubrics, comma-separated, e.g. ungrounded_claim,disparate_treatment")
     parser.add_argument("--probes", help="Only these probes, pairs, or datasets, by name, comma-separated")
     parser.add_argument("--out", type=Path, help="Output directory (default: findings/)")
+    parser.add_argument(
+        "--no-scrub",
+        action="store_true",
+        help="Write the report without running the Rampart PII scrubber (or set RT_SCRUB=0)",
+    )
     args = parser.parse_args(argv)
 
     rubrics = scan.load_rubrics()
@@ -413,7 +419,13 @@ async def main(argv=None) -> int:
     out = args.out or DEFAULT_OUT
     out.mkdir(parents=True, exist_ok=True)
     path = out / f"{date.today().isoformat()}_rescore_{run_id[:8]}.md"
-    path.write_text(build_report(run_id, labels, judge_shown, items, skipped), encoding="utf-8")
+    encodings = encodings_from_labels(*(r.labels for r in results))
+    report = scrub_report(
+        build_report(run_id, labels, judge_shown, items, skipped),
+        no_scrub=args.no_scrub,
+        encodings=encodings,
+    )
+    path.write_text(report, encoding="utf-8")
 
     changed = [i for i in items if i.changed]
     print(f"{len(changed)} of {len(items)} verdict(s) changed.")

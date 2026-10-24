@@ -48,7 +48,7 @@ import subprocess
 import sys
 import time
 import traceback
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urljoin, urlparse
@@ -77,6 +77,7 @@ from harnesses.pyrit_campaigns.target_factory import (
     PROMPT_SLOT,
     _fill_slots,
 )
+from scripts.scrub import assert_no_residual_pii, scrub_enabled, scrub_texts
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_FINDINGS_DIR = REPO_ROOT / "findings"
@@ -2101,8 +2102,45 @@ async def run_all_checks(
     return results
 
 
-def render_report(config: AccessCheckConfig, results: list[CheckResult], timestamp: datetime | None = None) -> str:
+def scrub_results(results: list[CheckResult], *, no_scrub: bool = False) -> list[CheckResult]:
+    """Scrub summary, what_it_tests, details, and remediation across all CheckResults in one batch."""
+    if not scrub_enabled(no_scrub) or not results:
+        return results
+    texts: list[str] = []
+    for r in results:
+        texts.extend([r.summary, r.what_it_tests, r.remediation, *r.details])
+    try:
+        scrubbed = scrub_texts(texts)
+    except RuntimeError as e:
+        raise SystemExit(f"PII scrubber error: {e}") from e
+    it = iter(scrubbed)
+    out: list[CheckResult] = []
+    for r in results:
+        summary = next(it)
+        what_it_tests = next(it)
+        remediation = next(it)
+        details = [next(it) for _ in r.details]
+        out.append(
+            replace(
+                r,
+                summary=summary,
+                what_it_tests=what_it_tests,
+                remediation=remediation,
+                details=details,
+            )
+        )
+    return out
+
+
+def render_report(
+    config: AccessCheckConfig,
+    results: list[CheckResult],
+    timestamp: datetime | None = None,
+    *,
+    no_scrub: bool = False,
+) -> str:
     """Render the complete Markdown access-control report."""
+    results = scrub_results(results, no_scrub=no_scrub)
     now = timestamp or datetime.now(timezone.utc)
     counts = {v: sum(1 for r in results if r.verdict == v) for v in ("PASS", "FAIL", "REVIEW", "NOT TESTED")}
 
@@ -2220,7 +2258,10 @@ def render_report(config: AccessCheckConfig, results: list[CheckResult], timesta
         ]
     )
 
-    return "\n".join(lines)
+    rendered = "\n".join(lines)
+    if scrub_enabled(no_scrub):
+        assert_no_residual_pii(rendered)
+    return rendered
 
 
 def default_report_path(config: AccessCheckConfig, out_arg: str = "", timestamp: datetime | None = None) -> Path:
@@ -2261,6 +2302,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default="",
         help="Output Markdown file or directory (default: findings/<date>_access_checks_<host>.md).",
     )
+    parser.add_argument(
+        "--no-scrub",
+        action="store_true",
+        help="Do not run the Rampart PII scrubber on the written report (or set RT_SCRUB=0).",
+    )
     return parser.parse_args(argv)
 
 
@@ -2279,7 +2325,10 @@ async def main(argv: list[str] | None = None) -> int:
 
     report_path = default_report_path(config, args.out)
     report_path.parent.mkdir(parents=True, exist_ok=True)
-    report_path.write_text(render_report(config, results), encoding="utf-8")
+    report_path.write_text(
+        render_report(config, results, no_scrub=args.no_scrub),
+        encoding="utf-8",
+    )
 
     counts = {v: sum(1 for r in results if r.verdict == v) for v in ("PASS", "FAIL", "REVIEW", "NOT TESTED")}
     print(
