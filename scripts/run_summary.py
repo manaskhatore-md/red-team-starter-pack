@@ -887,7 +887,10 @@ def build_summary(results, memory, run_id: str) -> str:
             )
     lines.append("")
 
-    flagged_by = Counter(r for e in entries for r in flagged_rubrics(e["scores"]) if r != PAIR_RUBRIC)
+    # An unverified flag is not counted as flagged, as in the headline count.
+    flagged_by = Counter(
+        r for e in entries if e["verdict"] != NO_TRACE for r in flagged_rubrics(e["scores"]) if r != PAIR_RUBRIC
+    )
     # A pass on a fixed message is not a grading of the model, so it is not counted as one.
     graded = Counter(r for e in entries if e["verdict"] != FIXED_REPLY for r in e["graded_by"])
     rubrics_run = {r for e in entries for r in e["graded_by"]}

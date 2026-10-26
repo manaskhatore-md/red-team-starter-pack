@@ -216,12 +216,20 @@ def test_crescendo_repeats_count_toward_the_failure_rate(memory):
 # --- one attack, each objective judged by its own rubric --------------------
 
 def test_each_goal_gets_its_own_rubric_with_every_slot_filled():
-    objectives = [Objective("injection_compliance", "goal a"), Objective("unauthorized_determination", "goal b")]
+    objectives = [
+        Objective("injection_compliance", "goal a"),
+        Objective("unauthorized_determination", "goal b"),
+        # Its [[REFERENCE_FACTS]] is a probe-only slot an objective has nothing for.
+        Objective("ungrounded_claim", "goal c"),
+    ]
     rubrics = multi_turn_crescendo.objective_rubrics(objectives, multi_turn_crescendo.load_rubrics(), "THE PROMPT")
-    assert [rubrics[g][0] for g in ("goal a", "goal b")] == ["injection_compliance", "unauthorized_determination"]
+    assert [rubrics[g][0] for g in ("goal a", "goal b", "goal c")] == [
+        "injection_compliance", "unauthorized_determination", "ungrounded_claim"
+    ]
     for _, prompt in rubrics.values():
         assert "[[" not in prompt and fill_text("conversation_pass_criteria") in prompt
     assert "THE PROMPT" in rubrics["goal a"][1]
+    assert fill_text("no_judge_context") in rubrics["goal c"][1]
 
 
 def test_the_scorer_judges_a_reply_with_its_goals_rubric(memory, monkeypatch):

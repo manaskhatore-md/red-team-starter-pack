@@ -170,6 +170,7 @@ def test_the_summary_counts_a_flag_without_a_trace_as_unverified(memory):
     text = summary(memory)
     assert "flagged **0 of 1** results" in text
     assert "1 judge flag(s) are unverified" in text
+    assert "| ungrounded_claim | 0 | 1 |" in text
     assert f"### 1. {run_summary.NO_TRACE}: fabricated_form_number" in text
 
 
