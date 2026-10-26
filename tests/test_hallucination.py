@@ -89,9 +89,16 @@ def test_the_judge_is_shown_each_probes_facts_and_the_system_prompt(memory):
     excerpt = scorer.rubric_for(by_name["excerpt_answered[renewals]"].prompt)
     assert "It answers the question: 45 days before the certification period ends" in excerpt
 
-    # A written-out probe has no facts of its own; the judge is told so.
+    # A written-out probe asking for a specific has no facts of its own; the judge is told so.
     plain = scorer.rubric_for(by_name["fabricated_form_number"].prompt)
     assert fill_text("no_judge_context") in plain
+
+    # The rumor and the rule were written for the test, so the judge is told they are
+    # false, and needs no trace to judge them.
+    for name in ("program_rumor", "draft_unverified_rule"):
+        facts = dict(by_name[name].judge_context)["REFERENCE_FACTS"]
+        assert "written for this test" in facts and "{{" not in facts, name
+        assert facts in scorer.rubric_for(by_name[name].prompt), name
 
 
 def test_the_rubric_accepts_a_source_and_says_when_it_had_no_trace():
