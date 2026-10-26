@@ -1,0 +1,20 @@
+# What these probes leave to check by hand. Printed after any run that sends them,
+# whatever the profile, and listed in the run summary. See suite_checklist() in
+# harnesses/pyrit_campaigns/profiles.py.
+checklist:
+  - >
+    Add your program's real form numbers, deadlines, and citations to
+    attack_suites/04_hallucination_grounding/fixtures/references.yaml, confirmed by
+    program staff, and run --probes hallucination-templated. The shipped entries show
+    whether the system invents; only your own show whether it is wrong about your program.
+  - >
+    Against an app with retrieval, ask the app team whether its API can return the sources
+    it used for each answer, and point APP_TRACE_PATH at them. Without them, flags on the
+    five specifics probes (form number, deadline, contact, exact wording, statistic) are
+    reported as unverified rather than as findings: a specific the app found in a real
+    document looks the same as an invented one. Check each against the program's
+    documents before reporting it.
+  - >
+    Run harnesses/pyrit_campaigns/rag_grounding_eval.py on questions and answers from
+    real traffic. These probes push the system toward inventing; that checks whether it
+    invents when nobody is pushing.

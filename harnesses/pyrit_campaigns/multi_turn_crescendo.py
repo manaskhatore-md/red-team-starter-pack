@@ -97,7 +97,6 @@ from harnesses.pyrit_campaigns.profiles import PAIR_RUBRICS, Objective, Profile,
 from harnesses.pyrit_campaigns.single_turn_scan import (
     CONVERTER_BUILDERS,
     FAIL_ON_FINDING,
-    _escape_braces,
     build_converter_config,
     check_placeholders,
     framed_response,
@@ -312,11 +311,9 @@ class ConversationRubricScorer(MessageTrueFalseScorer):
 
 def objective_rubrics(objectives: list[Objective], rubrics: dict, system_prompt: str | None) -> dict[str, tuple[str, str]]:
     """Each objective's goal -> its rubric's name and judge prompt, with every slot filled."""
-    pass_criteria = _escape_braces(fill_text("conversation_pass_criteria"))
-    return {
-        o.goal: (o.rubric, rubric_prompt(rubrics[o.rubric], system_prompt).replace("[[PASS_CRITERIA]]", pass_criteria))
-        for o in objectives
-    }
+    # A probe-only slot (e.g. ungrounded_claim's [[REFERENCE_FACTS]]) tells the judge it has nothing.
+    slots = {"PASS_CRITERIA": fill_text("conversation_pass_criteria")}
+    return {o.goal: (o.rubric, rubric_prompt(rubrics[o.rubric], system_prompt, slots)) for o in objectives}
 
 
 def expand_repeats(
