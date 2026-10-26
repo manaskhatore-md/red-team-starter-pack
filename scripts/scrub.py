@@ -17,7 +17,7 @@ run this automatically unless `--no-scrub` or `RT_SCRUB=0` is set.
 
 Two layers:
 
-- Rampart, when Node and the npm package are installed (`npm install` in the repo root):
+- Rampart, when Node and the npm package are installed (`npm ci` in the repo root):
   names, street addresses, and the patterns below.
 - Patterns, always, in Python (code_checks.pii_matches plus a street-address pattern):
   SSNs, card numbers, phone numbers, emails, street addresses. With Rampart, they run
@@ -27,6 +27,11 @@ Two layers:
 
 RT_SCRUB_ALLOW lists public contact details to leave visible (an agency's hotline or
 help-desk address), comma-separated. A phone number matches in any format.
+
+In an access-check report, the paths the kit requested, its own wording, and the app's
+field names are kept as written (access_check_exempt); what the app sent back is
+scrubbed. RT_SCRUB_TIMEOUT is how long to wait for Rampart's reply to one report
+(default RAMPART_TIMEOUT seconds) before falling back to the patterns.
 
 You can also scrub existing report files in place:
 
@@ -38,15 +43,18 @@ You can also scrub existing report files in place:
 """
 
 import argparse
+import ast
 import atexit
 import base64
 import binascii
 import codecs
+import functools
 import json
 import os
 import re
 import subprocess
 import sys
+import threading
 import unicodedata
 from collections import Counter
 from collections.abc import Iterable
@@ -65,8 +73,8 @@ from harnesses.pyrit_campaigns.decoding import (
     ZERO_WIDTH,
     _look_alikes,
 )
-from harnesses.pyrit_campaigns.planted_records import STREETS
-from harnesses.pyrit_campaigns.profiles import placeholders
+from harnesses.pyrit_campaigns.planted_records import OTHER_NAMES, STREETS
+from harnesses.pyrit_campaigns.profiles import PLACEHOLDERS, placeholders
 
 RUNNER = Path(__file__).resolve().parent / "rampart_scrub.mjs"
 
@@ -151,10 +159,15 @@ STREET_ADDRESS = re.compile(
     rf")\b{STREET_UNIT}"
     r"|\b(?i:P\.?\s?O\.?\s+Box)\s+\d+\b"
 )
-# The planted records' streets (planted_records.py) and the address the excessive-agency
-# probes ask the app to change a record to (fixtures/actions.yaml), which stay visible
-# like the rest of the kit's fake data.
-KIT_ADDRESS = re.compile(rf"\b\d+\s+(?:{'|'.join(STREETS)})\b|\b1427 Oak Street\b", re.IGNORECASE)
+# The planted records' names and streets (planted_records.py) and the address the
+# excessive-agency probes ask the app to change a record to (fixtures/actions.yaml),
+# which stay visible like the rest of the kit's fake data. Sent from here to the
+# Rampart worker in `exempt` so Python is the single source of truth.
+KIT_NAMES = (PLACEHOLDERS["synthetic_name"], *OTHER_NAMES)
+KIT_ADDRESS = re.compile(
+    rf"(?:\b\d+\s+(?:{'|'.join(STREETS)})\b|\b1427 Oak Street\b){STREET_UNIT}",
+    re.IGNORECASE,
+)
 
 # What the pattern layer puts in place of each kind it finds.
 PATTERN_LABELS = {
@@ -170,11 +183,84 @@ PATTERN_LABELS = {
 NOTICE = (
     "> **Scrubbing note:** Rampart was not available when this report was scrubbed, so names were not "
     "checked for and street addresses were checked only by a simple pattern. SSNs, card numbers, phone "
-    "numbers, and email addresses were scrubbed. To scrub names too, install Node.js, run `npm install` "
+    "numbers, and email addresses were scrubbed. To scrub names too, install Node.js, run `npm ci` "
     "in the kit's folder, and re-scrub this file with `python -m scripts.scrub <file>`."
 )
 NOTICE_AFTER_TITLE = re.compile(r"\n\n> \*\*Scrubbing note:\*\*[^\n]*")
 NOTICE_AT_TOP = re.compile(r"\A> \*\*Scrubbing note:\*\*[^\n]*\n\n")
+
+# Added under the title when a phone number or email address was redacted, so the
+# reader knows why a hotline or help-desk address became [PHONE_...] / [EMAIL_...]
+# and how to keep public contact details visible.
+CONTACT_NOTICE = (
+    "> **Redacted contact details:** Phone numbers or email addresses in this report were replaced with "
+    "`[PHONE_...]` or `[EMAIL_...]`. If a redacted value is a public hotline or address that should stay "
+    "visible as evidence, list it in `RT_SCRUB_ALLOW` (comma-separated) and write the report again from "
+    "its source: `python -m scripts.run_summary` or `python -m scripts.export_finding_report` for a run, "
+    "or the access checks again. Scrubbing this file again cannot bring a redacted value back."
+)
+CONTACT_PLACEHOLDER = re.compile(r"\[(?:PHONE|EMAIL)_(?:\d+|REDACTED)\]")
+CONTACT_NOTICE_AFTER_TITLE = re.compile(r"\n\n> \*\*Redacted contact details:\*\*[^\n]*")
+CONTACT_NOTICE_AT_TOP = re.compile(r"\A> \*\*Redacted contact details:\*\*[^\n]*\n\n")
+
+# Seconds to wait for the Rampart worker to reply to one batch, unless RT_SCRUB_TIMEOUT
+# sets another. A whole report is one batch, and the first one also loads the model
+# (downloading it from Hugging Face on first use), so this is generous: a report of a
+# few hundred replies takes well under a minute. It stops a worker stuck behind a proxy
+# that stalls; past it, the report is scrubbed by the patterns, with the NOTICE.
+RAMPART_TIMEOUT = 300.0
+
+# In an access-check report, the paths the kit requested (`GET /openapi.json`, `/.env`)
+# are the evidence, and Rampart's model reads parts of them as names or house numbers.
+# They are sent to the worker as exempt values. The access checks quote what the app sent
+# back in backticks, so a path in backticks is the kit's only when the span is its own
+# request (`GET /api/me`) or a bare path (`/docs`): a path in a quoted reply can carry a
+# name, and is still scrubbed.
+REQUEST_PATH = re.compile(r"(?<![\w/.~%-])/(?:[A-Za-z0-9_.~%{}-]+/)*[A-Za-z0-9_.~%{}-]*[A-Za-z0-9_~%{}-]")
+URL_PATH = re.compile(r"\bhttps?://[^\s/`'\"<>()]+(/[^\s?#`'\"<>()]*[^\s?#`'\"<>().,;:])")
+BACKTICK_SPAN = re.compile(r"`[^`\n]*`")
+KIT_SPAN = re.compile(r"`(?:(?:GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS) )?/[^`\s]*`")
+# Shorter paths ("/a") would also exempt the same letters inside a name elsewhere in the batch.
+MIN_PROTECTED_PATH = 4
+
+# The kit's own wording in an access-check report ("Logged-out requests with fake 'who I
+# am' email headers were blocked") is also kept: Rampart's model read "fake" as a name.
+# It is every fixed piece of text in access_checks.py's strings, read from the source,
+# so a value filled in at run time (an error message, a signed-in email) is still
+# scrubbed. Pieces shorter than this are left out, for the same reason as short paths.
+ACCESS_CHECKS_SOURCE = Path(__file__).resolve().parents[1] / "harnesses" / "access_checks.py"
+MIN_KIT_WORDING = 12
+# The app's own identifiers, in the forms access_checks.py writes them: JSON field
+# names, and cookie names and domains. The model read a Cloud Run host's id as a
+# driver's license number and a cookie's numeric id as an SSN. The whole backtick span
+# is kept, so a short name ("id") cannot shield the same letters inside a name.
+FIELD_NAMES = re.compile(
+    r"Top-level JSON fields returned by `[^`\n]*`: (`[^`\n]*`)|Extra field (`[^`\n]+`)"
+    r"|Cookie (`[^`\n]+`) \(domain (`[^`\n]+`)\)"
+)
+
+# What Rampart reads: each text with its lowercase words capitalized. Its model reads
+# everything lowercased, but the steps around the model - Rampart's own, and
+# adjustSpan() in rampart_scrub.mjs - use capitals to decide where a name starts and
+# ends, and cut short or drop lowercase ones ("jane doe", "carlos ramirez"). It is the
+# same length, so the spans map back to the text as written, and the report itself is
+# not changed. Web addresses' hosts, emails, ids, and the role labels of a transcript
+# are left as they are.
+NER_SKIP = re.compile(
+    r"\bhttps?://[^\s/?#`'\"<>()]+|\bwww\.[^\s/?#`'\"<>()]+|[\w.+-]+@[\w-]+(?:\.[\w-]+)+"
+    r"|\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b"
+    r"|\[(?:user(?: original)?|assistant(?: trace)?)\]",
+    re.IGNORECASE,
+)
+# An all-lowercase word, not inside a longer one. A word with a capital already
+# ("myDHS") is a product's name, and stays as written.
+VIEW_WORD = re.compile(r"(?<![^\W_])[a-zà-öø-ÿ][a-zà-öø-ÿ']*(?![\w])")
+# Left lowercase in ner_view(), with COMMON_WORDS.
+FUNCTION_WORDS = frozenset("""
+about above across against along among around before behind below beside between beyond
+during except inside near off onto over past since than through toward under until upon
+via within without
+""".split())
 
 _worker: subprocess.Popen | None = None
 # Why Rampart could not run, once it has failed in this process; every later report
@@ -196,9 +282,12 @@ def allowed_values() -> list[str]:
 
 
 def default_exempt() -> list[str]:
-    """What stays visible: the profile's synthetic name, and the values RT_SCRUB_ALLOW lists."""
+    """What stays visible: the kit's synthetic names, and the values RT_SCRUB_ALLOW lists."""
     name = placeholders().get("synthetic_name", "").strip()
-    return ([name] if name and not name.startswith("TODO") else []) + allowed_values()
+    names = list(KIT_NAMES)
+    if name and not name.startswith("TODO") and name not in names:
+        names.append(name)
+    return names + allowed_values()
 
 
 def _digit_key(value: str) -> str:
@@ -286,15 +375,33 @@ def strip_notice(markdown: str) -> str:
     return NOTICE_AT_TOP.sub("", NOTICE_AFTER_TITLE.sub("", markdown, count=1), count=1)
 
 
+def _strip_contact_notice(markdown: str) -> str:
+    return CONTACT_NOTICE_AT_TOP.sub("", CONTACT_NOTICE_AFTER_TITLE.sub("", markdown, count=1), count=1)
+
+
+def is_access_report(markdown: str) -> bool:
+    """True if `markdown` is an access-check report (harnesses/access_checks.py)."""
+    return (
+        markdown.lstrip().startswith("# Application Access-Control")
+        or bool(ACCESS_SUMMARY_ROW.search(markdown))
+    )
+
+
 def finish_report(markdown: str, *, exempt: Iterable[str] | None = None) -> str:
-    """The last step before a scrubbed report is written: redact leftovers, and say if Rampart didn't run."""
-    out = redact_residual_pii(strip_notice(markdown), exempt=exempt)
-    if _rampart_failure is None:
+    """The last step before a scrubbed report is written: redact leftovers, and add any scrubbing notes."""
+    out = redact_residual_pii(_strip_contact_notice(strip_notice(markdown)), exempt=exempt)
+    notices: list[str] = []
+    if _rampart_failure is not None:
+        notices.append(NOTICE)
+    if CONTACT_PLACEHOLDER.search(out):
+        notices.append(CONTACT_NOTICE)
+    if not notices:
         return out
+    block = "\n\n".join(notices)
     title = re.search(r"^# .*$", out, re.MULTILINE)
     if title:
-        return out[: title.end()] + "\n\n" + NOTICE + out[title.end() :]
-    return NOTICE + "\n\n" + out
+        return out[: title.end()] + "\n\n" + block + out[title.end() :]
+    return block + "\n\n" + out
 
 
 def _normalize_encodings(encodings: Iterable[str] | str | None) -> set[str]:
@@ -344,14 +451,18 @@ def _infer_report_encodings(markdown: str) -> set[str]:
 def _stop_worker() -> None:
     global _worker
     if _worker is not None:
+        proc = _worker
+        _worker = None
         try:
-            if _worker.stdin:
-                _worker.stdin.close()
-            _worker.terminate()
-            _worker.wait(timeout=2)
+            proc.kill()
+            proc.wait(timeout=2)
         except Exception:
             pass
-        _worker = None
+        try:
+            if proc.stdin:
+                proc.stdin.close()
+        except Exception:
+            pass
 
 
 atexit.register(_stop_worker)
@@ -622,15 +733,121 @@ def _allowed_as_written(items: list[dict[str, object]], exempt: list[str]) -> li
     return sorted(found)
 
 
+def _kit_exempt(items: list[dict[str, object]]) -> list[str]:
+    """The kit's own fake names, streets, and probe addresses as written in `items`."""
+    found = set(KIT_NAMES) | set(STREETS)
+    for item in items:
+        texts = [item["text"], item.get("norm", "")] + [c["decoded"] for c in item.get("decodedSpans", [])]
+        for text in texts:
+            for m in KIT_ADDRESS.finditer(str(text)):
+                found.add(m.group(0))
+    return sorted(found)
+
+
+def rampart_timeout() -> float:
+    """RT_SCRUB_TIMEOUT: seconds to wait for the worker's reply to one batch. Default RAMPART_TIMEOUT."""
+    raw = os.getenv("RT_SCRUB_TIMEOUT", "").strip()
+    if not raw:
+        return RAMPART_TIMEOUT
+    try:
+        value = float(raw)
+    except ValueError:
+        value = 0.0
+    if value <= 0:
+        raise SystemExit(f"RT_SCRUB_TIMEOUT must be a number of seconds above 0, not {raw!r}.")
+    return value
+
+
+def request_paths(texts: Iterable[str]) -> list[str]:
+    """The request paths in access-check text, leaving out any in quoted output (REQUEST_PATH)."""
+    found = set()
+    for text in texts:
+        outside_bodies = BACKTICK_SPAN.sub(
+            lambda m: m.group(0) if KIT_SPAN.fullmatch(m.group(0)) else " " * len(m.group(0)), text or ""
+        )
+        found.update(m.group(0) for m in REQUEST_PATH.finditer(outside_bodies))
+        found.update(m.group(1) for m in URL_PATH.finditer(outside_bodies))
+    return sorted(path for path in found if len(path) >= MIN_PROTECTED_PATH)
+
+
+@functools.lru_cache(maxsize=1)
+def _access_check_wording() -> tuple[str, ...]:
+    """Every fixed piece of text in access_checks.py's strings (MIN_KIT_WORDING), from its source."""
+    tree = ast.parse(ACCESS_CHECKS_SOURCE.read_text(encoding="utf-8"))
+    pieces = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            for line in node.value.splitlines():
+                if len(line.strip()) >= MIN_KIT_WORDING:
+                    pieces.add(line.strip())
+    return tuple(sorted(pieces))
+
+
+def access_check_exempt(texts: Iterable[str]) -> list[str]:
+    """What an access-check report keeps as written: its request paths, its own wording, and field names."""
+    texts = [t or "" for t in texts]
+    lowered = [t.lower() for t in texts]
+    wording = [p for p in _access_check_wording() if any(p.lower() in t for t in lowered)]
+    fields = [group for t in texts for m in FIELD_NAMES.finditer(t) for group in m.groups() if group]
+    return sorted(set(request_paths(texts)) | set(wording) | set(fields))
+
+
+def ner_view(text: str) -> str:
+    """The text as Rampart reads it (NER_SKIP): the same length, with lowercase words capitalized."""
+
+    def capitalize(m: re.Match) -> str:
+        # Common words stay lowercase: capitalized, the model read "With Maria" as a name.
+        word = m.group(0).lower()
+        return m.group(0) if word in COMMON_WORDS or word in FUNCTION_WORDS else word[0].upper() + m.group(0)[1:]
+
+    def rewrite(part: str, english: bool) -> str:
+        return VIEW_WORD.sub(capitalize, part) if english else part
+
+    out = []
+    for line in text.splitlines(keepends=True):
+        # A line whose ROT13 reads more like English is a ROT13 probe: capitalized, its gibberish read as names.
+        english = _english_words(codecs.encode(line, "rot13")) <= _english_words(line)
+        last = 0
+        for m in NER_SKIP.finditer(line):
+            out.append(rewrite(line[last : m.start()], english))
+            out.append(m.group(0))
+            last = m.end()
+        out.append(rewrite(line[last:], english))
+    return "".join(out)
+
+
+def _read_worker_line(worker: subprocess.Popen, payload: str, timeout: float) -> str:
+    """Send `payload` to the worker and read one reply line, or raise TimeoutError."""
+    result: list[str] = []
+    error: list[BaseException] = []
+
+    def io_step() -> None:
+        assert worker.stdin is not None and worker.stdout is not None
+        try:
+            worker.stdin.write(payload + "\n")
+            worker.stdin.flush()
+            result.append(worker.stdout.readline())
+        except BaseException as exc:
+            error.append(exc)
+
+    reader = threading.Thread(target=io_step, daemon=True)
+    reader.start()
+    reader.join(timeout)
+    if reader.is_alive():
+        raise TimeoutError(f"timed out after {timeout:g}s")
+    if error:
+        raise error[0]
+    return result[0] if result else ""
+
+
 def _rampart_scrub(items: list[dict[str, object]], exempt: list[str]) -> list[str]:
     """Scrub a batch with the Rampart worker. Raises RuntimeError, saying why, when it can't run."""
     worker = _get_worker()
     payload = json.dumps({"items": items, "exempt": exempt}, ensure_ascii=False)
-    assert worker.stdin is not None and worker.stdout is not None
     try:
-        worker.stdin.write(payload + "\n")
-        worker.stdin.flush()
-        line = worker.stdout.readline()
+        line = _read_worker_line(worker, payload, rampart_timeout())
+    except TimeoutError as e:
+        raise RuntimeError(f"the Rampart worker {e} (RT_SCRUB_TIMEOUT)") from e
     except Exception as e:
         raise RuntimeError(f"the Rampart worker failed: {e}") from e
     if not line:
@@ -649,11 +866,15 @@ def scrub_texts(
     *,
     exempt: list[str] | None = None,
     encodings: Iterable[str] | str | None = None,
+    access_check: bool = False,
 ) -> list[str]:
     """Scrub a batch of strings in one Rampart session so placeholders stay consistent.
 
-    Without Rampart (no Node, no `npm install`, or the worker fails), the batch is
-    scrubbed by the pattern layer instead, with a warning the first time.
+    Rampart's model reads each text as ner_view() writes it. For an access-check report
+    (`access_check`), its request paths, its own wording, and the app's field names are
+    kept (access_check_exempt). Without Rampart (no Node, no `npm ci`, or the worker
+    fails or times out), the batch is scrubbed by the pattern layer instead, with a
+    warning the first time.
     """
     global _rampart_failure
     if not texts or all(not t or not t.strip() for t in texts):
@@ -662,16 +883,37 @@ def scrub_texts(
     enc_set = _normalize_encodings(encodings)
     items = [_build_normalized_view(t, enc_set) for t in texts]
     if _rampart_failure is None:
+        kept = access_check_exempt(texts) if access_check else []
+        worker_exempt = list(dict.fromkeys([*_kit_exempt(items), *extra, *_allowed_as_written(items, extra), *kept]))
+        # The patterns read the text as normalized; only the model reads ner_view().
+        worker_items = [
+            {
+                **item,
+                "norm": ner_view(str(item.get("norm", item["text"]))),
+                **(
+                    {"decodedSpans": [{**c, "norm": ner_view(str(c["decoded"]))} for c in item["decodedSpans"]]}
+                    if "decodedSpans" in item
+                    else {}
+                ),
+            }
+            for item in items
+        ]
         try:
-            return _rampart_scrub(items, extra + _allowed_as_written(items, extra))
+            return _rampart_scrub(worker_items, worker_exempt)
         except RuntimeError as e:
             _stop_worker()
             _rampart_failure = str(e)
+            if isinstance(e.__cause__, TimeoutError):
+                # Node and Rampart are there; the model download or the batch took too long.
+                fix = ("  check that this machine can reach huggingface.co (the first run downloads the model),\n"
+                       "  or raise RT_SCRUB_TIMEOUT for a very large report.")
+            else:
+                fix = "  install Node.js and run `npm ci` in the kit's folder."
             print(
                 f"PII scrubber: Rampart is not available ({e}).\n"
                 "  Scrubbing with patterns only: SSNs, card numbers, phone numbers, emails, and street addresses.\n"
                 "  Names are NOT checked, and each report says so at the top. To scrub names too,\n"
-                "  install Node.js and run `npm install` in the kit's folder.",
+                f"{fix}",
                 file=sys.stderr,
             )
     return [_pattern_scrub_item(item, extra) for item in items]
@@ -682,9 +924,10 @@ def scrub_text(
     *,
     exempt: list[str] | None = None,
     encodings: Iterable[str] | str | None = None,
+    access_check: bool = False,
 ) -> str:
     """Scrub a single string (scrub_texts)."""
-    return scrub_texts([text], exempt=exempt, encodings=encodings)[0]
+    return scrub_texts([text], exempt=exempt, encodings=encodings, access_check=access_check)[0]
 
 
 def _collect_report_spans(markdown: str) -> list[tuple[int, int, str]]:
@@ -716,26 +959,32 @@ def scrub_report(
     no_scrub: bool = False,
     exempt: list[str] | None = None,
     encodings: Iterable[str] | str | None = None,
+    access_check: bool = False,
 ) -> str:
     """Scrub all transcripts, replies, and judge rationales in a rendered Markdown report.
 
     All segments in the report are sent in a single Rampart batch so the model loads
     once and the same entity gets the same placeholder (`[GIVEN_NAME_1]`, `[SSN_1]`)
-    throughout the file. Then finish_report() redacts what the patterns still find
-    anywhere in the report, and adds the NOTICE if Rampart did not run.
+    throughout the file. In an access-check report (or with `access_check`), the
+    kit's request paths, wording, and the app's field names are kept (access_check_exempt). Then finish_report() redacts what the
+    patterns still find anywhere in the report, and adds any scrubbing notes.
     """
     if not scrub_enabled(no_scrub) or not markdown.strip():
         return markdown
 
-    markdown = strip_notice(markdown)
+    markdown = _strip_contact_notice(strip_notice(markdown))
+    access = access_check or is_access_report(markdown)
     effective_encodings = _normalize_encodings(encodings) if encodings is not None else _infer_report_encodings(markdown)
     spans = _collect_report_spans(markdown)
     if not spans:
-        return finish_report(scrub_text(markdown, exempt=exempt, encodings=effective_encodings), exempt=exempt)
+        return finish_report(
+            scrub_text(markdown, exempt=exempt, encodings=effective_encodings, access_check=access), exempt=exempt
+        )
     scrubbed_segments = scrub_texts(
         [text for _, _, text in spans],
         exempt=exempt,
         encodings=effective_encodings,
+        access_check=access,
     )
 
     # Splice from right to left so earlier character offsets remain valid.

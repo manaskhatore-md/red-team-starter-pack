@@ -60,14 +60,18 @@ optional — reach for it only when you need it.
 
 ```bash
 pip install -r requirements.txt
-npm install                   # optional: Rampart, so report scrubbing also covers names (needs Node.js)
+npm ci                        # optional: Rampart, so report scrubbing also covers names (needs Node.js)
 cp .env.example .env          # use `copy` on Windows
 ```
 
-`npm install` needs [Node.js](https://nodejs.org). Without it the kit still runs, and reports are
+`npm ci` needs [Node.js](https://nodejs.org). Without it the kit still runs, and reports are
 still scrubbed of SSNs, card numbers, phone numbers, emails, and street addresses, but not of
 names. Install it on any machine that tests a deployed app or anything holding real data
 (see [Scrubbing personal data from reports](#scrubbing-personal-data-from-reports)).
+`npm ci` installs the exact versions in `package-lock.json`, the ones the scrubber was tested
+with. Newer npm versions warn that they skipped install scripts for `onnxruntime-node` and
+`protobufjs`; scrubbing works without them. The first report downloads Rampart's model (about
+15 MB) from Hugging Face, so that machine needs to reach huggingface.co once.
 
 Add **one** provider's API key to `.env`. This model is the **judge** — it grades the
 app's replies, since the app can't grade itself. Gemini, OpenAI, and Anthropic each need
@@ -1118,6 +1122,19 @@ before writing Markdown to disk:
   rationales in a report are scrubbed in a single session so the first person is replaced with
   `[GIVEN_NAME_1] [SURNAME_1]`, the second with `[GIVEN_NAME_2] [SURNAME_2]`, and repeated
   mentions reuse the same placeholder across both the transcript and the judge's rationale.
+- **Lowercase and run-together names:** Rampart's own clean-up steps trust capitalized names
+  more than lowercase ones, so `scripts/scrub.py` hands it each text with its lowercase words
+  capitalized (common words, encoded lines, and words already holding a capital, like the
+  portal `myDHS`, are left as they are); the report itself is not changed. A hyphenated name
+  made only of letters (`maria-gonzalez`, `/records/robert-smith.pdf`) is scrubbed. After
+  Rampart has read the whole report, a second pass looks for the names it found where it
+  missed them: a full name run together (`mariagonzalez`, `maria_gonzalez84.txt`), or one
+  half of a full name it found, written again beside the other half.
+  **What is still missed:** a name the model does not recognize anywhere in the report ("li
+  wei", or "carlos" found but "ramirez" missed), one name glued to other characters with no
+  full mention elsewhere (`jgonzalez`, `gonzalez-2024` - matching those would also mangle
+  ordinary words, "c" + "ross" being "cross"), names of three letters or fewer in the second
+  pass, and names in non-Latin scripts. Read a report before sharing it.
 - **What stays readable:** Coarse geography (`CITY`, `STATE`, `ZIP_CODE`), URL origins/domains
   (while still scrubbing URL paths and query strings for exfiltrated PII), and the kit's own
   synthetic test fixtures (`Jordan Testcase`, `666-xx-xxxx` and `987-65-432x` SSNs, `555-01xx`
@@ -1135,16 +1152,30 @@ before writing Markdown to disk:
   redacted and on which line, never the value. This catches what Rampart misses (a street
   address its model reads past), and redacts the occasional ID that only looks like a
   card number.
-- **Without Rampart:** Rampart needs Node.js and `npm install` from the repo root. If either is
-  missing, reports are still scrubbed and written, by the patterns alone: SSNs, card numbers,
-  phone numbers, emails, and street addresses (a simple pattern, which misses irregular ones).
+- **Without Rampart:** Rampart needs Node.js and `npm ci` from the repo root. If either is
+  missing, or Rampart has not answered within `RT_SCRUB_TIMEOUT` seconds (default 300, for a
+  model download stuck behind a proxy, say), reports are still scrubbed and written, by the
+  patterns alone: SSNs, card numbers, phone numbers, emails, and street addresses (a simple
+  pattern, which misses irregular ones).
   **Names are not checked.** The console warns once, and every report says so in a note under
   its title. Install Rampart and run `python -m scripts.scrub` on the report to scrub names
   too; the note comes out.
 - **Public contact details:** Rampart and the patterns redact every phone number and email,
   including an agency's own. When a finding depends on one (a bot giving the wrong hotline),
   list them in `RT_SCRUB_ALLOW`, comma-separated; they stay visible. A phone number matches in
-  any format, an email ignoring case. List only public contact details here.
+  any format, an email ignoring case. List only public contact details here. A report with a
+  redacted phone number or email says so in a `Redacted contact details:` note under its title.
+  A redacted value cannot be scrubbed back into a report: set `RT_SCRUB_ALLOW` and write the
+  report again (`python -m scripts.run_summary --run-id <run>`, `python -m scripts.export_finding_report`,
+  or the access checks again).
+- **Access-check reports:** the evidence is kept as written, where Rampart would otherwise read
+  parts of it as personal data: the paths the kit requested (`GET /openapi.json` had become
+  `/openapi.[GIVEN_NAME_1]`), the kit's own wording ("fake" had become a name), the app's JSON
+  field names, and its cookie names and domains (a Cloud Run host's id had become a driver's
+  license number). What the app sent back, quoted in backticks, is scrubbed, paths included.
+  In every other report a path is part of a reply, can carry a name, and is scrubbed.
+- **HTTP status codes** (`HTTP 401`, `HTTP/1.1 200`) are never treated as personal data, in any
+  report.
 
 **Which scrubber ran?** A report with no `Scrubbing note:` line under its title was scrubbed by
 Rampart. One with the note was scrubbed by the patterns alone; check it for names before
@@ -1155,7 +1186,7 @@ before the command, in place of the `VAR=value` prefix below.
 
 ```bash
 # Optional, once per clone: install Rampart (needs Node.js), so names are scrubbed too
-npm install
+npm ci
 
 # Keep the agency's public hotline and help-desk address visible (or put it in .env)
 RT_SCRUB_ALLOW="410-767-1100,info@maryland.gov" python -m scripts.export_finding_report --rubric any --latest-run
@@ -1204,7 +1235,7 @@ python -m pytest
 ```
 
 The scrubber tests that run the real Rampart worker are skipped unless Node.js and
-`npm install` are set up; the rest of the scrubber is tested either way.
+`npm ci` are set up; the rest of the scrubber is tested either way.
 
 Turn on the pre-commit hooks once per clone to run gitleaks on every commit (this repo is
 public):

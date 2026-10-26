@@ -44,17 +44,21 @@ const PHONE_RE = /(?<!\d)(?:\+?1[-. ]?)?\(?(\d{3})\)?[-. ](\d{3})[-. ](\d{4})(?!
 
 // Kit-planted markers, URL origins (scheme + host only, so query strings and
 // paths are still scrubbed for exfiltrated PII), and RFC 2606 / SSA / fictional
-// test patterns that must stay visible in reports.
+// test patterns that must stay visible in reports. Kit-planted names, streets,
+// and fixture addresses are sent from Python in `exempt` so there is one source,
+// and so are the request paths of an access-check report (scrub.request_paths):
+// paths elsewhere, such as in a model's reply, can carry a name and are scrubbed.
 const EXEMPT_PATTERNS = [
   /\b(?:https?:\/\/|www\.)[^\s<>"'\])}/?#]+/gi,
+  // An HTTP status ("HTTP 401", "HTTP/1.1 200") is never personal data; the model read
+  // "HTTP" as a street name and the code as an address.
+  /\bHTTP(?:\/\d(?:\.\d)?)? [1-5]\d\d\b/gi,
   /\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi,
   /\bRTC-[0-9A-F]{4}-[0-9A-F]{4}\b/gi,
   /\bTC-\d{7}\b/g,
   /\b666[- ]?\d{2}[- ]?\d{4}\b/g,
   /\b987[- ]?65[- ]?432\d\b/g,
   /\b(?:\+?1[-. ]?)?\(?\d{3}\)?[-. ]555[-. ]01\d{2}\b/g,
-  /\b\d+\s+(?:Sample Court|Testing Lane|Example Avenue|Fixture Road)\b/gi,
-  /\b(?:Jordan Testcase|Riley Example|Casey Sample|Morgan Placeholder|Avery Fixture)\b/gi,
   /\b[\w.+-]+@(?:[\w-]+\.)*(?:example\.(?:com|org|net)|example|invalid|test|localhost)\b/gi,
   /\[(?:user(?: original)?|assistant(?: trace)?)\]/g,
 ];
@@ -151,9 +155,10 @@ function adjustSpan(text, span, exemptRanges) {
   let { start, end } = span;
 
   // Trim trailing all-caps non-Roman-numeral acronyms (e.g. "Gonzalez SSN" -> "Gonzalez")
-  // that Rampart's rescueCapitalizedParticles annexes onto person names.
+  // or a file extension (e.g. "Smith.Json" -> "Smith") that Rampart's rescueCapitalizedParticles
+  // annexes onto person names.
   if (span.label === "GIVEN_NAME" || span.label === "SURNAME") {
-    const m = /\s+(?!(?:II|III|IV|VI|VII|VIII)$)[A-Z]{2,4}$/.exec(text.slice(start, end));
+    const m = /(?:\s+(?!(?:II|III|IV|VI|VII|VIII)$)[A-Z]{2,4}|\.[\p{L}\p{N}]{1,5})$/u.exec(text.slice(start, end));
     if (m !== null) {
       end -= m[0].length;
     }
@@ -191,21 +196,13 @@ function adjustSpan(text, span, exemptRanges) {
       }
     } else {
       // Single-word partial span: extend to the full word only if it is a capitalized
-      // name/street word and not part of a hyphenated identifier (e.g. "claude-sonnet-4-5").
+      // name/street word. Hyphens are judged below, on the whole hyphenated token.
       let wStart = start;
       let wEnd = end;
       while (wStart > 0 && isWordChar(text[wStart - 1])) wStart--;
       while (wEnd < text.length && isWordChar(text[wEnd])) wEnd++;
-      const prevHyphen = wStart > 0 && text[wStart - 1] === "-";
-      const nextHyphen = wEnd < text.length && text[wEnd] === "-";
       const wholeWord = text.slice(wStart, wEnd);
-      if (
-        !prevHyphen &&
-        !nextHyphen &&
-        EXTENDABLE_NAME_LABELS.has(span.label) &&
-        /^\p{Lu}/u.test(wholeWord) &&
-        /\p{Ll}/u.test(wholeWord)
-      ) {
+      if (EXTENDABLE_NAME_LABELS.has(span.label) && /^\p{Lu}/u.test(wholeWord) && /\p{Ll}/u.test(wholeWord)) {
         start = wStart;
         end = wEnd;
       } else {
@@ -215,15 +212,17 @@ function adjustSpan(text, span, exemptRanges) {
   }
 
   if (span.source !== "heuristic") {
+    // A span inside a hyphenated token is a name only if the token is words: "maria-gonzalez"
+    // or "Jean-Luc", not a model id with numbers in it ("claude-sonnet-4-5").
     const leftHyphen = start >= 2 && text[start - 1] === "-" && isWordChar(text[start - 2]);
     const rightHyphen = end + 1 < text.length && text[end] === "-" && isWordChar(text[end + 1]);
-    if (leftHyphen || rightHyphen || (text.slice(start, end).includes("-") && !/^\p{Lu}/u.test(text.slice(start, end)))) {
+    if (leftHyphen || rightHyphen || text.slice(start, end).includes("-")) {
       let hStart = start;
       let hEnd = end;
-      while (hStart > 0 && (isWordChar(text[hStart - 1]) || text[hStart - 1] === "-" || text[hStart - 1] === ".")) hStart--;
-      while (hEnd < text.length && (isWordChar(text[hEnd]) || text[hEnd] === "-" || text[hEnd] === ".")) hEnd++;
+      while (hStart > 0 && (isWordChar(text[hStart - 1]) || text[hStart - 1] === "-")) hStart--;
+      while (hEnd < text.length && (isWordChar(text[hEnd]) || text[hEnd] === "-")) hEnd++;
       const fullToken = text.slice(hStart, hEnd);
-      if (/\d/.test(fullToken) || !/^\p{Lu}/u.test(fullToken)) {
+      if (!/^[\p{L}\p{M}']+(?:-[\p{L}\p{M}']+)+$/u.test(fullToken)) {
         return null;
       }
     }
@@ -280,7 +279,19 @@ async function detectNormSpans(normText, extraLiterals, extraExemptRanges = []) 
       if (adj !== null) contextual.push(adj);
     }
   }
-  return [...heuristic, ...contextual];
+  const filteredContextual = contextual.filter((s) => {
+    if (s.label !== "BUILDING_NUMBER") return true;
+    // A bare number (like HTTP 404 or a page count) is not an address without a street
+    // name next to it: after spaces, or a comma ("418, East Pratt Street").
+    return contextual.some(
+      (other) =>
+        other.label === "STREET_NAME" &&
+        other.start >= s.end &&
+        other.start - s.end <= 3 &&
+        /^\s*,?\s*$/.test(normText.slice(s.end, other.start)),
+    );
+  });
+  return [...heuristic, ...filteredContextual];
 }
 
 function projectToRaw(span, rawStart, rawEnd) {
@@ -330,7 +341,7 @@ async function scrubOne(item, table, extraLiterals) {
     const plainInRange = redactableNorm.filter(
       (s) => s.start >= cand.normStart && s.end <= cand.normEnd,
     ).length;
-    const candSpans = await detectNormSpans(cand.decoded, extraLiterals);
+    const candSpans = await detectNormSpans(cand.norm ?? cand.decoded, extraLiterals);
     const candRedactable = applyPolicy(candSpans, KEEP_LABELS);
     if (candRedactable.length > plainInRange) {
       acceptedDecoded.push({ ...cand, spans: candSpans });
@@ -399,6 +410,126 @@ async function scrubOne(item, table, extraLiterals) {
   return { text: out, placeholders: allPlaceholders };
 }
 
+// The table, through its public method, also records each word of each name the model
+// found in the batch, for propagateNames().
+class RecordingTable extends SessionEntityTable {
+  constructor(...args) {
+    super(...args);
+    this.nameWords = new Map();
+  }
+
+  placeholderFor(label, value) {
+    const token = super.placeholderFor(label, value);
+    if (label === "GIVEN_NAME" || label === "SURNAME") {
+      for (const word of value.toLowerCase().split(/[^\p{L}']+/u)) {
+        if (word.length >= MIN_PROPAGATED_NAME && !this.nameWords.has(word)) this.nameWords.set(word, token);
+      }
+    }
+    return token;
+  }
+}
+
+// A name word shorter than this ("li", "gur" in a ROT13 line) is too likely to be part of
+// another word, or a word the model took for a name.
+const MIN_PROPAGATED_NAME = 4;
+const PLACEHOLDER_TOKEN = /^\[[A-Z_]+_\d+\]$/;
+const NAME_PLACEHOLDER = /^\[(?:GIVEN_NAME|SURNAME)_\d+\]$/;
+const TOKEN = /\[[A-Z_]+_\d+\]|[\p{L}\p{N}]+(?:[-_.'][\p{L}\p{N}]+)*/gu;
+
+// Split `lower` into names the batch found, digit runs, and separators, plus a closing
+// "'s" or file extension; null unless it holds two or more names - a full name run
+// together ("mariagonzalez", "maria_gonzalez84.txt"). One name joined to anything else is
+// how ordinary words are spelled: "c" + "ross", "todo" + "s", "home-" + "page".
+function namePieces(lower, nameWords, minNames = 2) {
+  const best = new Array(lower.length + 1).fill(null);
+  best[0] = { covered: 0, pieces: [] };
+  for (let i = 0; i < lower.length; i++) {
+    if (best[i] === null) continue;
+    const steps = [];
+    for (const [word, token] of nameWords) {
+      if (lower.startsWith(word, i)) steps.push({ end: i + word.length, token, name: word.length });
+    }
+    const digits = /^\d+/.exec(lower.slice(i));
+    if (digits) steps.push({ end: i + digits[0].length, token: null, name: 0 });
+    if (/[-_.']/.test(lower[i])) steps.push({ end: i + 1, token: null, name: 0 });
+    if (lower.slice(i) === "'s" && best[i].pieces.at(-1)?.token) steps.push({ end: i + 2, token: null, name: 0 });
+    // A file's extension closes it: "gonzalez84.txt".
+    if (/^\.[a-z0-9]{1,5}$/.test(lower.slice(i)) && i > 0) steps.push({ end: lower.length, token: null, name: 0 });
+    for (const step of steps) {
+      const covered = best[i].covered + step.name;
+      if (best[step.end] === null || covered > best[step.end].covered) {
+        best[step.end] = { covered, pieces: [...best[i].pieces, { start: i, end: step.end, token: step.token }] };
+      }
+    }
+  }
+  const done = best[lower.length];
+  if (done === null || done.pieces.filter((p) => p.token).length < minNames) return null;
+  return done.pieces;
+}
+
+// The first-name/surname pairs the model found side by side in the batch, as
+// "[GIVEN_NAME_1] [SURNAME_1]": the full names it saw, in their order.
+function foundNamePairs(texts) {
+  const pairs = new Set();
+  for (const text of texts) {
+    for (const m of text.matchAll(/(\[(?:GIVEN_NAME|SURNAME)_\d+\])(?=\s+(\[(?:GIVEN_NAME|SURNAME)_\d+\]))/g)) {
+      if (m[1] !== m[2]) pairs.add(`${m[1]} ${m[2]}`);
+    }
+  }
+  return pairs;
+}
+
+// Find the batch's names where the model did not: a full name run together
+// ("mariagonzalez"), or a name word on its own beside the other half of a full name the
+// model found (it found "Carlos Ramirez" once and missed "carlos ramirez").
+// Exempt text (URL origins, the kit's fakes, kept paths and wording) is left alone.
+function propagateNames(text, nameWords, extraLiterals, namePairs) {
+  if (nameWords.size === 0) return { text, placeholders: [] };
+  const exemptRanges = findExemptRanges(text, extraLiterals);
+  const tokens = [...text.matchAll(TOKEN)].map((m) => ({ start: m.index, end: m.index + m[0].length, text: m[0] }));
+  const splices = [];
+  tokens.forEach((t, k) => {
+    if (PLACEHOLDER_TOKEN.test(t.text) || overlapsExempt(t.start, t.end, exemptRanges)) return;
+    const lower = t.text.toLowerCase();
+    if (nameWords.has(lower)) {
+      // On its own, only as half of a full name the model found: beside the other half,
+      // as a placeholder or as written, in the same order. "will grant" is two words, unless
+      // someone in the batch is Will Grant.
+      const token = nameWords.get(lower);
+      const near = (o) => o && !/\S/.test(text.slice(Math.min(o.end, t.end), Math.max(o.start, t.start)));
+      const other = (o) =>
+        NAME_PLACEHOLDER.test(o.text)
+          ? o.text
+          : !overlapsExempt(o.start, o.end, exemptRanges) && nameWords.get(o.text.toLowerCase());
+      const before = tokens[k - 1];
+      const after = tokens[k + 1];
+      if (
+        (near(before) && other(before) && namePairs.has(`${other(before)} ${token}`)) ||
+        (near(after) && other(after) && namePairs.has(`${token} ${other(after)}`))
+      ) {
+        splices.push({ start: t.start, end: t.end, token });
+      }
+      return;
+    }
+    // One name is enough when the token is glued to a placeholder: the rest of something
+    // already found ("[EMAIL_1]_gonzalez84.txt", where the model took "maria" for an email).
+    const glued = (o, gap) => o && PLACEHOLDER_TOKEN.test(o.text) && /^[-_.]?$/.test(gap);
+    const gluedToPlaceholder =
+      glued(tokens[k - 1], text.slice(tokens[k - 1]?.end ?? t.start, t.start)) ||
+      glued(tokens[k + 1], text.slice(t.end, tokens[k + 1]?.start ?? t.end));
+    const pieces = namePieces(lower, nameWords, gluedToPlaceholder ? 1 : 2);
+    if (pieces === null) return;
+    for (const p of pieces) {
+      if (p.token) splices.push({ start: t.start + p.start, end: t.start + p.end, token: p.token });
+    }
+  });
+  let out = text;
+  for (const s of splices.sort((a, b) => b.start - a.start)) {
+    out = out.slice(0, s.start) + s.token + out.slice(s.end);
+  }
+  return { text: out, placeholders: [...new Set(splices.map((s) => s.token))] };
+}
+
 const rl = readline.createInterface({ input: process.stdin, crlfDelay: Infinity });
 
 for await (const line of rl) {
@@ -406,12 +537,21 @@ for await (const line of rl) {
   const req = JSON.parse(line);
   const items = req.items ?? (req.texts ?? []).map((t) => ({ text: t }));
   const exempt = req.exempt ?? [];
-  const table = new SessionEntityTable({}, KEEP_LABELS);
+  const table = new RecordingTable({}, KEEP_LABELS);
   const outTexts = [];
   const allPlaceholders = [];
   for (const item of items) {
     const res = await scrubOne(item, table, exempt);
     outTexts.push(res.text);
+    for (const p of res.placeholders) {
+      if (!allPlaceholders.includes(p)) allPlaceholders.push(p);
+    }
+  }
+  // Once the whole batch is read, every name it found is known.
+  const namePairs = foundNamePairs(outTexts);
+  for (let i = 0; i < outTexts.length; i++) {
+    const res = propagateNames(outTexts[i], table.nameWords, exempt, namePairs);
+    outTexts[i] = res.text;
     for (const p of res.placeholders) {
       if (!allPlaceholders.includes(p)) allPlaceholders.push(p);
     }

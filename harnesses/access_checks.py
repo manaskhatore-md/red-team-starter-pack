@@ -2103,25 +2103,27 @@ async def run_all_checks(
 
 
 def scrub_results(results: list[CheckResult], *, no_scrub: bool = False) -> list[CheckResult]:
-    """Scrub summary, what_it_tests, details, and remediation across all CheckResults in one batch."""
+    """Scrub what a check found (summary and details) across all CheckResults in one batch.
+
+    The kit's request paths and wording and the app's field names are kept
+    (scrub.access_check_exempt); names, numbers, and the rest of what the app sent back
+    are scrubbed. what_it_tests and remediation are the kit's
+    own fixed text.
+    """
     if not scrub_enabled(no_scrub) or not results:
         return results
     texts: list[str] = []
     for r in results:
-        texts.extend([r.summary, r.what_it_tests, r.remediation, *r.details])
-    it = iter(scrub_texts(texts))
+        texts.extend([r.summary, *r.details])
+    it = iter(scrub_texts(texts, access_check=True))
     out: list[CheckResult] = []
     for r in results:
         summary = next(it)
-        what_it_tests = next(it)
-        remediation = next(it)
         details = [next(it) for _ in r.details]
         out.append(
             replace(
                 r,
                 summary=summary,
-                what_it_tests=what_it_tests,
-                remediation=remediation,
                 details=details,
             )
         )
