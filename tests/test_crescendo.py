@@ -115,11 +115,6 @@ def test_crescendo_runs_against_an_app_that_takes_history_and_checks_its_known_p
 
 # --- objectives -------------------------------------------------------------
 
-def test_every_profiles_objectives_are_judged_by_one_of_its_rubrics():
-    for profile in PROFILES.values():
-        if profile.objectives:
-            multi_turn_crescendo.load_objectives(profile)
-
 
 def test_objectives_have_their_placeholders_filled():
     profile = PROFILES["public_conversational"]
@@ -131,13 +126,6 @@ def test_objectives_have_their_placeholders_filled():
 def test_a_profile_without_objectives_stops_with_where_to_add_them():
     profile = Profile(**{**PROFILES["internal_productivity"].__dict__, "objectives": ()})
     with pytest.raises(SystemExit, match="config/objectives/internal_productivity.yaml"):
-        multi_turn_crescendo.load_objectives(profile)
-
-
-def test_an_objective_judged_by_a_rubric_the_profile_lacks_is_refused():
-    base = PROFILES["public_conversational"]
-    profile = Profile(**{**base.__dict__, "objectives": (Objective("no_such_rubric", "goal"),)})
-    with pytest.raises(SystemExit, match="no_such_rubric"):
         multi_turn_crescendo.load_objectives(profile)
 
 

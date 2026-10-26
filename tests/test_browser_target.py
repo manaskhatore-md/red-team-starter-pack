@@ -34,7 +34,14 @@ def _browser_available() -> bool:
     return False
 
 
-needs_browser = pytest.mark.skipif(not _browser_available(), reason="needs Playwright and Chrome or Edge")
+@pytest.fixture(scope="session")
+def _browser():
+    """Checked once, and only when a browser test runs: the check launches a real browser."""
+    if not _browser_available():
+        pytest.skip("needs Playwright and Chrome or Edge")
+
+
+needs_browser = pytest.mark.usefixtures("_browser")
 
 
 @pytest.fixture(autouse=True)

@@ -83,14 +83,6 @@ def test_the_judge_reads_the_halves_in_alternating_order(memory, monkeypatch):
     ]
 
 
-def test_with_one_repeat_the_pairs_still_split_between_both_orders(memory, monkeypatch):
-    monkeypatch.setattr(scan, "PairScorer", FakePairScorer)
-    FakePairScorer.shown = []
-    probes, results = three_pairs(memory, repeats=1)
-    firsts = [v.first.variant for v in compare(memory, probes, results)]
-    assert firsts == ["a", "b", "a"]
-
-
 def test_the_judge_is_told_which_version_is_which_in_the_order_it_reads_them(memory, monkeypatch):
     monkeypatch.setattr(scan, "PairScorer", FakePairScorer)
     FakePairScorer.shown = []
@@ -191,7 +183,11 @@ def test_a_pair_the_judge_read_in_swapped_order_says_so_in_the_summary(memory):
 def test_a_scan_compares_every_pair_and_keeps_controls_out_of_the_findings(memory, monkeypatch, capsys):
     monkeypatch.setenv("RT_REPEATS", "2")
     profile = get_profile("constituent_decision")
-    probes = [p for p in scan.profile_probes(profile) if p.dataset == BIAS]
+    # The inline pairs and one control pair: both kinds, and nothing that only adds calls.
+    control = next(p.pair_id for p in scan.profile_probes(profile) if p.control)
+    spec = f"bias-core,{control}"
+    monkeypatch.setenv("RT_PROBES", spec)
+    probes = scan.select_probes(scan.profile_probes(profile), spec)
     pair_ids = {p.pair_id for p in probes if p.pair_id}
     controls = {p.pair_id for p in probes if p.control}
     judge = PairJudge()

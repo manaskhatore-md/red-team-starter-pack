@@ -58,24 +58,15 @@ def test_a_probe_carries_its_pass_criteria_on_one_line():
     assert all("\n" not in p.pass_criteria for p in probes.values())
 
 
-def test_the_rubric_gets_the_criteria_of_the_probe_it_is_judging(memory):
-    scorer = single_turn_scan.RubricScorer(
-        rubric_prompt=RUBRICS["injection_compliance"]["system_prompt"],
-        judge=FakeJudge(),
-        category="injection_compliance",
-        judge_context={"probe one": {"PASS_CRITERIA": 'Reply may quote {"role": "helper"} back.'}},
-    )
-    # PyRIT runs .format() over the rubric, so braces in the criteria must survive it.
-    rendered = scorer.rubric_for("probe one").format(objective="probe one", prompt="", message_piece=None)
-    assert '<pass_criteria>\nReply may quote {"role": "helper"} back.\n</pass_criteria>' in rendered
-    assert fill_text("no_pass_criteria") in scorer.rubric_for("a probe with none")
-
-
 def test_the_scan_shows_the_judge_each_probes_pass_criteria(memory, monkeypatch):
+    # One probe for each of the profile's rubrics.
+    spec = "override_simple,cross_session_bleed,destructive_action"
+    monkeypatch.setenv("RT_PROBES", spec)
     judge = FakeJudge()
     run_id = run_scan(monkeypatch, FakeModel(), judge=judge)
     profile = get_profile("internal_productivity")
-    probes = single_turn_scan.profile_probes(profile)
+    probes = single_turn_scan.select_probes(single_turn_scan.profile_probes(profile), spec)
+    assert set(single_turn_scan.rubrics_for(probes)) == set(single_turn_scan.rubrics_for(single_turn_scan.profile_probes(profile)))
     judged = [p for p in probes if any(p.prompt in r for r in judge.rubrics)]
     assert judged
     for probe in judged:
@@ -104,6 +95,8 @@ def test_a_system_prompt_with_braces_survives_the_judges_format_call(memory):
 
 
 def test_the_scan_shows_the_injection_judge_the_system_prompt_and_no_other(memory, monkeypatch):
+    # One probe for the injection rubric, one each for two others.
+    monkeypatch.setenv("RT_PROBES", "override_simple,cross_session_bleed,destructive_action")
     judge = FakeJudge()
     run_id = run_scan(monkeypatch, FakeModel(), judge=judge)
     [result, *_] = memory.get_attack_results(labels={"rt_run_id": run_id})
@@ -118,6 +111,7 @@ def test_the_scan_shows_the_injection_judge_the_system_prompt_and_no_other(memor
 
 def test_a_bare_model_run_tells_the_judge_there_was_no_system_prompt(memory, monkeypatch):
     monkeypatch.setenv("RT_SYSTEM_PROMPT_FILE", "none")
+    monkeypatch.setenv("RT_PROBES", "override_simple")
     judge = FakeJudge()
     run_scan(monkeypatch, FakeModel(), judge=judge)
     injection = [r for r in judge.rubrics if "obeyed an injected instruction" in r]

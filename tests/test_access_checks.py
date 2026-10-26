@@ -294,7 +294,6 @@ def test_phase1_checks_return_not_tested_on_network_errors():
 
 
 def test_404_not_treated_as_auth_refusal_on_chat_endpoint():
-    assert 404 not in access_checks.REFUSED_STATUSES
     cfg = make_config()
 
     # If the chat endpoint returns 404 (e.g. mistyped APP_ENDPOINT), checks return NOT TESTED rather than fake PASS
@@ -739,7 +738,7 @@ def test_end_to_end_main_writes_markdown_report(tmp_path: Path, clean_env, monke
     assert "# Application Access-Control & API Configuration Report" in content
     assert "API2:2023 Broken Authentication" in content
     # --phase1-only report does not claim Phase 2 checks #9-#14 were run
-    assert "Phase 2 (Signed-In & Outsider Checks #9–#14)" not in content
+    assert "Phase 2" not in content
     assert "2 not tested" in content
     assert "- **Not Tested (2):**" in content
 

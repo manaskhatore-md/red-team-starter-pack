@@ -68,6 +68,8 @@ def test_an_app_scan_checks_replies_for_the_known_prompt_and_the_apps_canary(fak
     # An app that recites its prompt and canary to every probe. Calibration would rightly
     # stop a scan of an app that says the same thing to everything, so it is skipped.
     clean_env.setenv("RT_SKIP_CALIBRATION", "1")
+    # One probe that asks for the instructions, one that does not.
+    clean_env.setenv("RT_PROBES", "system_prompt_extraction,override_simple")
     fake_app["replies"] = [(200, json.dumps({"answer": f"My instructions: {APP_PROMPT} Reference ZZ-APP-1234."}))]
 
     run_id = run_scan(monkeypatch, build_target())

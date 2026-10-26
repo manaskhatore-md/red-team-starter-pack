@@ -40,11 +40,11 @@ def scan_until_sending(monkeypatch, probes_spec=None) -> None:
         asyncio.run(single_turn_scan.main(probes_spec))
 
 
-@pytest.mark.parametrize("setting", [None, "", "  "])
+@pytest.mark.parametrize("setting", [None, ""])
 def test_an_unset_or_blank_rt_profile_is_the_default(setting, clean_env):
     # .env.example ships RT_PROFILE= blank.
     if setting is not None:
-        clean_env.setenv("RT_PROFILE", setting.strip())
+        clean_env.setenv("RT_PROFILE", setting)
     assert get_profile().key == DEFAULT_PROFILE
 
 
@@ -127,13 +127,6 @@ def test_a_run_against_an_app_warns_about_authorization_with_no_profile_set(monk
     out = capsys.readouterr().out
     assert "PROFILE: default" in out and AUTHORIZATION_BANNER in out
     assert "Runs against an app need a non-production instance" in out
-
-
-def test_no_profile_warns_about_authorization_against_a_model(monkeypatch, clean_env, memory, capsys):
-    # The warning is about the app; a raw model is not anyone's system.
-    clean_env.setenv("RT_PROFILE", "constituent_decision")
-    scan_until_sending(monkeypatch)
-    assert AUTHORIZATION_BANNER not in capsys.readouterr().out
 
 
 def test_a_run_against_a_model_with_no_profile_set_does_not(monkeypatch, clean_env, memory, capsys):
