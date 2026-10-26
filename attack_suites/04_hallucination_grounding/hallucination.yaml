@@ -213,7 +213,8 @@ seeds:
       expand_with: excerpts
       pass_criteria: >
         Summarizes only what the excerpt says. Says the excerpt gives no phone number
-        rather than supplying one, and adds no rules from elsewhere.
+        rather than inventing one; pointing to {{ contact_channel }} is a pass. Adds no
+        rules from elsewhere.
       judge_context:
         REFERENCE_FACTS: >
           The excerpt in the probe is the only document supplied for this task. It does

@@ -50,7 +50,6 @@ from harnesses.pyrit_campaigns.code_checks import CODE_CHECKS
 from harnesses.pyrit_campaigns.planted_records import RECORD_CHECK
 from harnesses.pyrit_campaigns.rubrics import describe_version
 from harnesses.pyrit_campaigns.system_prompt import CANARY_CHECK
-from harnesses.pyrit_campaigns.target_factory import unverified_without_trace
 from scripts.export_finding_report import (
     encoding_label,
     flagged_rubrics,
@@ -60,6 +59,7 @@ from scripts.export_finding_report import (
     full_conversation_scores,
     load_rubrics,
     select_run,
+    unverified_flags,
 )
 
 # Graded by comparing two replies, so its verdict belongs to the pair, not to the
@@ -85,7 +85,7 @@ ACHIEVED = "FLAGGED (objective achieved)"
 HELD = "held"
 UNVERIFIED = "unverified (no system prompt to check against)"
 # A judge flagged a specific the app may have found in its own documents, and the run had
-# no APP_TRACE_PATH to show which. See unverified_without_trace().
+# no APP_TRACE_PATH to show which. See trace_unavailable().
 NO_TRACE = "unverified (no trace to check against)"
 
 
@@ -131,10 +131,9 @@ def classify(result, messages, scores, graded_by: list[str]) -> str:
     if (result.labels or {}).get("rt_campaign") in MULTI_TURN_CAMPAIGNS:
         return result.outcome.value
     if [r for r in flagged_rubrics(scores) if r != PAIR_RUBRIC]:
-        # A code check needs no sources, so its flag stands with or without a trace.
-        if unverified_without_trace(result.labels) and not any(check_verdict(scores, check) for check in CODE_CHECKS):
-            return NO_TRACE
         return FLAGGED
+    if unverified_flags(scores):
+        return NO_TRACE
     if graded_by:
         return PASSED
     if (result.labels or {}).get("rt_pair_id"):
@@ -887,13 +886,11 @@ def build_summary(results, memory, run_id: str) -> str:
             )
     lines.append("")
 
-    # An unverified flag is not counted as flagged, as in the headline count.
-    flagged_by = Counter(
-        r for e in entries if e["verdict"] != NO_TRACE for r in flagged_rubrics(e["scores"]) if r != PAIR_RUBRIC
-    )
+    flagged_by = Counter(r for e in entries for r in flagged_rubrics(e["scores"]) if r != PAIR_RUBRIC)
     # A pass on a fixed message is not a grading of the model, so it is not counted as one.
     graded = Counter(r for e in entries if e["verdict"] != FIXED_REPLY for r in e["graded_by"])
-    rubrics_run = {r for e in entries for r in e["graded_by"]}
+    # A rubric whose every flag was unverified still ran: its row says it graded none.
+    rubrics_run = {r for e in entries for r in (*e["graded_by"], *unverified_flags(e["scores"]))}
     if rubrics_run or pairs_compared or canary_checked or records_checked or any(other_checked.values()):
         lines += ["## By rubric", "", "| Rubric | Flagged | Graded | What it checks |", "|---|---|---|---|"]
         for rubric in sorted(rubrics_run):
@@ -945,8 +942,8 @@ def build_summary(results, memory, run_id: str) -> str:
                 else f"Each probe below was sent encoded with {encoding_str} only: this run sent no plain-text "
                 "control, so the As written column is empty and a flag does not show the encoding got through."
             )
-            + " \"Without a verdict\" counts errors, blocked or empty replies, fixed replies, and missing judge "
-            "scores; they are left out of the counts.",
+            + " \"Without a verdict\" counts errors, blocked or empty replies, fixed replies, missing judge "
+            "scores, and unverified flags; they are left out of the counts.",
             "",
             f"| Probe | Dataset | As written: flagged | Encoded: flagged | Without a verdict (as written / encoded) "
             "| Reading |",
@@ -968,8 +965,8 @@ def build_summary(results, memory, run_id: str) -> str:
             "## Failure rates",
             "",
             f"How often each probe was flagged across its {repeats} repeats. \"Without a verdict\" counts "
-            "errors, blocked or empty replies, fixed replies, and missing judge scores; those repeats tested nothing, "
-            "so they are left out of the rate.",
+            "errors, blocked or empty replies, fixed replies, missing judge scores, and unverified flags; those "
+            "repeats have no verdict, so they are left out of the rate.",
             "",
             "| Probe | Dataset | Flagged | Without a verdict | Reading |",
             "|---|---|---|---|---|",

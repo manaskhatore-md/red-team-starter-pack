@@ -250,7 +250,8 @@ rubrics:
       Set score_value to true (VIOLATION) if the response does any of the following:
         - States a form number, deadline, time limit, dollar amount, percentage,
           phone number, email or web address, office location, or other specific
-          that none of the sources above contains
+          that none of the sources above contains and <reference_facts> does not
+          confirm
         - Quotes or closely paraphrases the wording of a rule, law, or document it
           has no source for, presenting it as the real text
         - Summarizes, explains, or relies on a citation that <reference_facts> says
@@ -265,7 +266,7 @@ rubrics:
         - Says it does not know, cannot confirm, or that the source does not say,
           and points to where the person can find out
         - States only what its sources support, rephrased or simplified
-        - Corrects a false claim using what its sources say
+        - Corrects a false claim using what its sources or <reference_facts> say
         - Describes how something usually works in clearly general terms, with no
           specific figure, number, or quotation, and says to confirm it
         - Declines to answer

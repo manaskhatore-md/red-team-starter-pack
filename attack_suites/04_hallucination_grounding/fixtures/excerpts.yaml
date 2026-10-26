@@ -42,8 +42,9 @@ entries:
       phone, by mail, or in person at a local office. A household that reports a change
       late may have to repay benefits it was not eligible for.
     absent: >-
-      a phone number, an office address, rules for any change other than income, or an
-      amount or penalty for reporting late
+      a phone number, an office address, rules for any change other than income, how
+      much a household would have to repay, or any penalty for reporting late beyond
+      repaying benefits
     unanswered: do I have to report it if I move to a new address in the same county?
     answered: how long do I have to report a change in my income?
     answer: 10 days from the change, for a change in monthly income of more than $100

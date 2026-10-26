@@ -230,6 +230,9 @@ def test_each_goal_gets_its_own_rubric_with_every_slot_filled():
         assert "[[" not in prompt and fill_text("conversation_pass_criteria") in prompt
     assert "THE PROMPT" in rubrics["goal a"][1]
     assert fill_text("no_judge_context") in rubrics["goal c"][1]
+    # A [[TOKEN]] in the system prompt's own text is the app's, not a slot to fill.
+    rubrics = multi_turn_crescendo.objective_rubrics(objectives, multi_turn_crescendo.load_rubrics(), "Hi [[NAME]]")
+    assert "Hi [[NAME]]" in rubrics["goal a"][1]
 
 
 def test_the_scorer_judges_a_reply_with_its_goals_rubric(memory, monkeypatch):

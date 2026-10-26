@@ -65,7 +65,13 @@ from harnesses.pyrit_campaigns.calibration import CALIBRATION_LABEL
 from harnesses.pyrit_campaigns.code_checks import CODE_CHECKS
 from harnesses.pyrit_campaigns.profiles import PAIR_RUBRICS, dataset_path
 from harnesses.pyrit_campaigns.rubrics import describe_version, require_valid, version_labels
-from harnesses.pyrit_campaigns.target_factory import build_scoring_target, check_models, close_target, model_name
+from harnesses.pyrit_campaigns.target_factory import (
+    build_scoring_target,
+    check_models,
+    close_target,
+    model_name,
+    unverified_rubric,
+)
 from scripts.export_finding_report import select_run
 from scripts.run_summary import DEFAULT_OUT, cell, fence
 
@@ -125,6 +131,8 @@ def judge_verdicts(scores) -> dict[str, tuple[bool, str]]:
     verdicts = {}
     for score in scores:
         for category in score.score_category or []:
+            # An unverified flag is still the judge's verdict on its rubric: the judge is what is re-run.
+            category = unverified_rubric(category) or category
             if category not in CODE_CHECKS and category != PAIR_RUBRIC:
                 verdicts[category] = (score.get_value() is True, score.score_rationale or "")
     return verdicts

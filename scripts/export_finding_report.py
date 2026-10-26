@@ -59,7 +59,7 @@ from harnesses.pyrit_campaigns.profiles import PROFILES, REPO_ROOT, dataset_path
 from harnesses.pyrit_campaigns.code_checks import CODE_CHECKS
 from harnesses.pyrit_campaigns.rubrics import SEVERITIES, describe_version
 from harnesses.pyrit_campaigns.rubrics import load_rubrics as load_judge_rubrics
-from harnesses.pyrit_campaigns.target_factory import TRACE_METADATA_KEY, unverified_without_trace
+from harnesses.pyrit_campaigns.target_factory import TRACE_METADATA_KEY, unverified_rubric
 
 TEMPLATE = Path(__file__).resolve().parents[1] / "templates" / "finding_report_template.md"
 
@@ -158,6 +158,15 @@ def flagged_rubrics(scores) -> list[str]:
     )
 
 
+def unverified_flags(scores) -> list[str]:
+    """The rubrics whose judge flagged this conversation, but could not check the flag (see
+    trace_unavailable()). Not counted by flagged_rubrics(): it is no verdict."""
+    return sorted(
+        {unverified_rubric(c) for score in scores if score.get_value() is True for c in (score.score_category or [])}
+        - {""}
+    )
+
+
 def is_control(result) -> bool:
     """Half of a control pair: the same text sent twice, so a difference between the halves is noise."""
     return bool((result.labels or {}).get("rt_control"))
@@ -175,11 +184,23 @@ def is_finding(result, memory) -> bool:
     return bool(flagged_rubrics(full_conversation_scores(memory, result)))
 
 
+def unverified_only(result, memory) -> bool:
+    """A run whose only flag the judge could not check: no verdict, so not counted as a pass either."""
+    scores = full_conversation_scores(memory, result)
+    return not is_finding(result, memory) and bool(unverified_flags(scores))
+
+
 def reproducibility(result, all_results, memory) -> str:
     """How often this test was flagged, across every run of it in the database."""
-    runs = [r for r in all_results if test_key(r) == test_key(result)]
+    same = [r for r in all_results if test_key(r) == test_key(result)]
+    runs = [r for r in same if not unverified_only(r, memory)]
     hits = sum(is_finding(r, memory) for r in runs)
-    text = f"Flagged in {hits} of {len(runs)} recorded run(s) of this test, counted from the PyRIT database."
+    if runs:
+        text = f"Flagged in {hits} of {len(runs)} recorded run(s) of this test, counted from the PyRIT database."
+        if len(same) > len(runs):
+            text += f" {len(same) - len(runs)} more were flagged unverified, and are not counted."
+    else:
+        text = f"All {len(same)} recorded run(s) of this test were flagged unverified, so none has a verdict."
     # Split the count by model, so runs against different models are not blended.
     by_model: dict[str, list] = {}
     for r in runs:
@@ -218,6 +239,14 @@ def encoding_control(result, all_results, memory) -> str:
         return (
             f" It has never been sent to {target} as written, so nothing here shows the encoding is what got "
             "it through. Re-run it with the current scan, which sends both."
+        )
+    # A run flagged unverified has no verdict: counted neither way.
+    plain = [r for r in plain if not unverified_only(r, memory)]
+    encoded = [r for r in encoded if not unverified_only(r, memory)]
+    if not plain or not encoded:
+        return (
+            f" Every run of it {'as written' if not plain else f'encoded with `{encoding}`'} was flagged "
+            "unverified, so there is no verdict to compare the other with."
         )
     plain_hits = sum(is_finding(r, memory) for r in plain)
     encoded_hits = sum(is_finding(r, memory) for r in encoded)
@@ -403,15 +432,17 @@ def build_report(result, memory, template: str, all_results) -> str:
     rubrics = load_rubrics()
 
     flagged = flagged_rubrics(scores)
-    # A code check needs no sources, so its flag stands, as in the scan and the run summary.
-    if flagged and unverified_without_trace(labels) and not set(flagged) & set(CODE_CHECKS):
-        verdict = (
-            f"UNVERIFIED - flagged by rubric judge(s): {', '.join(flagged)}, but the app returned no trace, so "
-            "the judge could not see whether it found this specific in a real document. Check it against the "
-            "program's documents before reporting it. "
-        )
-    elif flagged:
+    unverified = unverified_flags(scores)
+    no_trace = (
+        "but the app returned no trace, so the judge could not see whether it found this specific in a real "
+        "document. Check it against the program's documents before reporting it. "
+    )
+    if flagged:
         verdict = f"Flagged by rubric judge(s): {', '.join(flagged)}. "
+        if unverified:
+            verdict += f"Also flagged by {', '.join(unverified)}, {no_trace}"
+    elif unverified:
+        verdict = f"UNVERIFIED - flagged by rubric judge(s): {', '.join(unverified)}, {no_trace}"
     elif result.outcome.value == "success":
         verdict = f"Objective achieved in {result.executed_turns} turn(s). "
     else:
@@ -512,17 +543,16 @@ def flagged_by_rubric(result, memory, rubrics: set[str]) -> bool:
     """True if one of the given rubric judges scored this conversation as a violation.
 
     single_turn_scan.py records policy violations as auxiliary scores, not as the
-    attack outcome, so --outcome does not find them. This is the same test the scan
-    uses to count a finding: a true score, in the rubric's score_category, on any
-    turn of the conversation, including turns PyRIT set aside (see full_conversation_ids).
-    A control pair is never a finding (see is_control).
+    attack outcome, so --outcome does not find them. A true score, in the rubric's
+    score_category, on any turn of the conversation, including turns PyRIT set aside
+    (see full_conversation_ids). A control pair is never a finding (see is_control).
+    An unverified flag (see unverified_flags) is selected too: its report says UNVERIFIED,
+    so it can be checked against the program's documents.
     """
     if is_control(result):
         return False
-    for score in full_conversation_scores(memory, result):
-        if score.get_value() is True and rubrics & set(score.score_category or []):
-            return True
-    return False
+    scores = full_conversation_scores(memory, result)
+    return bool(rubrics & {*flagged_rubrics(scores), *unverified_flags(scores)})
 
 
 def select_run(results, run_id: str | None, latest: bool) -> tuple[list, str | None]:

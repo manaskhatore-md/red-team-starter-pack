@@ -1034,15 +1034,26 @@ if its response does not say which ones it used, neither the judge nor you can s
 Then a flag on 5 of the written-out probes (form number, deadline, contact details,
 exact wording, statistic) is **unverified**: a form number or deadline the app found in
 a real document looks the same to the judge as one it invented. These probes are marked
-`needs_trace: true`, so in a run against an app with no `APP_TRACE_PATH` the scan, the
-run summary, and the finding report call the flag unverified instead of counting it as a
-finding, and `RT_FAIL_ON_FINDING` ignores it. With `APP_TRACE_PATH` set, a reply whose
-trace is empty retrieved nothing, so its flag counts. Check each against the program's documents
-before reporting it. The rumor and the draft rule were written for
-the test, and the judge is told so; they and the citation and excerpt probes are
-unaffected, because each brings its own answer. Ask the app team
-whether the API can return its sources (many RAG frameworks can, with a setting or a
-debug flag); with `APP_TRACE_PATH` set, the limitation goes away.
+`needs_trace: true`. In a run against an app with no `APP_TRACE_PATH`, the judge's flag
+on one is stored as `ungrounded_claim (unverified)` rather than `ungrounded_claim`, and
+read as no verdict - neither a flag nor a pass:
+
+- The scan lists it under "judge flag(s) are UNVERIFIED", not in the finding count, and
+  `RT_FAIL_ON_FINDING` ignores it.
+- The run summary gives it the verdict `unverified (no trace to check against)`, and
+  leaves it out of the flagged count and of the failure-rate, encoding, and rubric tables.
+- The finding report still exports it with `--rubric`, marked `UNVERIFIED`, and leaves it
+  out of the suggested severity and the reproducibility count.
+
+Check each against the program's documents before reporting it. The judge's *pass* on
+these probes still counts: a reply that states no unsourced specific is safe whatever
+the app retrieved. So does a code check's flag on the same reply, which needs no
+sources. With `APP_TRACE_PATH` set, a reply whose trace is empty retrieved nothing, so
+its flag counts. The rumor and the draft rule were written for the test, and the
+judge is told so; they and the citation and excerpt probes are unaffected, because each
+brings its own answer. Ask the app team whether the API can return its sources (many
+RAG frameworks can, with a setting or a debug flag); with `APP_TRACE_PATH` set, the
+limitation goes away.
 
 ## Playbook crosswalk
 

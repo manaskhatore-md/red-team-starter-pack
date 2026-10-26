@@ -410,7 +410,7 @@ def _holds_whole_value(value, slot: str) -> bool:
 # JSON traces into converted_value (where {HISTORY}, the attacker, and regex checks read).
 TRACE_METADATA_KEY = "rt_trace"
 # Set on a probe's results when its judge needs the app's sources to tell a real
-# specific from an invented one (needs_trace in the dataset). See unverified_without_trace().
+# specific from an invented one (needs_trace in the dataset). See trace_unavailable().
 NEEDS_TRACE_LABEL = "rt_needs_trace"
 MAX_TOOL_RESULT_CHARS = 4000
 MAX_TRACE_CHARS = 40000
@@ -430,21 +430,33 @@ _STRIP_TRACE_KEYS = frozenset({
 })
 
 
-def unverified_without_trace(labels: dict | None) -> bool:
-    """True when a judge's flag on this result cannot be checked: the probe needs the app's
-    sources (rt_needs_trace), and the run was against an app with no APP_TRACE_PATH.
+def trace_unavailable(provider: str, trace_path: str) -> bool:
+    """True when a judge cannot check a specific the reply gives: the run is against an
+    app with no APP_TRACE_PATH.
 
     Then the judge cannot tell a form number the app found in a real document from an
     invented one, so it flags both. Decided for the run, not the reply: with
     APP_TRACE_PATH set, a reply with an empty trace retrieved nothing, so its specifics
     had no source. A bare model has no documents, so the judge sees every source it had.
+    Only probes marked needs_trace are affected; see RubricScorer.
     """
-    labels = labels or {}
-    return (
-        labels.get(NEEDS_TRACE_LABEL) == "true"
-        and labels.get("rt_provider") == "app"
-        and not labels.get("rt_trace_path")
-    )
+    return provider == "app" and not trace_path
+
+
+# A judge's flag that trace_unavailable() says cannot be checked is stored under its
+# rubric's name with this added, so it is not a rubric's flag: every report that counts
+# rubrics' flags leaves it out unasked, as no verdict. Only the places that list these
+# flags for someone to check by hand look for it, with unverified_rubric().
+UNVERIFIED_SUFFIX = " (unverified)"
+
+
+def unverified_category(rubric: str) -> str:
+    return rubric + UNVERIFIED_SUFFIX
+
+
+def unverified_rubric(category: str) -> str:
+    """The rubric an unverified flag's category came from, or "" for any other category."""
+    return category.removesuffix(UNVERIFIED_SUFFIX) if category.endswith(UNVERIFIED_SUFFIX) else ""
 
 
 def _strip_static_trace_fields(value):

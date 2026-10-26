@@ -99,7 +99,6 @@ from harnesses.pyrit_campaigns.single_turn_scan import (
     FAIL_ON_FINDING,
     build_converter_config,
     check_placeholders,
-    fill_slots,
     framed_response,
     get_converters_spec,
     get_repeats,
@@ -314,7 +313,7 @@ def objective_rubrics(objectives: list[Objective], rubrics: dict, system_prompt:
     """Each objective's goal -> its rubric's name and judge prompt, with every slot filled."""
     # A probe-only slot (e.g. ungrounded_claim's [[REFERENCE_FACTS]]) tells the judge it has nothing.
     slots = {"PASS_CRITERIA": fill_text("conversation_pass_criteria")}
-    return {o.goal: (o.rubric, fill_slots(rubric_prompt(rubrics[o.rubric], system_prompt), slots)) for o in objectives}
+    return {o.goal: (o.rubric, rubric_prompt(rubrics[o.rubric], system_prompt, slots)) for o in objectives}
 
 
 def expand_repeats(

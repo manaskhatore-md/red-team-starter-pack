@@ -152,7 +152,7 @@ from harnesses.pyrit_campaigns.profiles import (
     get_profile,
     placeholders,
 )
-from harnesses.pyrit_campaigns.code_checks import CODE_CHECKS, KnownPromptLeakScorer, code_scorers, fill_pattern_check
+from harnesses.pyrit_campaigns.code_checks import KnownPromptLeakScorer, code_scorers, fill_pattern_check
 from harnesses.pyrit_campaigns.planted_records import PlantedRecordScorer, records_for, records_section
 from harnesses.pyrit_campaigns.rubrics import (
     KIT_SLOTS,
@@ -182,7 +182,9 @@ from harnesses.pyrit_campaigns.target_factory import (
     close_target,
     model_name,
     resolve_provider,
-    unverified_without_trace,
+    trace_unavailable,
+    unverified_category,
+    unverified_rubric,
 )
 
 # TODO: raise once you know your provider's rate limit; lower it if you are being
@@ -227,7 +229,12 @@ class ProgressAttack(PromptSendingAttack):
                 ", ".join(s.score_category) if isinstance(s.score_category, list) else str(s.score_category)
                 for s in scores if s.get_value() is True
             })
-            status = f"FLAGGED {'; '.join(flagged)}" if flagged else "ok"
+            unverified = [unverified_rubric(r) for r in flagged if unverified_rubric(r)]
+            standing = [r for r in flagged if not unverified_rubric(r)]
+            status = "; ".join(
+                ([f"FLAGGED {'; '.join(standing)}"] if standing else [])
+                + ([f"unverified (no trace) {'; '.join(unverified)}"] if unverified else [])
+            ) or "ok"
         self._report(context, started, status)
         return result
 
@@ -313,7 +320,7 @@ class Probe:
     asks_for_instructions: bool = False
     # The judge needs the app's sources to tell a real specific from an invented one, so a
     # flag against an app with no APP_TRACE_PATH is unverified, not a finding. See
-    # unverified_without_trace().
+    # trace_unavailable() and RubricScorer.
     needs_trace: bool = False
     # Facts the judge is shown about this probe, from its metadata's judge_context:
     # (SLOT, text) pairs, each filling [[SLOT]] in the rubrics that grade it.
@@ -812,13 +819,23 @@ class RubricScorer(MessageTrueFalseScorer):
 
     _DEFAULT_VALIDATOR: ScorerPromptValidator = ScorerPromptValidator(supported_data_types=["text"])
 
-    def __init__(self, *, rubric_prompt: str, judge, category: str, judge_context: dict[str, dict[str, str]]) -> None:
+    def __init__(
+        self,
+        *,
+        rubric_prompt: str,
+        judge,
+        category: str,
+        judge_context: dict[str, dict[str, str]],
+        unverifiable: frozenset[str] = frozenset(),
+    ) -> None:
         self._rubric_prompt = rubric_prompt
         self._judge = judge
         self._category = category
         # Probe text -> its slots, as Probe.judge_slots() gives them. The objective
         # PyRIT scores against is the probe text.
         self._judge_context = judge_context
+        # The probe texts whose flag the judge cannot check (see trace_unavailable()).
+        self._unverifiable = unverifiable
         super().__init__(validator=self._DEFAULT_VALIDATOR)
 
     def _build_identifier(self) -> ComponentIdentifier:
@@ -844,22 +861,30 @@ class RubricScorer(MessageTrueFalseScorer):
             category=self._category,
             **kwargs,
         )
-        return await scorer._score_piece_async(message_piece, objective=objective)
+        scores = await scorer._score_piece_async(message_piece, objective=objective)
+        if objective in self._unverifiable:
+            # Stored as no rubric's flag, so no count of findings takes it for one.
+            for score in scores:
+                if score.get_value() is True:
+                    score.score_category = [unverified_category(c) for c in score.score_category or []]
+        return scores
 
 
 def build_rubric_scorers(
-    rubric_keys, judge, probes: list[Probe] = (), system_prompt: str | None = None
+    rubric_keys, judge, probes: list[Probe] = (), system_prompt: str | None = None, no_trace: bool = False
 ) -> dict[str, RubricScorer]:
     """Turn the named rubrics into scorers, keyed by rubric name.
 
     A rubric with a [[SYSTEM_PROMPT]] slot is shown the system prompt the model was
-    sent, so its judge can tell following instructions from breaking them.
+    sent, so its judge can tell following instructions from breaking them. With
+    no_trace (trace_unavailable()), a flag on a needs_trace probe is stored as unverified.
 
     Leaves out the pair rubrics: they compare two responses rather than grade one,
     and compare_pairs() runs them.
     """
     rubrics = load_rubrics()
     judge_context = {probe.prompt: probe.judge_slots() for probe in probes}
+    unverifiable = frozenset(probe.prompt for probe in probes if probe.needs_trace and no_trace)
 
     scorers = {}
     for key in rubric_keys:
@@ -872,16 +897,22 @@ def build_rubric_scorers(
             judge=judge,
             category=key,
             judge_context=judge_context,
+            unverifiable=unverifiable,
         )
     return scorers
 
 
-def rubric_prompt(rubric: dict, system_prompt: str | None) -> str:
+def rubric_prompt(rubric: dict, system_prompt: str | None, slots: dict[str, str] | None = None) -> str:
     """A rubric's judge prompt as PyRIT's format string, with the system prompt the model was
-    sent filled in, where it has the slot."""
-    return rubric_format_string(rubric["system_prompt"]).replace(
-        "[[SYSTEM_PROMPT]]", _escape_braces(system_prompt or fill_text("no_system_prompt"))
-    )
+    sent filled in, where it has the slot.
+
+    With `slots`, they are filled first (see fill_slots), so a [[TOKEN]] in the system
+    prompt's own text is left as it is.
+    """
+    text = rubric_format_string(rubric["system_prompt"])
+    if slots is not None:
+        text = fill_slots(text, slots)
+    return text.replace("[[SYSTEM_PROMPT]]", _escape_braces(system_prompt or fill_text("no_system_prompt")))
 
 
 def group_by_rubrics(probes: list[Probe], rubric_keys, compare: bool) -> dict[tuple[str, ...], list[Probe]]:
@@ -1333,7 +1364,8 @@ async def main(
         print("\nSystem prompt: none. The model gets each probe with no instructions.")
     judge = build_scoring_target()
     judged_prompt = system_prompt.text if system_prompt else (app_prompt.text if app_prompt else "") or None
-    scorers = build_rubric_scorers(rubrics, judge, probes, judged_prompt)
+    no_trace = trace_unavailable(resolve_provider("target"), os.getenv("APP_TRACE_PATH", "").strip())
+    scorers = build_rubric_scorers(rubrics, judge, probes, judged_prompt, no_trace)
 
     compare = "disparate_treatment" in rubrics and any(p.pair_id for p in probes)
     groups = group_by_rubrics(probes, scorers, compare)
@@ -1495,22 +1527,22 @@ async def main(
             errors.append(f"{probe[:70]!r} -> {error}")
             continue
 
-        flagged = False
-        no_trace = unverified_without_trace(labels)
+        flagged = unchecked = False
         for score in memory.get_prompt_scores(conversation_id=result.conversation_id):
             # score_category is a list - a scorer can carry several. Flatten it so it
             # can be used as a grouping key.
             categories = score.score_category or []
             rubric = ", ".join(categories) if isinstance(categories, list) else str(categories)
-            if score.get_value() is True and no_trace and rubric not in CODE_CHECKS:
-                # A code check needs no sources, so only a judge's flag is unverified.
-                unverified.append((rubric, probe, score.score_rationale or ""))
+            if score.get_value() is True and unverified_rubric(rubric):
+                unverified.append((unverified_rubric(rubric), probe, score.score_rationale or ""))
+                unchecked = True
             elif score.get_value() is True:
                 findings.append((rubric, probe, score.score_rationale or ""))
                 by_rubric[rubric] += 1
                 flagged = True
         tally = versions.get((labels.get("rt_dataset"), labels.get("rt_probe")), {}).get(labels.get("rt_encoding", ""))
-        if tally:
+        # An unverified flag is no verdict, as in the run summary: not counted as a pass.
+        if tally and (flagged or not unchecked):
             tally[0] += flagged
             tally[1] += 1
 
