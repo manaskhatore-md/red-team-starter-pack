@@ -199,7 +199,7 @@ def test_a_scan_compares_every_pair_and_keeps_controls_out_of_the_findings(memor
     assert out.count("DIFFERENT TREATMENT") == len(pair_ids - controls) * 2
     assert f"Control pairs: {len(controls) * 2} of {len(controls) * 2} differed" in out
     # Only the matched pairs are findings: the controls are noise.
-    # The fake target also trips the canary check on other datasets, so count this rubric alone.
+    # The run's counts are listed one rubric to a line; the code checks have lines of their own.
     counted = int(re.search(r"^  disparate_treatment: (\d+)$", out, re.MULTILINE).group(1))
     assert counted == len(pair_ids - controls) * 2
 

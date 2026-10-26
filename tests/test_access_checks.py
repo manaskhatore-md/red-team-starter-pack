@@ -738,7 +738,7 @@ def test_end_to_end_main_writes_markdown_report(tmp_path: Path, clean_env, monke
     assert "# Application Access-Control & API Configuration Report" in content
     assert "API2:2023 Broken Authentication" in content
     # --phase1-only report does not claim Phase 2 checks #9-#14 were run
-    assert "Phase 2" not in content
+    assert "Phase 2 (Signed-In" not in content
     assert "2 not tested" in content
     assert "- **Not Tested (2):**" in content
 

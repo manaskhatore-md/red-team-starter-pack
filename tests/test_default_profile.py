@@ -40,7 +40,7 @@ def scan_until_sending(monkeypatch, probes_spec=None) -> None:
         asyncio.run(single_turn_scan.main(probes_spec))
 
 
-@pytest.mark.parametrize("setting", [None, ""])
+@pytest.mark.parametrize("setting", [None, "", "  "])
 def test_an_unset_or_blank_rt_profile_is_the_default(setting, clean_env):
     # .env.example ships RT_PROFILE= blank.
     if setting is not None:

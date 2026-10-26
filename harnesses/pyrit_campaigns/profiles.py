@@ -291,7 +291,7 @@ def get_profile(name: str | None = None) -> Profile:
     RT_OBJECTIVES_FILE replaces the profile's objectives with the ones in that file, so
     a system's own objectives can live outside this repo.
     """
-    key = (name or os.getenv("RT_PROFILE") or DEFAULT_PROFILE).lower()
+    key = (name or os.getenv("RT_PROFILE", "").strip() or DEFAULT_PROFILE).lower()
     if key not in PROFILES:
         raise SystemExit(
             f"Unknown RT_PROFILE {key!r}. Options: {', '.join(PROFILES)}\n"

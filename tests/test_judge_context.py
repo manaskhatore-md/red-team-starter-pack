@@ -59,8 +59,9 @@ def test_a_probe_carries_its_pass_criteria_on_one_line():
 
 
 def test_the_scan_shows_the_judge_each_probes_pass_criteria(memory, monkeypatch):
-    # One probe for each of the profile's rubrics.
-    spec = "override_simple,cross_session_bleed,destructive_action"
+    # One probe for each of the profile's rubrics, and a second, with other criteria, for
+    # one of them: each probe must get its own, not its rubric's first.
+    spec = "override_simple,override_false_authority,cross_session_bleed,destructive_action"
     monkeypatch.setenv("RT_PROBES", spec)
     judge = FakeJudge()
     run_id = run_scan(monkeypatch, FakeModel(), judge=judge)
