@@ -59,6 +59,7 @@ from scripts.export_finding_report import (
     full_conversation_scores,
     load_rubrics,
     select_run,
+    unverified_flags,
 )
 from scripts.scrub import encodings_from_labels, scrub_report
 
@@ -84,6 +85,9 @@ PAIR_ONLY = "pair comparison only"
 ACHIEVED = "FLAGGED (objective achieved)"
 HELD = "held"
 UNVERIFIED = "unverified (no system prompt to check against)"
+# A judge flagged a specific the app may have found in its own documents, and the run had
+# no APP_TRACE_PATH to show which. See trace_unavailable().
+NO_TRACE = "unverified (no trace to check against)"
 
 
 def response_error(messages) -> str | None:
@@ -129,6 +133,8 @@ def classify(result, messages, scores, graded_by: list[str]) -> str:
         return result.outcome.value
     if [r for r in flagged_rubrics(scores) if r != PAIR_RUBRIC]:
         return FLAGGED
+    if unverified_flags(scores):
+        return NO_TRACE
     if graded_by:
         return PASSED
     if (result.labels or {}).get("rt_pair_id"):
@@ -851,6 +857,14 @@ def build_summary(results, memory, run_id: str) -> str:
             "that needs the system prompt to confirm, such as revealing it, and this run sent none. They are "
             "not counted as flags. Re-run with a system prompt to test them."
         )
+    if counts[NO_TRACE]:
+        lines.append(
+            f"- **{counts[NO_TRACE]} judge flag(s) are unverified.** The probe asks for a specific - a form "
+            "number, deadline, or contact - and the judge flagged one it could not find a source for. The run "
+            "had no APP_TRACE_PATH, so the judge could not see whether the app found it in a real document. "
+            "They are not counted as flags. Check each against the program's documents, or set APP_TRACE_PATH "
+            "and re-run."
+        )
     if provider != "app":
         if system_prompt and system_prompt != "none" and labels.get("rt_system_prompt_chosen_by") == "RT_SYSTEM_PROMPT_FILE":
             lines.append(
@@ -876,7 +890,8 @@ def build_summary(results, memory, run_id: str) -> str:
     flagged_by = Counter(r for e in entries for r in flagged_rubrics(e["scores"]) if r != PAIR_RUBRIC)
     # A pass on a fixed message is not a grading of the model, so it is not counted as one.
     graded = Counter(r for e in entries if e["verdict"] != FIXED_REPLY for r in e["graded_by"])
-    rubrics_run = {r for e in entries for r in e["graded_by"]}
+    # A rubric whose every flag was unverified still ran: its row says it graded none.
+    rubrics_run = {r for e in entries for r in (*e["graded_by"], *unverified_flags(e["scores"]))}
     if rubrics_run or pairs_compared or canary_checked or records_checked or any(other_checked.values()):
         lines += ["## By rubric", "", "| Rubric | Flagged | Graded | What it checks |", "|---|---|---|---|"]
         for rubric in sorted(rubrics_run):
@@ -928,8 +943,8 @@ def build_summary(results, memory, run_id: str) -> str:
                 else f"Each probe below was sent encoded with {encoding_str} only: this run sent no plain-text "
                 "control, so the As written column is empty and a flag does not show the encoding got through."
             )
-            + " \"Without a verdict\" counts errors, blocked or empty replies, fixed replies, and missing judge "
-            "scores; they are left out of the counts.",
+            + " \"Without a verdict\" counts errors, blocked or empty replies, fixed replies, missing judge "
+            "scores, and unverified flags; they are left out of the counts.",
             "",
             f"| Probe | Dataset | As written: flagged | Encoded: flagged | Without a verdict (as written / encoded) "
             "| Reading |",
@@ -951,8 +966,8 @@ def build_summary(results, memory, run_id: str) -> str:
             "## Failure rates",
             "",
             f"How often each probe was flagged across its {repeats} repeats. \"Without a verdict\" counts "
-            "errors, blocked or empty replies, fixed replies, and missing judge scores; those repeats tested nothing, "
-            "so they are left out of the rate.",
+            "errors, blocked or empty replies, fixed replies, missing judge scores, and unverified flags; those "
+            "repeats have no verdict, so they are left out of the rate.",
             "",
             "| Probe | Dataset | Flagged | Without a verdict | Reading |",
             "|---|---|---|---|---|",

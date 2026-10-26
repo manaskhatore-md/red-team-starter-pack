@@ -54,9 +54,12 @@ PROBE SELECTION: every probe in every suite is numbered, in the order of SUITES 
 profiles.py, and the profile picks which run (`core` for the built-in default, with
 RT_PROFILE unset). Pass `--probes <spec>` (or set `RT_PROBES=<spec>` in .env) with one or
 more comma-separated selectors to run others instead, or `all` for every probe:
-  - Category keywords: `general` (non-bias probes), `core` (general + inline bias pairs,
-    skipping fixture-expanded bias templates), `bias` (all bias probes), `bias-core`
-    (inline bias pairs only), `bias-templated` (fixture-expanded bias pairs only).
+  - Category keywords: `general` (every suite but bias, the hallucination templates
+    included), `core` (everything except the
+    fixture-expanded bias and hallucination templates), `bias` (all bias probes),
+    `bias-core` (inline bias pairs only), `bias-templated` (fixture-expanded bias pairs
+    only), and `hallucination`, `hallucination-core`, `hallucination-templated` the same
+    way for the hallucination suite.
   - 1-based probe numbers or ranges from `--list-probes`: e.g. `1`, `1-15`, `16-25`. A
     probe has the same number whichever profile runs.
   - Dataset, probe, template, or pair names: e.g. `prompt_injection`, `override_simple`,
@@ -93,7 +96,8 @@ within each repeat. The default is 1.
 
 COST: one target call per probe, one judge call per probe per rubric that grades it,
 plus one judge call per matched pair - all times RT_REPEATS. public_conversational
-is 86 + 119 + 23 = 228 calls per repeat. The scan prints the total before it sends
+sends 105 probes, each graded by one rubric, and compares 23 pairs: 105 target + (105 + 23)
+judge = 233 calls per repeat. The scan prints the total before it sends
 anything, and stops before sending any if the total is over RT_MAX_CALLS (default
 3000; 0 for no limit). Start with one dataset while you tune the rubrics.
 """
@@ -170,6 +174,7 @@ from harnesses.pyrit_campaigns.system_prompt import (
 )
 from scripts.run_summary import write_after_run
 from harnesses.pyrit_campaigns.target_factory import (
+    NEEDS_TRACE_LABEL,
     TRACE_METADATA_KEY,
     build_scoring_target,
     build_target,
@@ -177,6 +182,9 @@ from harnesses.pyrit_campaigns.target_factory import (
     close_target,
     model_name,
     resolve_provider,
+    trace_unavailable,
+    unverified_category,
+    unverified_rubric,
 )
 
 # TODO: raise once you know your provider's rate limit; lower it if you are being
@@ -221,7 +229,12 @@ class ProgressAttack(PromptSendingAttack):
                 ", ".join(s.score_category) if isinstance(s.score_category, list) else str(s.score_category)
                 for s in scores if s.get_value() is True
             })
-            status = f"FLAGGED {'; '.join(flagged)}" if flagged else "ok"
+            unverified = [unverified_rubric(r) for r in flagged if unverified_rubric(r)]
+            standing = [r for r in flagged if not unverified_rubric(r)]
+            status = "; ".join(
+                ([f"FLAGGED {'; '.join(standing)}"] if standing else [])
+                + ([f"unverified (no trace) {'; '.join(unverified)}"] if unverified else [])
+            ) or "ok"
         self._report(context, started, status)
         return result
 
@@ -249,7 +262,7 @@ def get_repeats() -> int:
     return int(raw)
 
 
-# Above every shipped profile at RT_REPEATS=10 (constituent_decision is ~2,440
+# Above every shipped profile at RT_REPEATS=10 (constituent_decision is ~2,790
 # calls), so it stops only a scan that templates or extra datasets have made much
 # larger.
 DEFAULT_MAX_CALLS = 3000
@@ -305,6 +318,10 @@ class Probe:
     # The probe asks for the system prompt or the rules. See instruction_requests() in
     # scripts/run_summary.py.
     asks_for_instructions: bool = False
+    # The judge needs the app's sources to tell a real specific from an invented one, so a
+    # flag against an app with no APP_TRACE_PATH is unverified, not a finding. See
+    # trace_unavailable() and RubricScorer.
+    needs_trace: bool = False
     # Facts the judge is shown about this probe, from its metadata's judge_context:
     # (SLOT, text) pairs, each filling [[SLOT]] in the rubrics that grade it.
     judge_context: tuple[tuple[str, str], ...] = ()
@@ -370,6 +387,7 @@ def load_probes(datasets=None) -> list[Probe]:
                         control=bool(metadata.get("control")),
                         pass_criteria=" ".join(fill(str(metadata.get("pass_criteria", "")), **values).split()),
                         asks_for_instructions=bool(metadata.get("asks_for_instructions")),
+                        needs_trace=bool(metadata.get("needs_trace")),
                         judge_context=judge_context(
                             metadata.get("judge_context"), f"{path.name}, probe {expanded.name!r}", values
                         ),
@@ -381,13 +399,20 @@ def load_probes(datasets=None) -> list[Probe]:
 
 
 BIAS_DATASET = "algorithmic_bias"
+HALLUCINATION_DATASET = "hallucination"
+# Suites whose templated probes `core` leaves out: bias pairs need repeats to mean
+# anything, and the hallucination references are meant to be replaced with your own.
+NOT_CORE_WHEN_TEMPLATED = frozenset({BIAS_DATASET, HALLUCINATION_DATASET})
 
 PROBE_CATEGORIES = {
     "general": lambda p: p.dataset != BIAS_DATASET,
-    "core": lambda p: p.dataset != BIAS_DATASET or not p.template,
+    "core": lambda p: p.dataset not in NOT_CORE_WHEN_TEMPLATED or not p.template,
     "bias": lambda p: p.dataset == BIAS_DATASET,
     "bias-core": lambda p: p.dataset == BIAS_DATASET and not p.template,
     "bias-templated": lambda p: p.dataset == BIAS_DATASET and bool(p.template),
+    "hallucination": lambda p: p.dataset == HALLUCINATION_DATASET,
+    "hallucination-core": lambda p: p.dataset == HALLUCINATION_DATASET and not p.template,
+    "hallucination-templated": lambda p: p.dataset == HALLUCINATION_DATASET and bool(p.template),
 }
 
 RANGE_TOKEN = re.compile(r"^(-?\d+)(?:\s*-\s*(-?\d+))?$")
@@ -405,7 +430,8 @@ def select_probes(probes: list[Probe], spec: str = "") -> list[Probe]:
 
     Each comma-separated token may be:
       - `all` (or an empty `spec`): every probe in `probes`
-      - A category keyword in PROBE_CATEGORIES: `general`, `core`, `bias`, `bias-core`, `bias-templated`
+      - A category keyword in PROBE_CATEGORIES: `general`, `core`, `bias`, `bias-core`, `bias-templated`,
+        `hallucination`, `hallucination-core`, `hallucination-templated`
       - A 1-based probe number (`k`) or inclusive range (`m-n`)
       - A dataset name (`probe.dataset`), probe name (`probe.name`), template name
         (`probe.template`), or matched-pair id (`probe.pair_id`)
@@ -793,13 +819,23 @@ class RubricScorer(MessageTrueFalseScorer):
 
     _DEFAULT_VALIDATOR: ScorerPromptValidator = ScorerPromptValidator(supported_data_types=["text"])
 
-    def __init__(self, *, rubric_prompt: str, judge, category: str, judge_context: dict[str, dict[str, str]]) -> None:
+    def __init__(
+        self,
+        *,
+        rubric_prompt: str,
+        judge,
+        category: str,
+        judge_context: dict[str, dict[str, str]],
+        unverifiable: frozenset[str] = frozenset(),
+    ) -> None:
         self._rubric_prompt = rubric_prompt
         self._judge = judge
         self._category = category
         # Probe text -> its slots, as Probe.judge_slots() gives them. The objective
         # PyRIT scores against is the probe text.
         self._judge_context = judge_context
+        # The probe texts whose flag the judge cannot check (see trace_unavailable()).
+        self._unverifiable = unverifiable
         super().__init__(validator=self._DEFAULT_VALIDATOR)
 
     def _build_identifier(self) -> ComponentIdentifier:
@@ -825,22 +861,30 @@ class RubricScorer(MessageTrueFalseScorer):
             category=self._category,
             **kwargs,
         )
-        return await scorer._score_piece_async(message_piece, objective=objective)
+        scores = await scorer._score_piece_async(message_piece, objective=objective)
+        if objective in self._unverifiable:
+            # Stored as no rubric's flag, so no count of findings takes it for one.
+            for score in scores:
+                if score.get_value() is True:
+                    score.score_category = [unverified_category(c) for c in score.score_category or []]
+        return scores
 
 
 def build_rubric_scorers(
-    rubric_keys, judge, probes: list[Probe] = (), system_prompt: str | None = None
+    rubric_keys, judge, probes: list[Probe] = (), system_prompt: str | None = None, no_trace: bool = False
 ) -> dict[str, RubricScorer]:
     """Turn the named rubrics into scorers, keyed by rubric name.
 
     A rubric with a [[SYSTEM_PROMPT]] slot is shown the system prompt the model was
-    sent, so its judge can tell following instructions from breaking them.
+    sent, so its judge can tell following instructions from breaking them. With
+    no_trace (trace_unavailable()), a flag on a needs_trace probe is stored as unverified.
 
     Leaves out the pair rubrics: they compare two responses rather than grade one,
     and compare_pairs() runs them.
     """
     rubrics = load_rubrics()
     judge_context = {probe.prompt: probe.judge_slots() for probe in probes}
+    unverifiable = frozenset(probe.prompt for probe in probes if probe.needs_trace and no_trace)
 
     scorers = {}
     for key in rubric_keys:
@@ -853,16 +897,22 @@ def build_rubric_scorers(
             judge=judge,
             category=key,
             judge_context=judge_context,
+            unverifiable=unverifiable,
         )
     return scorers
 
 
-def rubric_prompt(rubric: dict, system_prompt: str | None) -> str:
+def rubric_prompt(rubric: dict, system_prompt: str | None, slots: dict[str, str] | None = None) -> str:
     """A rubric's judge prompt as PyRIT's format string, with the system prompt the model was
-    sent filled in, where it has the slot."""
-    return rubric_format_string(rubric["system_prompt"]).replace(
-        "[[SYSTEM_PROMPT]]", _escape_braces(system_prompt or fill_text("no_system_prompt"))
-    )
+    sent filled in, where it has the slot.
+
+    With `slots`, they are filled first (see fill_slots), so a [[TOKEN]] in the system
+    prompt's own text is left as it is.
+    """
+    text = rubric_format_string(rubric["system_prompt"])
+    if slots is not None:
+        text = fill_slots(text, slots)
+    return text.replace("[[SYSTEM_PROMPT]]", _escape_braces(system_prompt or fill_text("no_system_prompt")))
 
 
 def group_by_rubrics(probes: list[Probe], rubric_keys, compare: bool) -> dict[tuple[str, ...], list[Probe]]:
@@ -1028,6 +1078,7 @@ def expand_repeats(
                     "rt_variant": probe.variant,
                     "rt_control": "true" if probe.control else "",
                     "rt_asks_for_instructions": str(probe.asks_for_instructions).lower(),
+                    NEEDS_TRACE_LABEL: str(probe.needs_trace).lower(),
                     "rt_template": probe.template,
                     "rt_fixture": probe.fixture,
                     "rt_repeat": str(repeat),
@@ -1313,7 +1364,8 @@ async def main(
         print("\nSystem prompt: none. The model gets each probe with no instructions.")
     judge = build_scoring_target()
     judged_prompt = system_prompt.text if system_prompt else (app_prompt.text if app_prompt else "") or None
-    scorers = build_rubric_scorers(rubrics, judge, probes, judged_prompt)
+    no_trace = trace_unavailable(resolve_provider("target"), os.getenv("APP_TRACE_PATH", "").strip())
+    scorers = build_rubric_scorers(rubrics, judge, probes, judged_prompt, no_trace)
 
     compare = "disparate_treatment" in rubrics and any(p.pair_id for p in probes)
     groups = group_by_rubrics(probes, scorers, compare)
@@ -1448,6 +1500,8 @@ async def main(
 
     memory = CentralMemory.get_memory_instance()
     findings: list[tuple[str, str, str]] = []   # (rubric, probe, rationale)
+    # Judge flags on a needs_trace probe whose reply had no trace: printed, not counted.
+    unverified: list[tuple[str, str, str]] = []
     errors: list[str] = []
     by_rubric: Counter[str] = Counter()
 
@@ -1473,18 +1527,22 @@ async def main(
             errors.append(f"{probe[:70]!r} -> {error}")
             continue
 
-        flagged = False
+        flagged = unchecked = False
         for score in memory.get_prompt_scores(conversation_id=result.conversation_id):
             # score_category is a list - a scorer can carry several. Flatten it so it
             # can be used as a grouping key.
             categories = score.score_category or []
             rubric = ", ".join(categories) if isinstance(categories, list) else str(categories)
-            if score.get_value() is True:
+            if score.get_value() is True and unverified_rubric(rubric):
+                unverified.append((unverified_rubric(rubric), probe, score.score_rationale or ""))
+                unchecked = True
+            elif score.get_value() is True:
                 findings.append((rubric, probe, score.score_rationale or ""))
                 by_rubric[rubric] += 1
                 flagged = True
         tally = versions.get((labels.get("rt_dataset"), labels.get("rt_probe")), {}).get(labels.get("rt_encoding", ""))
-        if tally:
+        # An unverified flag is no verdict, as in the run summary: not counted as a pass.
+        if tally and (flagged or not unchecked):
             tally[0] += flagged
             tally[1] += 1
 
@@ -1592,6 +1650,15 @@ async def main(
         print(f"  probe:     {probe[:150]}")
         print(f"  rationale: {rationales[0][:300]}")
 
+    if unverified:
+        print(
+            f"\n{len(unverified)} judge flag(s) are UNVERIFIED, not counted as findings: the probe asks for a "
+            "specific the app may have found in its own documents, and with no APP_TRACE_PATH the run has no "
+            "trace to show which. Check each against the program's documents, or set APP_TRACE_PATH and re-run:"
+        )
+        for rubric, probe in dict.fromkeys((rubric, probe) for rubric, probe, _ in unverified):
+            print(f"  - [{rubric}] {probe[:120]}")
+
     if ungraded:
         print(f"\n{len(ungraded)} probe(s) were not sent because no rubric grades them (see above).")
 
@@ -1638,7 +1705,8 @@ if __name__ == "__main__":
         metavar="SPEC",
         help=(
             "comma-separated probe selectors (overrides RT_PROBES): "
-            "categories (general, core, bias, bias-core, bias-templated), "
+            "categories (general, core, bias, bias-core, bias-templated, hallucination, "
+            "hallucination-core, hallucination-templated), "
             "1-based numbers or m-n ranges (e.g. 1-15), or dataset/probe/template/pair names. "
             "Paired probes automatically include their partner."
         ),

@@ -12,7 +12,7 @@ import pytest
 
 from harnesses.pyrit_campaigns import multi_turn_crescendo, single_turn_scan, system_prompt as sp
 from harnesses.pyrit_campaigns.planted_records import records_for, records_section
-from harnesses.pyrit_campaigns.profiles import DEFAULT_PROFILE, get_profile, placeholders
+from harnesses.pyrit_campaigns.profiles import DEFAULT_PROFILE, PROFILES, get_profile, placeholders
 from helpers import FakeModel, nothing
 
 # From the warning every run against an app prints: "Runs against an app need a ...".
@@ -75,6 +75,16 @@ def test_the_default_fits_the_call_limit_at_ten_repeats(probes_spec, monkeypatch
     assert sum(map(int, planned.groups())) <= single_turn_scan.DEFAULT_MAX_CALLS
 
 
+@pytest.mark.parametrize("profile_key", sorted(PROFILES))
+def test_every_shipped_profile_fits_the_call_limit_at_ten_repeats(profile_key, monkeypatch, clean_env, memory, capsys):
+    # The README promises it, and the scan stops unsent when it is not so.
+    clean_env.setenv("RT_PROFILE", profile_key)
+    clean_env.setenv("RT_REPEATS", "10")
+    scan_until_sending(monkeypatch)
+    planned = re.search(r"about (\d+) target calls and (\d+) judge calls", capsys.readouterr().out)
+    assert sum(map(int, planned.groups())) <= single_turn_scan.DEFAULT_MAX_CALLS
+
+
 def count(spec: str) -> int:
     return len(single_turn_scan.select_probes(ALL, spec))
 
@@ -94,6 +104,10 @@ def test_the_default_runs_core_unless_probes_says_otherwise(monkeypatch, clean_e
     templated = count("bias-templated")
     single_turn_scan.list_probes(profile, "bias-templated")
     assert f"Probe filter (bias-templated): {templated} of {TOTAL} probe(s) selected." in capsys.readouterr().out
+
+    hallucination = count("hallucination-templated")
+    single_turn_scan.list_probes(profile, "hallucination-templated")
+    assert f"Probe filter (hallucination-templated): {hallucination} of {TOTAL} probe(s) selected." in capsys.readouterr().out
 
     # Bias is the last suite, so the first probes are the general ones.
     general = count("general")

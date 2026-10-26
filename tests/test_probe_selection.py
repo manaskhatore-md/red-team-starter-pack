@@ -30,6 +30,9 @@ def test_category_keywords_partition_probes_cleanly():
     bias = scan.select_probes(probes, "bias")
     bias_core = scan.select_probes(probes, "bias-core")
     bias_templated = scan.select_probes(probes, "bias-templated")
+    hallucination = scan.select_probes(probes, "hallucination")
+    hallucination_core = scan.select_probes(probes, "hallucination-core")
+    hallucination_templated = scan.select_probes(probes, "hallucination-templated")
 
     # general = every suite but bias, in suite order; with bias, every probe.
     assert general == [p for suite in SUITES if suite != "algorithmic_bias" for p in scan.select_probes(probes, suite)]
@@ -40,14 +43,22 @@ def test_category_keywords_partition_probes_cleanly():
     assert bias_templated and all(p.dataset == "algorithmic_bias" and p.template for p in bias_templated)
     assert bias == bias_core + bias_templated
 
-    # core = general + bias-core: everything but the templated bias probes, in any profile.
-    assert set(core) == set(general) | set(bias_core)
+    # hallucination = the written-out probes (hallucination-core), then the ones its
+    # fixtures make (hallucination-templated).
+    assert hallucination_core and all(p.dataset == "hallucination" and not p.template for p in hallucination_core)
+    assert hallucination_templated and all(p.dataset == "hallucination" and p.template for p in hallucination_templated)
+    assert hallucination == hallucination_core + hallucination_templated
+
+    # core = general + bias-core, less the templated hallucination probes: everything but
+    # the templated probes, in any profile.
+    assert set(core) == (set(general) - set(hallucination_templated)) | set(bias_core)
     pub_probes = scan.profile_probes(get_profile("public_conversational"))
-    assert set(scan.select_probes(pub_probes, "core")) == set(pub_probes) - set(bias_templated)
+    assert set(scan.select_probes(pub_probes, "core")) == set(pub_probes) - set(bias_templated) - set(hallucination_templated)
 
     # Underscore aliases and 'all' / empty spec also work.
     assert scan.select_probes(probes, "bias_core") == bias_core
     assert scan.select_probes(probes, "bias_templated") == bias_templated
+    assert scan.select_probes(probes, "hallucination_templated") == hallucination_templated
     assert scan.select_probes(probes, "all") == probes
     assert scan.select_probes(probes, "") == probes
 
@@ -129,6 +140,7 @@ OUT_OF_RANGE = re.escape(f"out of range: there are {TOTAL} probe(s) (1-{TOTAL})"
         # A subset with no bias probes, as a named profile's own spec gives.
         ("internal_productivity", "bias", "matched 0 probes"),
         ("internal_productivity", "bias-templated", "matched 0 probes"),
+        ("internal_productivity", "hallucination-templated", "matched 0 probes"),
     ],
 )
 def test_invalid_or_empty_probe_selectors_fail_fast(profile_key, spec, match):
