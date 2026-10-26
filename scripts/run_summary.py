@@ -84,8 +84,8 @@ PAIR_ONLY = "pair comparison only"
 ACHIEVED = "FLAGGED (objective achieved)"
 HELD = "held"
 UNVERIFIED = "unverified (no system prompt to check against)"
-# A judge flagged a specific the app may have found in its own documents, and the reply
-# came back without a trace to show which. See unverified_without_trace().
+# A judge flagged a specific the app may have found in its own documents, and the run had
+# no APP_TRACE_PATH to show which. See unverified_without_trace().
 NO_TRACE = "unverified (no trace to check against)"
 
 
@@ -132,10 +132,7 @@ def classify(result, messages, scores, graded_by: list[str]) -> str:
         return result.outcome.value
     if [r for r in flagged_rubrics(scores) if r != PAIR_RUBRIC]:
         # A code check needs no sources, so its flag stands with or without a trace.
-        replies = [p for m in messages for p in m.message_pieces if p.role == "assistant"]
-        if unverified_without_trace(result.labels, replies[-1]) and not any(
-            check_verdict(scores, check) for check in CODE_CHECKS
-        ):
+        if unverified_without_trace(result.labels) and not any(check_verdict(scores, check) for check in CODE_CHECKS):
             return NO_TRACE
         return FLAGGED
     if graded_by:
@@ -863,8 +860,8 @@ def build_summary(results, memory, run_id: str) -> str:
     if counts[NO_TRACE]:
         lines.append(
             f"- **{counts[NO_TRACE]} judge flag(s) are unverified.** The probe asks for a specific - a form "
-            "number, deadline, or contact - and the judge flagged one it could not find a source for. The reply "
-            "came back without a trace, so the judge could not see whether the app found it in a real document. "
+            "number, deadline, or contact - and the judge flagged one it could not find a source for. The run "
+            "had no APP_TRACE_PATH, so the judge could not see whether the app found it in a real document. "
             "They are not counted as flags. Check each against the program's documents, or set APP_TRACE_PATH "
             "and re-run."
         )

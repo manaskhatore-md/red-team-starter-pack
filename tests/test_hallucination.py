@@ -136,20 +136,32 @@ def test_only_the_specifics_probes_need_a_trace():
     assert {p.name for p in suite() if p.needs_trace} == SPECIFICS
 
 
-@pytest.mark.parametrize("probes, exit_code", [("fabricated_form_number", 0), ("fabricated_form_number,program_rumor", 1)])
-def test_a_flag_on_a_specifics_probe_without_a_trace_is_unverified_not_a_finding(probes, exit_code, monkeypatch, memory, capsys):
-    monkeypatch.setenv("RT_PROBES", probes)
+@pytest.mark.parametrize("provider, probes, exit_code, unverified, findings", [
+    # Against an app with no APP_TRACE_PATH, the form number flag is unverified; the
+    # rumor brings its own answer, so its flag still counts.
+    ("app", "fabricated_form_number", 0, 1, 0),
+    ("app", "fabricated_form_number,program_rumor", 1, 1, 1),
+    # A bare model has no documents: the judge saw every source it had, so the flag counts.
+    ("gemini", "fabricated_form_number", 1, 0, 1),
+])
+def test_a_flag_on_a_specifics_probe_is_unverified_only_against_an_app_without_a_trace(
+    provider, probes, exit_code, unverified, findings, monkeypatch, clean_env, memory, capsys
+):
+    clean_env.setenv("RT_PROVIDER", provider)
+    clean_env.setenv("RT_SKIP_CALIBRATION", "1")
+    clean_env.setenv("RT_PROBES", probes)
     monkeypatch.setattr(single_turn_scan, "FAIL_ON_FINDING", True)
     code, _ = scan_main(monkeypatch, FakeModel(), FlagsEverything(), profile="default")
     out = capsys.readouterr().out
     assert code == exit_code
-    assert "1 judge flag(s) are UNVERIFIED" in out
-    assert f"{probes.count(',')} finding(s)" in out
+    assert (f"{unverified} judge flag(s) are UNVERIFIED" in out) == bool(unverified)
+    assert f"{findings} finding(s)" in out
 
 
-def specifics_result(memory, *, trace="", needs_trace="true", rubric="ungrounded_claim", **labels):
+def specifics_result(memory, *, needs_trace="true", rubric="ungrounded_claim", **labels):
+    labels = {"rt_provider": "app", "rt_trace_path": "", **labels}
     return add_probe(memory, "What's the form number?", "It is form DHS-1171.", rubric=rubric, flagged=True,
-                     trace=trace, rt_dataset="hallucination", rt_probe="fabricated_form_number",
+                     rt_dataset="hallucination", rt_probe="fabricated_form_number",
                      rt_needs_trace=needs_trace, **labels)
 
 
@@ -161,12 +173,10 @@ def test_the_summary_counts_a_flag_without_a_trace_as_unverified(memory):
     assert f"### 1. {run_summary.NO_TRACE}: fabricated_form_number" in text
 
 
-@pytest.mark.parametrize("case", ["trace", "no needs_trace", "code check"])
+@pytest.mark.parametrize("case", ["trace path", "bare model", "no needs_trace", "code check"])
 def test_the_summary_keeps_a_flag_it_can_check(case, memory):
-    _, reply = specifics_result(
-        memory, trace='[{"doc": "appeals.pdf"}]' if case == "trace" else "",
-        needs_trace="false" if case == "no needs_trace" else "true",
-    )
+    labels = {"trace path": {"rt_trace_path": "citations"}, "bare model": {"rt_provider": "gemini"}}.get(case, {})
+    _, reply = specifics_result(memory, needs_trace="false" if case == "no needs_trace" else "true", **labels)
     if case == "code check":
         # A pattern check needs no sources: its flag stands.
         add_score(memory, reply, PII_PATTERN_CHECK, True, "an SSN")
@@ -175,7 +185,11 @@ def test_the_summary_keeps_a_flag_it_can_check(case, memory):
     assert "are unverified" not in text
 
 
-def test_the_finding_report_says_unverified(memory):
-    result, _ = specifics_result(memory)
+@pytest.mark.parametrize("code_check, unverified", [(False, True), (True, False)])
+def test_the_finding_report_says_unverified_unless_a_code_check_flagged(code_check, unverified, memory):
+    result, reply = specifics_result(memory)
+    if code_check:
+        add_score(memory, reply, PII_PATTERN_CHECK, True, "an SSN")
     report = ex.build_report(result, memory, ex.TEMPLATE.read_text(encoding="utf-8"), [result])
-    assert "UNVERIFIED - flagged by rubric judge(s): ungrounded_claim" in report
+    assert ("UNVERIFIED - flagged by rubric judge(s): ungrounded_claim" in report) == unverified
+    assert "ungrounded_claim" in report

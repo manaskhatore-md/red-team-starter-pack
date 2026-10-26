@@ -430,16 +430,21 @@ _STRIP_TRACE_KEYS = frozenset({
 })
 
 
-def unverified_without_trace(labels: dict | None, reply) -> bool:
-    """True when a judge's flag on this reply cannot be checked: the probe needs the app's
-    sources (rt_needs_trace) and the reply came back without a trace.
+def unverified_without_trace(labels: dict | None) -> bool:
+    """True when a judge's flag on this result cannot be checked: the probe needs the app's
+    sources (rt_needs_trace), and the run was against an app with no APP_TRACE_PATH.
 
-    Against an app with retrieval and no APP_TRACE_PATH, or a bare model, the judge cannot
-    tell a form number found in a real document from an invented one, so it flags both.
+    Then the judge cannot tell a form number the app found in a real document from an
+    invented one, so it flags both. Decided for the run, not the reply: with
+    APP_TRACE_PATH set, a reply with an empty trace retrieved nothing, so its specifics
+    had no source. A bare model has no documents, so the judge sees every source it had.
     """
-    if (labels or {}).get(NEEDS_TRACE_LABEL) != "true":
-        return False
-    return not (getattr(reply, "prompt_metadata", None) or {}).get(TRACE_METADATA_KEY)
+    labels = labels or {}
+    return (
+        labels.get(NEEDS_TRACE_LABEL) == "true"
+        and labels.get("rt_provider") == "app"
+        and not labels.get("rt_trace_path")
+    )
 
 
 def _strip_static_trace_fields(value):

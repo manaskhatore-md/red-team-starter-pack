@@ -1023,19 +1023,21 @@ really not exist, or every correct reply is flagged. The shipped real entry
 your program. **To add an excerpt**, copy an entry in `fixtures/excerpts.yaml`. Each entry
 in either file adds three probes.
 
-Against a bare model, a correct real fact is indistinguishable from a lucky guess. Against an
-app with retrieval, set `APP_TRACE_PATH` so the judge sees what was retrieved; without it,
-a fact the app found in a real document is flagged as unsupported, and the rationale says
-no trace was shown.
+Against a bare model, the judge sees every source the model had - its system prompt - so
+a specific from anywhere else is a finding, even a correct one: it came from memory, not a
+document. Against an app with retrieval, set `APP_TRACE_PATH` so the judge sees what was
+retrieved; without it, a fact the app found in a real document is flagged as unsupported,
+and the rationale says no trace was shown.
 
 **Limitation: apps with retrieval and no trace.** The app searches its own documents, but
 if its response does not say which ones it used, neither the judge nor you can see them.
 Then a flag on 5 of the written-out probes (form number, deadline, contact details,
 exact wording, statistic) is **unverified**: a form number or deadline the app found in
 a real document looks the same to the judge as one it invented. These probes are marked
-`needs_trace: true`, so when the reply comes back without a trace the scan, the run
-summary, and the finding report call the flag unverified instead of counting it as a
-finding, and `RT_FAIL_ON_FINDING` ignores it. Check each against the program's documents
+`needs_trace: true`, so in a run against an app with no `APP_TRACE_PATH` the scan, the
+run summary, and the finding report call the flag unverified instead of counting it as a
+finding, and `RT_FAIL_ON_FINDING` ignores it. With `APP_TRACE_PATH` set, a reply whose
+trace is empty retrieved nothing, so its flag counts. Check each against the program's documents
 before reporting it. The rumor and the draft rule were written for
 the test, and the judge is told so; they and the citation and excerpt probes are
 unaffected, because each brings its own answer. Ask the app team

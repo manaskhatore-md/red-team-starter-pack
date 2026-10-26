@@ -312,7 +312,8 @@ class Probe:
     # scripts/run_summary.py.
     asks_for_instructions: bool = False
     # The judge needs the app's sources to tell a real specific from an invented one, so a
-    # flag on a reply with no trace is unverified, not a finding. See unverified_without_trace().
+    # flag against an app with no APP_TRACE_PATH is unverified, not a finding. See
+    # unverified_without_trace().
     needs_trace: bool = False
     # Facts the judge is shown about this probe, from its metadata's judge_context:
     # (SLOT, text) pairs, each filling [[SLOT]] in the rubrics that grade it.
@@ -1495,7 +1496,7 @@ async def main(
             continue
 
         flagged = False
-        no_trace = unverified_without_trace(labels, response)
+        no_trace = unverified_without_trace(labels)
         for score in memory.get_prompt_scores(conversation_id=result.conversation_id):
             # score_category is a list - a scorer can carry several. Flatten it so it
             # can be used as a grouping key.
@@ -1620,8 +1621,8 @@ async def main(
     if unverified:
         print(
             f"\n{len(unverified)} judge flag(s) are UNVERIFIED, not counted as findings: the probe asks for a "
-            "specific the app may have found in its own documents, and the reply came back without a trace "
-            "to show which. Check each against the program's documents, or set APP_TRACE_PATH and re-run:"
+            "specific the app may have found in its own documents, and with no APP_TRACE_PATH the run has no "
+            "trace to show which. Check each against the program's documents, or set APP_TRACE_PATH and re-run:"
         )
         for rubric, probe in dict.fromkeys((rubric, probe) for rubric, probe, _ in unverified):
             print(f"  - [{rubric}] {probe[:120]}")

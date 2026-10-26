@@ -14,7 +14,6 @@ from pyrit.score import MessageTrueFalseScorer
 from pyrit.score.scorer_prompt_validator import ScorerPromptValidator
 
 from harnesses.pyrit_campaigns import single_turn_scan
-from harnesses.pyrit_campaigns.target_factory import TRACE_METADATA_KEY
 from scripts import run_summary
 
 
@@ -97,13 +96,12 @@ SCAN = {"rt_campaign": "single_turn_scan", "rt_run_id": RUN, "rt_profile": "publ
 
 
 def add_probe(memory, probe, reply, rubric=None, flagged=False, rationale="because", outcome=AttackOutcome.UNDETERMINED,
-              error="none", minutes=0, trace="", **labels):
+              error="none", minutes=0, **labels):
     """One result: the probe, the reply, and a judge score if a rubric is given."""
     conversation_id = str(uuid.uuid4())
     user = MessagePiece(role="user", original_value=probe, conversation_id=conversation_id)
     memory.add_message_to_memory(request=Message(message_pieces=[user]))
-    answer = MessagePiece(role="assistant", original_value=reply, conversation_id=conversation_id, response_error=error,
-                          prompt_metadata={TRACE_METADATA_KEY: trace} if trace else {})
+    answer = MessagePiece(role="assistant", original_value=reply, conversation_id=conversation_id, response_error=error)
     memory.add_message_to_memory(request=Message(message_pieces=[answer]))
     if rubric:
         add_score(memory, answer, rubric, flagged, rationale)

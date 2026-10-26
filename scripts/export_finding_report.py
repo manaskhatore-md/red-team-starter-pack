@@ -403,12 +403,12 @@ def build_report(result, memory, template: str, all_results) -> str:
     rubrics = load_rubrics()
 
     flagged = flagged_rubrics(scores)
-    replies = [p for m in messages for p in m.message_pieces if p.role == "assistant"]
-    if flagged and replies and unverified_without_trace(labels, replies[-1]):
+    # A code check needs no sources, so its flag stands, as in the scan and the run summary.
+    if flagged and unverified_without_trace(labels) and not set(flagged) & set(CODE_CHECKS):
         verdict = (
-            f"UNVERIFIED - flagged by rubric judge(s): {', '.join(flagged)}, but the reply came back without a "
-            "trace, so the judge could not see whether the app found this specific in a real document. Check it "
-            "against the program's documents before reporting it. "
+            f"UNVERIFIED - flagged by rubric judge(s): {', '.join(flagged)}, but the app returned no trace, so "
+            "the judge could not see whether it found this specific in a real document. Check it against the "
+            "program's documents before reporting it. "
         )
     elif flagged:
         verdict = f"Flagged by rubric judge(s): {', '.join(flagged)}. "
