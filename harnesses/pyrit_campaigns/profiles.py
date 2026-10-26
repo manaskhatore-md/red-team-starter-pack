@@ -4,7 +4,7 @@ A profile answers one question: "I'm testing this kind of system. What should I 
 and what will I still have to check by hand?" So it holds:
   - which probes run, as a --probes spec over every suite in attack_suites/. The
     rubrics that grade them follow from the probes: each rubric in
-    harnesses/pyrit_campaigns/state_policy_rubric.yaml lists the datasets it `grades`.
+    harnesses/pyrit_campaigns/judge.yaml lists the datasets it `grades`.
   - the goals the multi-turn campaigns pursue, read from config/objectives/<profile>.yaml
     (RT_OBJECTIVES_FILE replaces them with your own file)
   - a stand-in system prompt for runs against a raw model, config/system_prompts/<profile>.txt

@@ -17,6 +17,9 @@ from helpers import FakeModel, nothing
 
 # From the warning every run against an app prints: "Runs against an app need a ...".
 AUTHORIZATION_BANNER = "non-production instance, synthetic data only"
+# Every probe in every suite.
+ALL = single_turn_scan.load_probes()
+TOTAL = len(ALL)
 
 
 class Stop(Exception):
@@ -61,7 +64,7 @@ def test_nothing_the_default_sends_has_an_unfilled_token():
     goals = [o.goal for o in multi_turn_crescendo.load_objectives(profile)]
     texts = [p.prompt for p in probes] + [p.pass_criteria for p in probes] + [prompt.text] + goals
     assert not [t for t in texts if single_turn_scan.UNRENDERED.search(t)]
-    assert len(goals) == 7
+    assert goals and len(goals) == len(profile.objectives)
 
 
 @pytest.mark.parametrize("probes_spec", [None, "all"])
@@ -82,34 +85,47 @@ def test_every_shipped_profile_fits_the_call_limit_at_ten_repeats(profile_key, m
     assert sum(map(int, planned.groups())) <= single_turn_scan.DEFAULT_MAX_CALLS
 
 
+def count(spec: str) -> int:
+    return len(single_turn_scan.select_probes(ALL, spec))
+
+
 def test_the_default_runs_core_unless_probes_says_otherwise(monkeypatch, clean_env, capsys):
     profile = get_profile()
     single_turn_scan.list_probes(profile)
     out = capsys.readouterr().out
-    assert "Probe filter (core): 77 of 128 probe(s) selected." in out
-    assert "77 of 77 probe(s) would be sent" in out
+    core = count("core")
+    assert core < TOTAL
+    assert f"Probe filter (core): {core} of {TOTAL} probe(s) selected." in out
+    assert f"{core} of {core} probe(s) would be sent" in out
 
     single_turn_scan.list_probes(profile, "all")
-    assert "128 of 128 probe(s) would be sent" in capsys.readouterr().out
+    assert f"{TOTAL} of {TOTAL} probe(s) would be sent" in capsys.readouterr().out
 
+    templated = count("bias-templated")
     single_turn_scan.list_probes(profile, "bias-templated")
-    assert "Probe filter (bias-templated): 36 of 128 probe(s) selected." in capsys.readouterr().out
+    assert f"Probe filter (bias-templated): {templated} of {TOTAL} probe(s) selected." in capsys.readouterr().out
 
+    hallucination = count("hallucination-templated")
     single_turn_scan.list_probes(profile, "hallucination-templated")
-    assert "Probe filter (hallucination-templated): 15 of 128 probe(s) selected." in capsys.readouterr().out
+    assert f"Probe filter (hallucination-templated): {hallucination} of {TOTAL} probe(s) selected." in capsys.readouterr().out
 
-    clean_env.setenv("RT_PROBES", "1-82")
+    # Bias is the last suite, so the first probes are the general ones.
+    general = count("general")
+    assert single_turn_scan.select_probes(ALL, f"1-{general}") == single_turn_scan.select_probes(ALL, "general")
+    clean_env.setenv("RT_PROBES", f"1-{general}")
     single_turn_scan.list_probes(profile)
-    assert "Probe filter (1-82): 82 of 128 probe(s) selected." in capsys.readouterr().out
+    assert f"Probe filter (1-{general}): {general} of {TOTAL} probe(s) selected." in capsys.readouterr().out
 
 
 def test_a_named_profile_runs_its_own_selection(capsys):
     single_turn_scan.list_probes(get_profile("internal_productivity"))
     out = capsys.readouterr().out
-    assert "Probe filter (prompt_injection,sensitive_data_leakage,excessive_agency): 60 of 128" in out
-    assert "60 of 60 probe(s) would be sent" in out
+    own = count("prompt_injection,sensitive_data_leakage,excessive_agency")
+    assert own < TOTAL
+    assert f"Probe filter (prompt_injection,sensitive_data_leakage,excessive_agency): {own} of {TOTAL}" in out
+    assert f"{own} of {own} probe(s) would be sent" in out
     single_turn_scan.list_probes(get_profile("constituent_decision"))
-    assert "128 of 128 probe(s) would be sent" in capsys.readouterr().out
+    assert f"{TOTAL} of {TOTAL} probe(s) would be sent" in capsys.readouterr().out
 
 
 def test_narrowing_the_probes_keeps_the_profiles_planted_records(monkeypatch, clean_env, memory, capsys):

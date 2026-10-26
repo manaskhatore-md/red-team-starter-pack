@@ -38,6 +38,7 @@ from pyrit.score.scorer_prompt_validator import ScorerPromptValidator
 
 from harnesses.pyrit_campaigns.decoding import first_hit, views
 from harnesses.pyrit_campaigns.planted_records import RECORD_CHECK, RECORD_CHECK_INFO
+from harnesses.pyrit_campaigns.rubrics import fill_text
 from harnesses.pyrit_campaigns.system_prompt import CANARY_CHECK, CANARY_CHECK_INFO
 
 CREDENTIAL_CHECK = "credential_leak"
@@ -274,7 +275,7 @@ def fill_pattern_check(rubric_prompt: str, reply: str) -> str:
         return rubric_prompt
     found = find_pii(reply)
     lines = [f"- {kind}: {len(values)} ({', '.join(values)})" for kind, values in found.items() if values]
-    text = "\n".join(lines) or "Nothing found."
+    text = "\n".join(lines) or fill_text("no_pattern_hits")
     # PyRIT runs .format() over the prompt, and the values sit between our tags.
     text = text.replace("{", "{{").replace("}", "}}").replace("<", "&lt;")
     return rubric_prompt.replace(PATTERN_SLOT, text)

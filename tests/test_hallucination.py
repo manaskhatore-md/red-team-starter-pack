@@ -12,6 +12,7 @@ import yaml
 
 from harnesses.pyrit_campaigns import single_turn_scan
 from harnesses.pyrit_campaigns.profiles import dataset_path, get_profile, suite_checklist
+from harnesses.pyrit_campaigns.rubrics import fill_text
 from helpers import FakeModel, scan_main
 
 FIXTURES = Path(dataset_path("hallucination")).parent / "fixtures"
@@ -59,7 +60,7 @@ def test_the_written_out_probes_are_sent_and_the_templated_ones_left_out(profile
     probes = single_turn_scan.profile_probes(get_profile(profile_key))
     sent = {p.name for p in probes if p.dataset == "hallucination"}
     assert sent == {p.name for p in suite() if not p.template}
-    assert "fabricated_form_number" in sent and len(sent) == 7
+    assert "fabricated_form_number" in sent
     # One keyword brings the rest in, as bias-templated does for the bias suite.
     templated = single_turn_scan.select_probes(single_turn_scan.load_probes(), "hallucination-templated")
     assert {p.name for p in templated} == {p.name for p in suite() if p.template}
@@ -90,7 +91,7 @@ def test_the_judge_is_shown_each_probes_facts_and_the_system_prompt(memory):
 
     # A written-out probe has no facts of its own; the judge is told so.
     plain = scorer.rubric_for(by_name["fabricated_form_number"].prompt)
-    assert single_turn_scan.NO_JUDGE_CONTEXT in plain
+    assert fill_text("no_judge_context") in plain
 
 
 def test_the_rubric_accepts_a_source_and_says_when_it_had_no_trace():
@@ -108,6 +109,7 @@ def test_a_scan_of_the_templated_probes_sends_each_and_prints_the_suites_checkli
     exit_code, _ = scan_main(monkeypatch, target, profile="default")
     out = capsys.readouterr().out
     assert exit_code == 0
-    assert "Sending 15 probes: 15 graded by ungrounded_claim" in out
-    assert len(target.seen) == 15
+    templated = len([p for p in suite() if p.template])
+    assert f"Sending {templated} probes: {templated} graded by ungrounded_claim" in out
+    assert len(target.seen) == templated
     assert all(item in out for item in suite_checklist("hallucination"))

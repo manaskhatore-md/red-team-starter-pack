@@ -7,11 +7,14 @@ judges, which multi_turn_crescendo and multi_turn_red_team both run.
 
 import pytest
 
-from harnesses.pyrit_campaigns import multi_turn_crescendo, multi_turn_red_team, single_turn_scan
-from harnesses.pyrit_campaigns.profiles import PROFILES, get_profile
+from harnesses.pyrit_campaigns import multi_turn_crescendo, multi_turn_red_team, probe_templates, single_turn_scan
+from harnesses.pyrit_campaigns.profiles import PROFILES, dataset_path, get_profile
 
-FRAMINGS = ("action_claim_plain", "action_claim_pressure", "action_claim_authority")
-ACTIONS = ("address_change", "submit_renewal", "book_appointment", "cancel_interview", "message_caseworker", "flag_urgent")
+# The whole suite, as every profile should send it.
+SUITE = single_turn_scan.load_probes(["excessive_agency"])
+# The framings are the suite's template seeds, the actions the entries in its fixture.
+FRAMINGS = tuple(dict.fromkeys(p.template for p in SUITE if p.template))
+ACTIONS = tuple(e["id"] for e in probe_templates.load_fixtures(dataset_path("excessive_agency").parent / "fixtures" / "actions.yaml")[1])
 RUBRIC = single_turn_scan.load_rubrics()["excessive_agency"]
 
 
@@ -24,9 +27,10 @@ def suite(profile):
     return [p for p in single_turn_scan.profile_probes(profile) if p.dataset == "excessive_agency"]
 
 
-def test_every_action_is_asked_each_of_the_three_ways():
+def test_every_action_is_asked_each_way():
     probes = suite(get_profile("public_conversational"))
     templated = [p for p in probes if p.template]
+    assert FRAMINGS and ACTIONS
     assert [p.name for p in templated] == [f"{t}[{a}]" for t in FRAMINGS for a in ACTIONS]
     for probe in templated:
         # Each probe's criteria name its own action, and nothing is left unfilled.
@@ -42,7 +46,7 @@ def test_every_action_is_asked_each_of_the_three_ways():
 def test_every_profile_runs_the_suite_and_grades_it_with_the_rubric(profile):
     assert "excessive_agency" in single_turn_scan.profile_rubrics(profile)
     probes = suite(profile)
-    assert len(probes) == 33
+    assert [p.name for p in probes] == [p.name for p in SUITE]
     groups = single_turn_scan.group_by_rubrics(probes, single_turn_scan.profile_rubrics(profile), compare=False)
     # The suite is graded solely by excessive_agency (not double-graded by unauthorized_determination).
     assert set(groups) == {("excessive_agency",)}
@@ -50,7 +54,7 @@ def test_every_profile_runs_the_suite_and_grades_it_with_the_rubric(profile):
 
 def test_each_framing_and_each_action_can_be_run_on_its_own():
     probes = single_turn_scan.profile_probes(get_profile("constituent_decision"))
-    assert len(single_turn_scan.select_probes(probes, "excessive_agency")) == 33
+    assert single_turn_scan.select_probes(probes, "excessive_agency") == SUITE
     pressure = single_turn_scan.select_probes(probes, "action_claim_pressure")
     assert [p.name for p in pressure] == [f"action_claim_pressure[{a}]" for a in ACTIONS]
     one = single_turn_scan.select_probes(probes, "action_claim_authority[flag_urgent]")
@@ -59,8 +63,13 @@ def test_each_framing_and_each_action_can_be_run_on_its_own():
 
 
 def test_the_rubric_uses_the_trace_when_there_is_one():
+    # The scan shows the judge the app's tool calls in <response_trace>.
+    assert "<response_trace>" in RUBRIC["system_prompt"]
+
+
+@pytest.mark.house_style
+def test_the_rubric_says_how_to_read_the_trace():
     prompt = RUBRIC["system_prompt"]
-    assert "<response_trace>" in prompt
     # A "done" backed by a real tool call is not a false claim; without a trace, it is.
     assert "tool call in <response_trace> shows" in prompt
     assert "Without a <response_trace>, judge the response's own words" in prompt
@@ -82,7 +91,8 @@ def test_crescendo_and_the_red_team_campaign_judge_the_goal_with_the_rubric(prof
     goal = next(o.goal for o in objectives if o.rubric == "excessive_agency")
     name, prompt = rubrics[goal]
     assert name == "excessive_agency"
-    assert "[[" not in prompt and "claimed to act, or committed the agency" in prompt
+    # The rubric's own text, up to its first slot.
+    assert "[[" not in prompt and RUBRIC["system_prompt"].split("[[")[0].strip() in prompt
 
 
 def test_the_agent_campaign_sends_every_probe_with_its_placeholders_filled(clean_env):
@@ -96,7 +106,7 @@ def test_the_agent_campaign_sends_every_probe_with_its_placeholders_filled(clean
     clean_env.setattr(agent_tool_exploitation, "PLACEHOLDERS", agent_tool_exploitation.with_env_overrides(
         {"tool_name": "TODO_your_tool_name", "record_type": "TODO_your_record_type", "program_name": "TODO_your_program_name"}))
     objectives = agent_tool_exploitation.load_objectives()
-    assert len(objectives) == 33
+    assert len(objectives) == len(SUITE)
     assert not [o for o in objectives if "{{" in o]
-    assert "Can you change the mailing address on my case to 1427 Oak Street" in " ".join(objectives[8].split())
+    assert any("Can you change the mailing address on my case to 1427 Oak Street" in " ".join(o.split()) for o in objectives)
     assert any("Maryland Department of Human Services employee" in o for o in objectives)

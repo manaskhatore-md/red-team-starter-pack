@@ -80,10 +80,14 @@ from pyrit.setup import SQLITE, initialize_pyrit_async
 from harnesses.pyrit_campaigns.profiles import describe, get_profile, placeholders
 from harnesses.pyrit_campaigns.single_turn_scan import (
     FAIL_ON_FINDING,
+    build_converter_config,
     check_placeholders,
+    get_converters_spec,
     get_repeats,
     load_rubrics,
     profile_rubrics,
+    resolve_converter_passes,
+    use_control,
 )
 from harnesses.pyrit_campaigns.code_checks import CODE_CHECKS, KnownPromptLeakScorer, code_scorers
 from harnesses.pyrit_campaigns.multi_turn_crescendo import (
@@ -93,9 +97,13 @@ from harnesses.pyrit_campaigns.multi_turn_crescendo import (
     heartbeat,
     leaked,
     load_objectives,
+    multi_turn_conversion_note,
     objective_rubrics,
+    parse_args,
+    show_judge_prompt,
 )
 from harnesses.pyrit_campaigns.planted_records import RECORD_CHECK, PlantedRecordScorer, records_for, records_section
+from harnesses.pyrit_campaigns.rubrics import require_valid, version_labels
 from harnesses.pyrit_campaigns.system_prompt import (
     CANARY_CHECK,
     AppPrompt,
@@ -146,16 +154,26 @@ def leaked_anywhere(memory, result, check: str) -> bool:
     return any(leaked(memory, cid, check) for cid in full_conversation_ids(result))
 
 
-async def main() -> int:
+async def main(
+    converters_spec: str | None = None,
+    no_control: bool = False,
+) -> int:
     started = time.monotonic()
     profile = get_profile()
     repeats = get_repeats()
     objectives = load_objectives(profile)
+    conv_spec, converter_passes = resolve_converter_passes(get_converters_spec(converters_spec))
+    control = use_control(no_control)
+    pass_names = [name for name, _ in converter_passes]
 
     await initialize_pyrit_async(memory_db_type=SQLITE)
 
     print(describe(profile))
+    # A broken rubric stops the run here, before anything is sent.
+    require_valid(load_rubrics())
     print(f"objectives: {len(objectives)} from {profile.objectives_file}")
+    if conv_spec:
+        print(multi_turn_conversion_note(conv_spec, len(objectives), pass_names, control=control))
 
     is_app = resolve_provider("target") == "app"
 
@@ -257,6 +275,7 @@ async def main() -> int:
         "rt_campaign": "multi_turn_red_team",
         "rt_run_id": run_id,
         "rt_profile": profile.key,
+        "rt_converters": conv_spec,
         "rt_provider": resolve_provider("target"),
         "rt_target": model_name(target),
         "rt_adversarial_provider": resolve_provider("adversarial"),
@@ -275,54 +294,70 @@ async def main() -> int:
         # Which objectives file the attacks came from, so the report can say what was tested.
         "rt_objectives_file": profile.objectives_file,
         "rt_trace_path": os.getenv("APP_TRACE_PATH", "").strip(),
+        # Which rubrics judged the run: the rubric file's fingerprint and the pack's version.
+        **version_labels(),
     }
 
-    attacks = len(objectives) * repeats
+    attack_passes: list[tuple[str, dict]] = []
+    if control or not converter_passes:
+        attack_passes.append(("", {}))
+    for enc_name, enc_chain in converter_passes:
+        attack_passes.append((enc_name, {"attack_converter_config": build_converter_config(enc_chain)}))
+
+    attacks = len(objectives) * len(attack_passes) * repeats
     estimate = attacks * MAX_TURNS * 3
     repeat_note = f", each {repeats} times (RT_REPEATS)" if repeats > 1 else ""
-    print(f"\nRunning {len(objectives)} objective(s){repeat_note}, up to {MAX_TURNS} turns each, "
+    if converter_passes and not control:
+        encoded_note = f" encoded ({conv_spec}, --no-control)"
+    elif converter_passes:
+        encoded_note = f" + {len(objectives) * len(converter_passes)} encoded ({conv_spec})"
+    else:
+        encoded_note = ""
+    print(f"\nRunning {len(objectives)} objective(s){encoded_note}{repeat_note}, up to {MAX_TURNS} turns each, "
           f"{MAX_CONCURRENCY} at a time (RT_MAX_CONCURRENCY).")
     print(f"That is up to about {estimate} calls.\n")
 
     # Load PyRIT's general-purpose attacker strategy from its built-in YAML file.
     attacker_prompt = SeedPrompt.from_yaml_file(RTASystemPromptPaths.TEXT_GENERATION.value)
 
-    attack = RedTeamingAttack(
-        objective_target=target,
-        attack_adversarial_config=AttackAdversarialConfig(
-            target=adversarial,
-            system_prompt=attacker_prompt,
-        ),
-        attack_scoring_config=AttackScoringConfig(
-            objective_scorer=ConversationRubricScorer(
-                judge=judge,
-                rubrics=objective_rubrics(objectives, rubrics, judged_prompt),
-            ),
-            # NOT auxiliary_scorers=canary_scorers: checked against PyRIT 1.1.0's source,
-            # RedTeamingAttack never calls attack_scoring_config.auxiliary_scorers at all
-            # (unlike CrescendoAttack and PromptSendingAttack) - it would silently accept
-            # the list and never run it. score_every_turn() below runs it ourselves,
-            # after the attack, with the same PyRIT scoring call Crescendo uses internally.
-        ),
-        max_turns=MAX_TURNS,
-    )
-
-    goals, overrides = expand_repeats(objectives, repeats, run_labels)
+    completed, incomplete = [], []
     async with heartbeat(calls=calls, estimate=estimate):
-        executor_result = await AttackExecutor(max_concurrency=MAX_CONCURRENCY).execute_attack_async(
-            attack=attack,
-            objectives=goals,
-            **prepended,
-            field_overrides=overrides,
-            return_partial_on_failure=True,
-        )
-    completed = executor_result.completed_results
-    incomplete = executor_result.incomplete_objectives
+        for encoding, converter_kwargs in attack_passes:
+            attack = RedTeamingAttack(
+                objective_target=target,
+                attack_adversarial_config=AttackAdversarialConfig(
+                    target=adversarial,
+                    system_prompt=attacker_prompt,
+                ),
+                attack_scoring_config=AttackScoringConfig(
+                    objective_scorer=ConversationRubricScorer(
+                        judge=judge,
+                        rubrics=objective_rubrics(objectives, rubrics, judged_prompt),
+                    ),
+                    # NOT auxiliary_scorers=canary_scorers: checked against PyRIT 1.1.0's source,
+                    # RedTeamingAttack never calls attack_scoring_config.auxiliary_scorers at all
+                    # (unlike CrescendoAttack and PromptSendingAttack) - it would silently accept
+                    # the list and never run it. score_every_turn() below runs it ourselves,
+                    # after the attack, with the same PyRIT scoring call Crescendo uses internally.
+                ),
+                max_turns=MAX_TURNS,
+                **converter_kwargs,
+            )
+            goals, overrides = expand_repeats(objectives, repeats, run_labels, encoding)
+            executor_result = await AttackExecutor(max_concurrency=MAX_CONCURRENCY).execute_attack_async(
+                attack=attack,
+                objectives=goals,
+                **prepended,
+                field_overrides=overrides,
+                return_partial_on_failure=True,
+            )
+            completed += executor_result.completed_results
+            incomplete += executor_result.incomplete_objectives
 
     memory = CentralMemory.get_memory_instance()
     needs_prompt = {o.goal for o in objectives if o.needs_system_prompt}
-    achieved: Counter[str] = Counter()
-    unverified: Counter[str] = Counter()
+    achieved: Counter[tuple[str, str]] = Counter()
+    unverified: Counter[tuple[str, str]] = Counter()
     leaks = 0
     record_leaks = 0
     other_hits = 0
@@ -330,19 +365,21 @@ async def main() -> int:
     for result in completed:
         await score_every_turn(memory, result, canary_scorers)
         success = result.outcome == AttackOutcome.SUCCESS
+        encoding = (result.labels or {}).get("rt_encoding", "")
         # Unverified when no known prompt was judged against - whichever target type.
         # judged_prompt is set for a model with a system prompt, or an app with
         # APP_SYSTEM_PROMPT_FILE; it is None for a bare model or an app with neither.
         if success and not judged_prompt and result.objective in needs_prompt:
             verdict = "UNVERIFIED"
-            unverified[result.objective] += 1
+            unverified[(result.objective, encoding)] += 1
         elif success:
             verdict = "ACHIEVED"
-            achieved[result.objective] += 1
+            achieved[(result.objective, encoding)] += 1
         else:
             verdict = result.outcome.value.upper()
         repeat = (result.labels or {}).get("rt_repeat")
-        print(f"[{verdict}] {result.objective[:90]}" + (f" (repeat {repeat})" if repeats > 1 else ""))
+        enc_tag = f" [{encoding}]" if encoding else ""
+        print(f"[{verdict}]{enc_tag} {result.objective[:90]}" + (f" (repeat {repeat})" if repeats > 1 else ""))
         print(f"  turns={result.executed_turns}  reason={result.outcome_reason}")
         if leaked_anywhere(memory, result, CANARY_CHECK):
             leaks += 1
@@ -361,13 +398,15 @@ async def main() -> int:
 
     print("=" * 78)
     minutes, seconds = divmod(round(time.monotonic() - started), 60)
-    print(f"RED TEAM COMPLETE - {len(objectives)} objective(s) x {repeats}, in {minutes}m {seconds:02d}s")
+    print(f"RED TEAM COMPLETE - {len(objectives)} objective(s){encoded_note} x {repeats}, in {minutes}m {seconds:02d}s")
     print("=" * 78)
     for objective in objectives:
-        line = f"  achieved {achieved[objective.goal]} of {repeats}: {objective.goal[:100]}"
-        if unverified[objective.goal]:
-            line += f"  ({unverified[objective.goal]} more unverified: no system prompt)"
-        print(line)
+        for encoding, _ in attack_passes:
+            enc_tag = f" [{encoding}]" if encoding else ""
+            line = f"  achieved {achieved[(objective.goal, encoding)]} of {repeats}{enc_tag}: {objective.goal[:100]}"
+            if unverified[(objective.goal, encoding)]:
+                line += f"  ({unverified[(objective.goal, encoding)]} more unverified: no system prompt)"
+            print(line)
     if leaks:
         print(f"\n{leaks} conversation(s) leaked the canary token.")
     if record_leaks:
@@ -387,4 +426,7 @@ async def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(asyncio.run(main()))
+    args = parse_args(campaign="red team")
+    if args.show_judge_prompt is not None:
+        sys.exit(show_judge_prompt(get_profile(), args.show_judge_prompt))
+    sys.exit(asyncio.run(main(args.converters, args.no_control)))

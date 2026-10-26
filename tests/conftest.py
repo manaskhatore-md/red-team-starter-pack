@@ -19,6 +19,11 @@ them as "xfailed". When a fix lands, the test starts passing, strict mode turns
 that into a failure, and whoever fixed it removes the marker. A bug cannot be
 fixed - or come back - without the suite noticing.
 
+HOUSE STYLE tests (marked house_style) hold the shipped rubrics to the pack's own
+wording, which the kit does not rely on. They always run. A fork that rewords its
+rubrics turns them off with -m "not house_style" (see pytest.ini); rubrics.check
+still holds its rubrics to what the kit does rely on.
+
 Shared fixtures are here; shared fakes and helpers that tests import by name are in
 tests/helpers.py.
 """
@@ -52,6 +57,21 @@ PROVIDER_KEYS = (
     "PROJECT_ID",
     "GOOGLE_VERTEX_REGION",
 )
+
+HOUSE_STYLE_NOTE = (
+    "This test checks the pack's own rubric wording, which the kit does not rely on. "
+    "If you reworded your rubrics on purpose, turn these tests off: add -m \"not house_style\" "
+    "to addopts in pytest.ini. Then run python -m harnesses.pyrit_campaigns.rubrics check "
+    "for what the kit does rely on."
+)
+
+
+@pytest.hookimpl(hookwrapper=True)
+def pytest_runtest_makereport(item, call):
+    """Say, under a failed house_style test, that a fork can turn these off and how."""
+    report = (yield).get_result()
+    if report.failed and item.get_closest_marker("house_style"):
+        report.sections.append(("house style", HOUSE_STYLE_NOTE))
 
 
 @pytest.fixture(autouse=True)

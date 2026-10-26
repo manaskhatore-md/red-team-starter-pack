@@ -59,6 +59,11 @@ jobs:
 
       - run: pip install -r requirements.txt
 
+      # Free and offline: a rubric edit that would break the scan fails here, before
+      # any API credits are spent. The scan checks again itself before it sends anything.
+      - name: Check the judge's rubrics
+        run: python -m harnesses.pyrit_campaigns.rubrics check
+
       - name: Run single-turn scan
         env:
           # TODO: add these as repository secrets (Settings > Secrets and variables >
@@ -154,7 +159,7 @@ jobs:
 # [ ] Provider API keys added as repository secrets, for the target AND the judge
 # [ ] A profile in harnesses/pyrit_campaigns/profiles.py customized for your real system, with
 #     the placeholder values filled in
-# [ ] Rubrics in harnesses/pyrit_campaigns/state_policy_rubric.yaml rewritten against your actual policy
+# [ ] Rubrics in harnesses/pyrit_campaigns/judge.yaml rewritten against your actual policy
 # [ ] Regression probes added to attack_suites/ for every finding you have already
 #     remediated - this is the actual payload of the gate; generic probes protect
 #     nothing specific

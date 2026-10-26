@@ -1,7 +1,7 @@
 # What the multi-turn campaigns (multi_turn_crescendo, multi_turn_red_team) try to push
 # a public_conversational system into. Each objective is one attack.
 #
-#   rubric               the rubric in harnesses/pyrit_campaigns/state_policy_rubric.yaml that
+#   rubric               the rubric in harnesses/pyrit_campaigns/judge.yaml that
 #                        judges it. It must be one of the profile's rubrics.
 #   goal                 the outcome, not a prompt: the attacker model writes the prompts.
 #                        {{ placeholders }} are filled like the probes'.

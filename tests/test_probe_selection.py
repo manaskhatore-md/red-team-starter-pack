@@ -6,15 +6,24 @@ import pytest
 from pyrit.memory import CentralMemory
 
 from harnesses.pyrit_campaigns import single_turn_scan as scan
-from harnesses.pyrit_campaigns.profiles import PROFILES, get_profile
+from harnesses.pyrit_campaigns.profiles import PROFILES, SUITES, get_profile
 from scripts import run_summary
 from helpers import FakeModel, scan_main
 from test_bias_pairs import PairJudge
 
+# Every probe in every suite, numbered as --list-probes numbers them.
+ALL = scan.load_probes()
+TOTAL = len(ALL)
+
+
+def number(name: str) -> int:
+    """A probe's 1-based number in --list-probes."""
+    return next(i for i, p in enumerate(ALL, 1) if p.name == name)
+
 
 def test_category_keywords_partition_probes_cleanly():
     probes = scan.profile_probes(get_profile("constituent_decision"))
-    assert len(probes) == 128
+    assert probes == ALL
 
     general = scan.select_probes(probes, "general")
     core = scan.select_probes(probes, "core")
@@ -25,37 +34,26 @@ def test_category_keywords_partition_probes_cleanly():
     hallucination_core = scan.select_probes(probes, "hallucination-core")
     hallucination_templated = scan.select_probes(probes, "hallucination-templated")
 
-    # general (82) = prompt_injection (19) + sensitive_data_leakage (8) + excessive_agency (33)
-    # + hallucination (22)
-    assert len(general) == 82
-    assert all(p.dataset != "algorithmic_bias" for p in general)
+    # general = every suite but bias, in suite order; with bias, every probe.
+    assert general == [p for suite in SUITES if suite != "algorithmic_bias" for p in scan.select_probes(probes, suite)]
+    assert set(general) | set(bias) == set(probes) and not set(general) & set(bias)
 
-    # bias-core (10) = 5 inline bias pairs; bias-templated (36) = 18 fixture-expanded bias pairs
-    assert len(bias_core) == 10
-    assert all(p.dataset == "algorithmic_bias" and not p.template for p in bias_core)
-    assert len(bias_templated) == 36
-    assert all(p.dataset == "algorithmic_bias" and p.template for p in bias_templated)
-
-    # bias (46) = bias-core (10) + bias-templated (36)
+    # bias = its inline pairs (bias-core), then the ones its fixtures make (bias-templated).
+    assert bias_core and all(p.dataset == "algorithmic_bias" and not p.template for p in bias_core)
+    assert bias_templated and all(p.dataset == "algorithmic_bias" and p.template for p in bias_templated)
     assert bias == bias_core + bias_templated
 
-    # hallucination-core (7) = the written-out probes; hallucination-templated (15) = 3
-    # templates over 3 references + 3 templates over 2 excerpts
-    assert len(hallucination_core) == 7
-    assert all(p.dataset == "hallucination" and not p.template for p in hallucination_core)
-    assert len(hallucination_templated) == 15
-    assert all(p.dataset == "hallucination" and p.template for p in hallucination_templated)
+    # hallucination = the written-out probes (hallucination-core), then the ones its
+    # fixtures make (hallucination-templated).
+    assert hallucination_core and all(p.dataset == "hallucination" and not p.template for p in hallucination_core)
+    assert hallucination_templated and all(p.dataset == "hallucination" and p.template for p in hallucination_templated)
     assert hallucination == hallucination_core + hallucination_templated
 
-    # core (77 on constituent_decision; 69 on public_conversational) = general + bias-core,
-    # less the templated hallucination probes
-    assert len(core) == 77
-    assert all(p.dataset not in ("algorithmic_bias", "hallucination") or not p.template for p in core)
+    # core = general + bias-core, less the templated hallucination probes: everything but
+    # the templated probes, in any profile.
     assert set(core) == (set(general) - set(hallucination_templated)) | set(bias_core)
-
     pub_probes = scan.profile_probes(get_profile("public_conversational"))
-    assert len(pub_probes) == 105
-    assert len(scan.select_probes(pub_probes, "core")) == 69
+    assert set(scan.select_probes(pub_probes, "core")) == set(pub_probes) - set(bias_templated) - set(hallucination_templated)
 
     # Underscore aliases and 'all' / empty spec also work.
     assert scan.select_probes(probes, "bias_core") == bias_core
@@ -74,7 +72,7 @@ def test_selecting_by_name_dataset_pair_id_and_range():
 
     # Dataset name
     by_dataset = scan.select_probes(probes, "prompt_injection")
-    assert len(by_dataset) == 19
+    assert by_dataset and len(by_dataset) == sum(p.dataset == "prompt_injection" for p in probes)
     assert all(p.dataset == "prompt_injection" for p in by_dataset)
 
     # Pair id selects both halves directly
@@ -94,7 +92,7 @@ def test_selecting_by_name_dataset_pair_id_and_range():
 
 def test_selecting_half_of_an_inline_pair_auto_includes_partner_in_file_order(capsys):
     probes = scan.profile_probes(get_profile("constituent_decision"))
-    # dialect_sae is the second half (#84); dialect_aave is the first half (#83).
+    # dialect_sae is the second half; dialect_aave, the probe before it, is the first.
     selected = scan.select_probes(probes, "dialect_sae")
     out = capsys.readouterr().out
 
@@ -105,43 +103,38 @@ def test_selecting_half_of_an_inline_pair_auto_includes_partner_in_file_order(ca
 
 def test_selecting_half_of_a_templated_pair_auto_includes_non_adjacent_partner_in_file_order(capsys):
     probes = scan.profile_probes(get_profile("constituent_decision"))
-    # In algorithmic_bias.yaml, all 3 scenario_dialect_standard[..] probes (#93-95) appear
-    # before all 3 scenario_dialect_aave[..] probes (#96-98).
-    selected_one = scan.select_probes(probes, "scenario_dialect_aave[hours]")
-    assert [p.name for p in selected_one] == [
-        "scenario_dialect_standard[hours]",
-        "scenario_dialect_aave[hours]",
-    ]
 
-    # Selecting one half's template name pulls in all 3 partners from the other template.
+    def made_by(template):
+        return [p for p in probes if p.template == template]
+
+    # In algorithmic_bias.yaml, the scenario_dialect_standard[..] probes, one per fixture
+    # entry, come just before the scenario_dialect_aave[..] probes.
+    standard, aave = made_by("scenario_dialect_standard"), made_by("scenario_dialect_aave")
+    assert len(standard) == len(aave) > 1
+    assert probes.index(aave[0]) == probes.index(standard[-1]) + 1
+    selected_one = scan.select_probes(probes, aave[0].name)
+    assert selected_one == [standard[0], aave[0]]
+
+    # Selecting one half's template name pulls in every partner from the other template.
     selected_template = scan.select_probes(probes, "scenario_spanish")
-    assert [p.name for p in selected_template] == [
-        "scenario_spanish_english[hours]",
-        "scenario_spanish_english[gig_income]",
-        "scenario_spanish_english[job_loss]",
-        "scenario_spanish[hours]",
-        "scenario_spanish[gig_income]",
-        "scenario_spanish[job_loss]",
-    ]
+    assert selected_template == made_by("scenario_spanish_english") + made_by("scenario_spanish")
 
-    # Selecting a range that crosses pair boundaries (#95 is standard[job_loss], #96 is aave[hours])
-    # pulls in #93 (standard[hours]) and #98 (aave[job_loss]) in original file order.
-    selected_range = scan.select_probes(probes, "95-96")
-    assert [p.name for p in selected_range] == [
-        "scenario_dialect_standard[hours]",
-        "scenario_dialect_standard[job_loss]",
-        "scenario_dialect_aave[hours]",
-        "scenario_dialect_aave[job_loss]",
-    ]
+    # A range that crosses pair boundaries (the last standard probe to the first aave one)
+    # pulls in each one's partner, in original file order.
+    selected_range = scan.select_probes(probes, f"{number(standard[-1].name)}-{number(aave[0].name)}")
+    assert selected_range == [standard[0], standard[-1], aave[0], aave[-1]]
+
+
+OUT_OF_RANGE = re.escape(f"out of range: there are {TOTAL} probe(s) (1-{TOTAL})")
 
 
 @pytest.mark.parametrize(
     "profile_key, spec, match",
     [
         ("constituent_decision", "no_such_probe", "Unknown probe selector 'no_such_probe'"),
-        ("constituent_decision", "0", "out of range: there are 128 probe\\(s\\) \\(1-128\\)"),
-        ("constituent_decision", "129", "out of range: there are 128 probe\\(s\\) \\(1-128\\)"),
-        ("constituent_decision", "1-999", "out of range: there are 128 probe\\(s\\) \\(1-128\\)"),
+        ("constituent_decision", "0", OUT_OF_RANGE),
+        ("constituent_decision", str(TOTAL + 1), OUT_OF_RANGE),
+        ("constituent_decision", f"1-{TOTAL + 1}", OUT_OF_RANGE),
         ("constituent_decision", "10-5", "has start > end: write 5-10 instead"),
         ("constituent_decision", " , ", "Empty probe selector"),
         # A subset with no bias probes, as a named profile's own spec gives.
@@ -161,9 +154,12 @@ def test_list_probes_shows_original_numbers_and_supports_filtering(capsys):
     scan.list_probes(profile, "dialect_sae")
     out = capsys.readouterr().out
 
-    assert "Probe filter (dialect_sae): 2 of 128 probe(s) selected." in out
-    assert "[83] algorithmic_bias / dialect_aave  [unauthorized_determination]  (pair: dialect_01)" in out
-    assert "[84] algorithmic_bias / dialect_sae  [unauthorized_determination]  (pair: dialect_01)" in out
+    assert f"Probe filter (dialect_sae): 2 of {TOTAL} probe(s) selected." in out
+    # Numbered as in the full list, not 1 and 2.
+    aave, sae = number("dialect_aave"), number("dialect_sae")
+    assert sae == aave + 1 > 2
+    assert f"[{aave}] algorithmic_bias / dialect_aave  [unauthorized_determination]  (pair: dialect_01)" in out
+    assert f"[{sae}] algorithmic_bias / dialect_sae  [unauthorized_determination]  (pair: dialect_01)" in out
     assert "2 of 2 probe(s) would be sent" in out
 
 
@@ -173,13 +169,14 @@ def test_a_probe_has_the_same_number_under_every_profile(capsys):
         scan.list_probes(get_profile(key))
         for number, dataset, name in re.findall(r"^\[(\d+)\] (\S+) / (\S+)", capsys.readouterr().out, re.MULTILINE):
             assert numbered.setdefault((dataset, name), number) == number, (key, dataset, name)
-    assert len(numbered) == 128
+    assert len(numbered) == TOTAL
 
 
 def test_probes_replaces_a_named_profiles_selection(capsys):
     # internal_productivity picks no bias probes; --probes picks from every suite.
     scan.list_probes(get_profile("internal_productivity"), "bias-core")
-    assert "Probe filter (bias-core): 10 of 128 probe(s) selected." in capsys.readouterr().out
+    bias_core = len(scan.select_probes(ALL, "bias-core"))
+    assert f"Probe filter (bias-core): {bias_core} of {TOTAL} probe(s) selected." in capsys.readouterr().out
 
 
 def test_scan_main_respects_rt_probes_and_records_filter_in_summary(memory, monkeypatch, capsys):
@@ -192,8 +189,8 @@ def test_scan_main_respects_rt_probes_and_records_filter_in_summary(memory, monk
     out = capsys.readouterr().out
 
     assert exit_code == 0
-    assert "Probe filter (dialect_sae): 2 of 128 probe(s) selected." in out
-    assert "Sending 2 probes: 2 graded by unauthorized_determination; then 1 matched pairs compared." in out
+    assert f"Probe filter (dialect_sae): 2 of {TOTAL} probe(s) selected." in out
+    assert "Sending 2 probes" in out and "1 matched pairs compared" in out
     assert len(target.seen) == 2
 
     results = [
