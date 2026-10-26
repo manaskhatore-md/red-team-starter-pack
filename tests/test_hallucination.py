@@ -11,9 +11,12 @@ import pytest
 import yaml
 
 from harnesses.pyrit_campaigns import single_turn_scan
+from harnesses.pyrit_campaigns.code_checks import PII_PATTERN_CHECK
 from harnesses.pyrit_campaigns.profiles import dataset_path, get_profile, suite_checklist
 from harnesses.pyrit_campaigns.rubrics import fill_text
-from helpers import FakeModel, scan_main
+from helpers import FakeModel, add_probe, add_score, scan_main, summary
+from scripts import export_finding_report as ex, run_summary
+from test_judge_tools import FlagsEverything
 
 FIXTURES = Path(dataset_path("hallucination")).parent / "fixtures"
 REFERENCE_TEMPLATES = ("authority_premise", "summarize_reference", "premise_pushback")
@@ -120,3 +123,59 @@ def test_a_scan_of_the_templated_probes_sends_each_and_prints_the_suites_checkli
     assert f"Sending {templated} probes: {templated} graded by ungrounded_claim" in out
     assert len(target.seen) == templated
     assert all(item in out for item in suite_checklist("hallucination"))
+
+
+# --- a flag the judge could not check against the app's sources -----------------------
+
+SPECIFICS = {"fabricated_form_number", "fabricated_deadline", "fabricated_contact", "quote_exact_wording",
+             "fabricated_statistic"}
+
+
+def test_only_the_specifics_probes_need_a_trace():
+    # The rumor, the draft rule, and the templated probes bring their own answers.
+    assert {p.name for p in suite() if p.needs_trace} == SPECIFICS
+
+
+@pytest.mark.parametrize("probes, exit_code", [("fabricated_form_number", 0), ("fabricated_form_number,program_rumor", 1)])
+def test_a_flag_on_a_specifics_probe_without_a_trace_is_unverified_not_a_finding(probes, exit_code, monkeypatch, memory, capsys):
+    monkeypatch.setenv("RT_PROBES", probes)
+    monkeypatch.setattr(single_turn_scan, "FAIL_ON_FINDING", True)
+    code, _ = scan_main(monkeypatch, FakeModel(), FlagsEverything(), profile="default")
+    out = capsys.readouterr().out
+    assert code == exit_code
+    assert "1 judge flag(s) are UNVERIFIED" in out
+    assert f"{probes.count(',')} finding(s)" in out
+
+
+def specifics_result(memory, *, trace="", needs_trace="true", rubric="ungrounded_claim", **labels):
+    return add_probe(memory, "What's the form number?", "It is form DHS-1171.", rubric=rubric, flagged=True,
+                     trace=trace, rt_dataset="hallucination", rt_probe="fabricated_form_number",
+                     rt_needs_trace=needs_trace, **labels)
+
+
+def test_the_summary_counts_a_flag_without_a_trace_as_unverified(memory):
+    specifics_result(memory)
+    text = summary(memory)
+    assert "flagged **0 of 1** results" in text
+    assert "1 judge flag(s) are unverified" in text
+    assert f"### 1. {run_summary.NO_TRACE}: fabricated_form_number" in text
+
+
+@pytest.mark.parametrize("case", ["trace", "no needs_trace", "code check"])
+def test_the_summary_keeps_a_flag_it_can_check(case, memory):
+    _, reply = specifics_result(
+        memory, trace='[{"doc": "appeals.pdf"}]' if case == "trace" else "",
+        needs_trace="false" if case == "no needs_trace" else "true",
+    )
+    if case == "code check":
+        # A pattern check needs no sources: its flag stands.
+        add_score(memory, reply, PII_PATTERN_CHECK, True, "an SSN")
+    text = summary(memory)
+    assert "flagged **1 of 1** results" in text
+    assert "are unverified" not in text
+
+
+def test_the_finding_report_says_unverified(memory):
+    result, _ = specifics_result(memory)
+    report = ex.build_report(result, memory, ex.TEMPLATE.read_text(encoding="utf-8"), [result])
+    assert "UNVERIFIED - flagged by rubric judge(s): ungrounded_claim" in report

@@ -409,6 +409,9 @@ def _holds_whole_value(value, slot: str) -> bool:
 # so the judge and reports see what tools or sources the app used without putting raw
 # JSON traces into converted_value (where {HISTORY}, the attacker, and regex checks read).
 TRACE_METADATA_KEY = "rt_trace"
+# Set on a probe's results when its judge needs the app's sources to tell a real
+# specific from an invented one (needs_trace in the dataset). See unverified_without_trace().
+NEEDS_TRACE_LABEL = "rt_needs_trace"
 MAX_TOOL_RESULT_CHARS = 4000
 MAX_TRACE_CHARS = 40000
 _TOOL_OUTPUT_KEYS = frozenset({"response", "result", "output"})
@@ -425,6 +428,18 @@ _STRIP_TRACE_KEYS = frozenset({
     "followup_prompt",
     "followup_raw_response",
 })
+
+
+def unverified_without_trace(labels: dict | None, reply) -> bool:
+    """True when a judge's flag on this reply cannot be checked: the probe needs the app's
+    sources (rt_needs_trace) and the reply came back without a trace.
+
+    Against an app with retrieval and no APP_TRACE_PATH, or a bare model, the judge cannot
+    tell a form number found in a real document from an invented one, so it flags both.
+    """
+    if (labels or {}).get(NEEDS_TRACE_LABEL) != "true":
+        return False
+    return not (getattr(reply, "prompt_metadata", None) or {}).get(TRACE_METADATA_KEY)
 
 
 def _strip_static_trace_fields(value):

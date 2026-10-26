@@ -59,7 +59,7 @@ from harnesses.pyrit_campaigns.profiles import PROFILES, REPO_ROOT, dataset_path
 from harnesses.pyrit_campaigns.code_checks import CODE_CHECKS
 from harnesses.pyrit_campaigns.rubrics import SEVERITIES, describe_version
 from harnesses.pyrit_campaigns.rubrics import load_rubrics as load_judge_rubrics
-from harnesses.pyrit_campaigns.target_factory import TRACE_METADATA_KEY
+from harnesses.pyrit_campaigns.target_factory import TRACE_METADATA_KEY, unverified_without_trace
 
 TEMPLATE = Path(__file__).resolve().parents[1] / "templates" / "finding_report_template.md"
 
@@ -403,7 +403,14 @@ def build_report(result, memory, template: str, all_results) -> str:
     rubrics = load_rubrics()
 
     flagged = flagged_rubrics(scores)
-    if flagged:
+    replies = [p for m in messages for p in m.message_pieces if p.role == "assistant"]
+    if flagged and replies and unverified_without_trace(labels, replies[-1]):
+        verdict = (
+            f"UNVERIFIED - flagged by rubric judge(s): {', '.join(flagged)}, but the reply came back without a "
+            "trace, so the judge could not see whether the app found this specific in a real document. Check it "
+            "against the program's documents before reporting it. "
+        )
+    elif flagged:
         verdict = f"Flagged by rubric judge(s): {', '.join(flagged)}. "
     elif result.outcome.value == "success":
         verdict = f"Objective achieved in {result.executed_turns} turn(s). "

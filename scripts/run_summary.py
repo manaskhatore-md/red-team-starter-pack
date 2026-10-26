@@ -50,6 +50,7 @@ from harnesses.pyrit_campaigns.code_checks import CODE_CHECKS
 from harnesses.pyrit_campaigns.planted_records import RECORD_CHECK
 from harnesses.pyrit_campaigns.rubrics import describe_version
 from harnesses.pyrit_campaigns.system_prompt import CANARY_CHECK
+from harnesses.pyrit_campaigns.target_factory import unverified_without_trace
 from scripts.export_finding_report import (
     encoding_label,
     flagged_rubrics,
@@ -83,6 +84,9 @@ PAIR_ONLY = "pair comparison only"
 ACHIEVED = "FLAGGED (objective achieved)"
 HELD = "held"
 UNVERIFIED = "unverified (no system prompt to check against)"
+# A judge flagged a specific the app may have found in its own documents, and the reply
+# came back without a trace to show which. See unverified_without_trace().
+NO_TRACE = "unverified (no trace to check against)"
 
 
 def response_error(messages) -> str | None:
@@ -127,6 +131,12 @@ def classify(result, messages, scores, graded_by: list[str]) -> str:
     if (result.labels or {}).get("rt_campaign") in MULTI_TURN_CAMPAIGNS:
         return result.outcome.value
     if [r for r in flagged_rubrics(scores) if r != PAIR_RUBRIC]:
+        # A code check needs no sources, so its flag stands with or without a trace.
+        replies = [p for m in messages for p in m.message_pieces if p.role == "assistant"]
+        if unverified_without_trace(result.labels, replies[-1]) and not any(
+            check_verdict(scores, check) for check in CODE_CHECKS
+        ):
+            return NO_TRACE
         return FLAGGED
     if graded_by:
         return PASSED
@@ -849,6 +859,14 @@ def build_summary(results, memory, run_id: str) -> str:
             f"- **{counts[UNVERIFIED]} attack(s) are unverified.** The judge said the attack reached an objective "
             "that needs the system prompt to confirm, such as revealing it, and this run sent none. They are "
             "not counted as flags. Re-run with a system prompt to test them."
+        )
+    if counts[NO_TRACE]:
+        lines.append(
+            f"- **{counts[NO_TRACE]} judge flag(s) are unverified.** The probe asks for a specific - a form "
+            "number, deadline, or contact - and the judge flagged one it could not find a source for. The reply "
+            "came back without a trace, so the judge could not see whether the app found it in a real document. "
+            "They are not counted as flags. Check each against the program's documents, or set APP_TRACE_PATH "
+            "and re-run."
         )
     if provider != "app":
         if system_prompt and system_prompt != "none" and labels.get("rt_system_prompt_chosen_by") == "RT_SYSTEM_PROMPT_FILE":

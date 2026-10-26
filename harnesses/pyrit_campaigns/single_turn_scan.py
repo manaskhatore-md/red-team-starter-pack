@@ -54,7 +54,8 @@ PROBE SELECTION: every probe in every suite is numbered, in the order of SUITES 
 profiles.py, and the profile picks which run (`core` for the built-in default, with
 RT_PROFILE unset). Pass `--probes <spec>` (or set `RT_PROBES=<spec>` in .env) with one or
 more comma-separated selectors to run others instead, or `all` for every probe:
-  - Category keywords: `general` (non-bias probes), `core` (everything except the
+  - Category keywords: `general` (every suite but bias, the hallucination templates
+    included), `core` (everything except the
     fixture-expanded bias and hallucination templates), `bias` (all bias probes),
     `bias-core` (inline bias pairs only), `bias-templated` (fixture-expanded bias pairs
     only), and `hallucination`, `hallucination-core`, `hallucination-templated` the same
@@ -151,7 +152,7 @@ from harnesses.pyrit_campaigns.profiles import (
     get_profile,
     placeholders,
 )
-from harnesses.pyrit_campaigns.code_checks import KnownPromptLeakScorer, code_scorers, fill_pattern_check
+from harnesses.pyrit_campaigns.code_checks import CODE_CHECKS, KnownPromptLeakScorer, code_scorers, fill_pattern_check
 from harnesses.pyrit_campaigns.planted_records import PlantedRecordScorer, records_for, records_section
 from harnesses.pyrit_campaigns.rubrics import (
     KIT_SLOTS,
@@ -173,6 +174,7 @@ from harnesses.pyrit_campaigns.system_prompt import (
 )
 from scripts.run_summary import write_after_run
 from harnesses.pyrit_campaigns.target_factory import (
+    NEEDS_TRACE_LABEL,
     TRACE_METADATA_KEY,
     build_scoring_target,
     build_target,
@@ -180,6 +182,7 @@ from harnesses.pyrit_campaigns.target_factory import (
     close_target,
     model_name,
     resolve_provider,
+    unverified_without_trace,
 )
 
 # TODO: raise once you know your provider's rate limit; lower it if you are being
@@ -308,6 +311,9 @@ class Probe:
     # The probe asks for the system prompt or the rules. See instruction_requests() in
     # scripts/run_summary.py.
     asks_for_instructions: bool = False
+    # The judge needs the app's sources to tell a real specific from an invented one, so a
+    # flag on a reply with no trace is unverified, not a finding. See unverified_without_trace().
+    needs_trace: bool = False
     # Facts the judge is shown about this probe, from its metadata's judge_context:
     # (SLOT, text) pairs, each filling [[SLOT]] in the rubrics that grade it.
     judge_context: tuple[tuple[str, str], ...] = ()
@@ -373,6 +379,7 @@ def load_probes(datasets=None) -> list[Probe]:
                         control=bool(metadata.get("control")),
                         pass_criteria=" ".join(fill(str(metadata.get("pass_criteria", "")), **values).split()),
                         asks_for_instructions=bool(metadata.get("asks_for_instructions")),
+                        needs_trace=bool(metadata.get("needs_trace")),
                         judge_context=judge_context(
                             metadata.get("judge_context"), f"{path.name}, probe {expanded.name!r}", values
                         ),
@@ -1039,6 +1046,7 @@ def expand_repeats(
                     "rt_variant": probe.variant,
                     "rt_control": "true" if probe.control else "",
                     "rt_asks_for_instructions": str(probe.asks_for_instructions).lower(),
+                    NEEDS_TRACE_LABEL: str(probe.needs_trace).lower(),
                     "rt_template": probe.template,
                     "rt_fixture": probe.fixture,
                     "rt_repeat": str(repeat),
@@ -1459,6 +1467,8 @@ async def main(
 
     memory = CentralMemory.get_memory_instance()
     findings: list[tuple[str, str, str]] = []   # (rubric, probe, rationale)
+    # Judge flags on a needs_trace probe whose reply had no trace: printed, not counted.
+    unverified: list[tuple[str, str, str]] = []
     errors: list[str] = []
     by_rubric: Counter[str] = Counter()
 
@@ -1485,12 +1495,16 @@ async def main(
             continue
 
         flagged = False
+        no_trace = unverified_without_trace(labels, response)
         for score in memory.get_prompt_scores(conversation_id=result.conversation_id):
             # score_category is a list - a scorer can carry several. Flatten it so it
             # can be used as a grouping key.
             categories = score.score_category or []
             rubric = ", ".join(categories) if isinstance(categories, list) else str(categories)
-            if score.get_value() is True:
+            if score.get_value() is True and no_trace and rubric not in CODE_CHECKS:
+                # A code check needs no sources, so only a judge's flag is unverified.
+                unverified.append((rubric, probe, score.score_rationale or ""))
+            elif score.get_value() is True:
                 findings.append((rubric, probe, score.score_rationale or ""))
                 by_rubric[rubric] += 1
                 flagged = True
@@ -1602,6 +1616,15 @@ async def main(
         print(f"\n[FINDING: {rubric}]" + (f" flagged in {len(rationales)} of {repeats} repeats" if repeats > 1 else ""))
         print(f"  probe:     {probe[:150]}")
         print(f"  rationale: {rationales[0][:300]}")
+
+    if unverified:
+        print(
+            f"\n{len(unverified)} judge flag(s) are UNVERIFIED, not counted as findings: the probe asks for a "
+            "specific the app may have found in its own documents, and the reply came back without a trace "
+            "to show which. Check each against the program's documents, or set APP_TRACE_PATH and re-run:"
+        )
+        for rubric, probe in dict.fromkeys((rubric, probe) for rubric, probe, _ in unverified):
+            print(f"  - [{rubric}] {probe[:120]}")
 
     if ungraded:
         print(f"\n{len(ungraded)} probe(s) were not sent because no rubric grades them (see above).")
