@@ -77,7 +77,7 @@ from harnesses.pyrit_campaigns.target_factory import (
     PROMPT_SLOT,
     _fill_slots,
 )
-from scripts.scrub import assert_no_residual_pii, scrub_enabled, scrub_texts
+from scripts.scrub import finish_report, scrub_enabled, scrub_texts
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_FINDINGS_DIR = REPO_ROOT / "findings"
@@ -2109,11 +2109,7 @@ def scrub_results(results: list[CheckResult], *, no_scrub: bool = False) -> list
     texts: list[str] = []
     for r in results:
         texts.extend([r.summary, r.what_it_tests, r.remediation, *r.details])
-    try:
-        scrubbed = scrub_texts(texts)
-    except RuntimeError as e:
-        raise SystemExit(f"PII scrubber error: {e}") from e
-    it = iter(scrubbed)
+    it = iter(scrub_texts(texts))
     out: list[CheckResult] = []
     for r in results:
         summary = next(it)
@@ -2260,7 +2256,7 @@ def render_report(
 
     rendered = "\n".join(lines)
     if scrub_enabled(no_scrub):
-        assert_no_residual_pii(rendered)
+        rendered = finish_report(rendered)
     return rendered
 
 

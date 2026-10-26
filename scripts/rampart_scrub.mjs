@@ -164,7 +164,7 @@ function adjustSpan(text, span, exemptRanges) {
 
   const leftMid = start > 0 && isWordChar(text[start - 1]);
   const rightMid = end < text.length && isWordChar(text[end]);
-  if (leftMid || rightMid) {
+  if (span.source !== "heuristic" && (leftMid || rightMid)) {
     let sub = text.slice(start, end);
     if (/\s/.test(sub)) {
       // Span contains whitespace and ran into an adjacent word (e.g. "Brennan\nCase"

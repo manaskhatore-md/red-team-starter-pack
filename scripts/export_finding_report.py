@@ -61,8 +61,8 @@ from harnesses.pyrit_campaigns.rubrics import SEVERITIES, describe_version
 from harnesses.pyrit_campaigns.rubrics import load_rubrics as load_judge_rubrics
 from harnesses.pyrit_campaigns.target_factory import TRACE_METADATA_KEY
 from scripts.scrub import (
-    assert_no_residual_pii,
     encodings_from_labels,
+    finish_report,
     scrub_enabled,
     scrub_texts,
 )
@@ -473,13 +473,10 @@ def build_report(result, memory, template: str, all_results, *, no_scrub: bool =
     rationales = [s.score_rationale or "" for s in scores]
     if scrub_enabled(no_scrub):
         encodings = encodings_from_labels(labels, partner.labels if partner else None)
-        try:
-            scrubbed = scrub_texts(
-                [objective, outcome_reason, transcript, tool_calls, *rationales],
-                encodings=encodings,
-            )
-        except RuntimeError as e:
-            raise SystemExit(f"PII scrubber error: {e}") from e
+        scrubbed = scrub_texts(
+            [objective, outcome_reason, transcript, tool_calls, *rationales],
+            encodings=encodings,
+        )
         objective, outcome_reason, transcript, tool_calls, *rationales = scrubbed
 
     values |= {
@@ -505,7 +502,7 @@ def build_report(result, memory, template: str, all_results, *, no_scrub: bool =
     }
     rendered = render(template, values)
     if scrub_enabled(no_scrub):
-        assert_no_residual_pii(rendered)
+        rendered = finish_report(rendered)
     return rendered
 
 

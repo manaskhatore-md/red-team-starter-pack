@@ -13,9 +13,20 @@ leaving the kit's own synthetic test data (`Jordan Testcase`, `666-xx-xxxx` SSNs
 `555-01xx` phones, canary tokens) and PyRIT's SQLite database untouched.
 
 Report generators (`export_finding_report`, `run_summary`, `rescore`, `access_checks`)
-run this automatically unless `--no-scrub` or `RT_SCRUB=0` is set. If Node or Rampart
-is not installed, report generation stops with an error rather than writing an
-unscrubbed report.
+run this automatically unless `--no-scrub` or `RT_SCRUB=0` is set.
+
+Two layers:
+
+- Rampart, when Node and the npm package are installed (`npm install` in the repo root):
+  names, street addresses, and the patterns below.
+- Patterns, always, in Python (code_checks.pii_matches plus a street-address pattern):
+  SSNs, card numbers, phone numbers, emails, street addresses. With Rampart, they run
+  last over the whole report and redact anything it missed. Without Rampart, they are
+  the only layer: the report is still written, names are not checked, and a note at
+  the top of the report says so.
+
+RT_SCRUB_ALLOW lists public contact details to leave visible (an agency's hotline or
+help-desk address), comma-separated. A phone number matches in any format.
 
 You can also scrub existing report files in place:
 
@@ -37,6 +48,7 @@ import re
 import subprocess
 import sys
 import unicodedata
+from collections import Counter
 from collections.abc import Iterable
 from pathlib import Path
 from urllib.parse import unquote
@@ -45,7 +57,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-from harnesses.pyrit_campaigns.code_checks import find_pii
+from harnesses.pyrit_campaigns.code_checks import pii_matches
 from harnesses.pyrit_campaigns.decoding import (
     BASE64_RUN,
     DIGIT_LOOK_ALIKES,
@@ -53,6 +65,7 @@ from harnesses.pyrit_campaigns.decoding import (
     ZERO_WIDTH,
     _look_alikes,
 )
+from harnesses.pyrit_campaigns.planted_records import STREETS
 from harnesses.pyrit_campaigns.profiles import placeholders
 
 RUNNER = Path(__file__).resolve().parent / "rampart_scrub.mjs"
@@ -115,7 +128,58 @@ REPORT_CONVERTER_HINT = re.compile(
 # check blanks them first; code_checks.CARD itself stays broad for the scans.
 UUID = re.compile(r"\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b", re.IGNORECASE)
 
+# A house number, one to three words, and a street type ("418 East Pratt Street",
+# "12 main st, Apt 4", "45 Elm Drive"), or a PO box. Street types that are also ordinary
+# words (drive, court, way, place, square, row...) count only after a capitalized street
+# name, and capitalized themselves, so "1 safe place" and "15 patients saw Dr. Smith" are
+# left alone. The other types match in any case, but not across words like "the" and
+# "to" ("walk 2 blocks to the street"). It misses irregular addresses; Rampart's model
+# is what reads those.
+STREET_TYPES = ("Street", "St", "Avenue", "Ave", "Road", "Rd", "Boulevard", "Blvd", "Lane", "Ln",
+                "Parkway", "Pkwy", "Highway", "Hwy")
+WORD_LIKE_STREET_TYPES = ("Drive", "Dr", "Court", "Ct", "Way", "Place", "Pl", "Square", "Sq", "Row",
+                          "Circle", "Cir", "Terrace", "Ter", "Trail", "Trl", "Alley", "Pike")
+NOT_STREET_WORD = r"(?!(?i:the|of|in|a|an|to|and|or|for|on|at|by|with|from|is|are|was|were|has|have|it|this|that)\b)"
+# A capitalized word ("Elm", "ELM", "N") or an ordinal ("25th").
+STREET_NAME_WORD = r"(?:[A-Z][\w.'-]*|\d+(?:st|nd|rd|th))"
+STREET_UNIT = r"(?i:,?\s+(?:Apt|Apartment|Unit|Suite|Ste)\.?\s*#?\s*\w+|,?\s+#\s*\w+)?"
+STREET_ADDRESS = re.compile(
+    rf"\b\d{{1,6}}[A-Za-z]?\s+(?:"
+    rf"(?:{NOT_STREET_WORD}[A-Za-z0-9][\w.'-]*\s+){{1,3}}(?i:{'|'.join(STREET_TYPES)})"
+    rf"|(?:{STREET_NAME_WORD}\s+){{1,3}}"
+    rf"(?:{'|'.join(WORD_LIKE_STREET_TYPES + tuple(t.upper() for t in WORD_LIKE_STREET_TYPES))})"
+    rf")\b{STREET_UNIT}"
+    r"|\b(?i:P\.?\s?O\.?\s+Box)\s+\d+\b"
+)
+# The planted records' streets (planted_records.py) and the address the excessive-agency
+# probes ask the app to change a record to (fixtures/actions.yaml), which stay visible
+# like the rest of the kit's fake data.
+KIT_ADDRESS = re.compile(rf"\b\d+\s+(?:{'|'.join(STREETS)})\b|\b1427 Oak Street\b", re.IGNORECASE)
+
+# What the pattern layer puts in place of each kind it finds.
+PATTERN_LABELS = {
+    "SSN": "SSN",
+    "card number": "CARD_NUMBER",
+    "phone number": "PHONE",
+    "email": "EMAIL",
+    "street address": "STREET_ADDRESS",
+}
+
+# Added to the top of a report scrubbed without Rampart. One line, so it can be found
+# and taken out again when the report is scrubbed later with Rampart.
+NOTICE = (
+    "> **Scrubbing note:** Rampart was not available when this report was scrubbed, so names were not "
+    "checked for and street addresses were checked only by a simple pattern. SSNs, card numbers, phone "
+    "numbers, and email addresses were scrubbed. To scrub names too, install Node.js, run `npm install` "
+    "in the kit's folder, and re-scrub this file with `python -m scripts.scrub <file>`."
+)
+NOTICE_AFTER_TITLE = re.compile(r"\n\n> \*\*Scrubbing note:\*\*[^\n]*")
+NOTICE_AT_TOP = re.compile(r"\A> \*\*Scrubbing note:\*\*[^\n]*\n\n")
+
 _worker: subprocess.Popen | None = None
+# Why Rampart could not run, once it has failed in this process; every later report
+# then uses the patterns only, and carries the NOTICE.
+_rampart_failure: str | None = None
 
 
 def scrub_enabled(no_scrub: bool = False) -> bool:
@@ -126,10 +190,111 @@ def scrub_enabled(no_scrub: bool = False) -> bool:
     return setting not in ("0", "false", "no", "off")
 
 
+def allowed_values() -> list[str]:
+    """The public contact details RT_SCRUB_ALLOW lists, to leave visible in reports."""
+    return [value.strip() for value in os.getenv("RT_SCRUB_ALLOW", "").split(",") if value.strip()]
+
+
 def default_exempt() -> list[str]:
-    """Synthetic names configured for the current profile/env that should not be redacted."""
+    """What stays visible: the profile's synthetic name, and the values RT_SCRUB_ALLOW lists."""
     name = placeholders().get("synthetic_name", "").strip()
-    return [name] if name and not name.startswith("TODO") else []
+    return ([name] if name and not name.startswith("TODO") else []) + allowed_values()
+
+
+def _digit_key(value: str) -> str:
+    """A number's digits, without a leading US country code, so "+1 (410) 767-1100" and "410-767-1100" match."""
+    digits = re.sub(r"\D", "", value)
+    return digits[1:] if len(digits) == 11 and digits.startswith("1") else digits
+
+
+def _pattern_spans(text: str, exempt: Iterable[str] = ()) -> list[tuple[int, int, str]]:
+    """(start, end, kind) of each SSN, card, phone, email, and street address in the text.
+
+    Known test values are skipped (code_checks.pii_matches), and so are the planted
+    records' streets, UUIDs (their digit runs can pass the card checksum), and the
+    exempt values: a number in any format, anything else as written, ignoring case.
+    """
+    exempt = [value for value in exempt if value]
+    exempt_lower = {value.lower() for value in exempt}
+    exempt_digits = {_digit_key(value) for value in exempt if len(_digit_key(value)) >= 7}
+    lowered = text.lower()
+    exempt_ranges = []
+    for value in exempt_lower:
+        start = lowered.find(value)
+        while start != -1:
+            exempt_ranges.append((start, start + len(value)))
+            start = lowered.find(value, start + len(value))
+
+    # Same length, so positions stay right.
+    checked = UUID.sub(lambda m: "x" * len(m.group(0)), text)
+    found = [(m.start(), m.end(), kind) for kind, m in pii_matches(checked)]
+    found += [
+        (m.start(), m.end(), "street address")
+        for m in STREET_ADDRESS.finditer(checked)
+        if not KIT_ADDRESS.search(m.group(0))
+    ]
+
+    spans: list[tuple[int, int, str]] = []
+    # Earliest first and, at the same start, longest first; a match inside one already kept is dropped.
+    for start, end, kind in sorted(found, key=lambda f: (f[0], f[0] - f[1])):
+        value = text[start:end]
+        if value.lower() in exempt_lower or (kind != "email" and _digit_key(value) in exempt_digits):
+            continue
+        if any(s < end and e > start for s, e in exempt_ranges):
+            continue
+        if spans and start < spans[-1][1]:
+            continue
+        spans.append((start, end, kind))
+    return spans
+
+
+def _redact(text: str, spans: list[tuple[int, int, str]]) -> str:
+    for start, end, kind in reversed(spans):
+        text = text[:start] + f"[{PATTERN_LABELS[kind]}_REDACTED]" + text[end:]
+    return text
+
+
+def _pattern_scrub(text: str, exempt: Iterable[str] = ()) -> str:
+    return _redact(text, _pattern_spans(text, exempt))
+
+
+def redact_residual_pii(markdown: str, *, exempt: Iterable[str] | None = None) -> str:
+    """Redact whatever the pattern layer still finds in a whole scrubbed report.
+
+    The report is written either way. What was redacted is printed by kind and line
+    number, never the value itself.
+    """
+    effective_exempt = list(exempt) if exempt is not None else default_exempt()
+    spans = _pattern_spans(markdown, effective_exempt)
+    if not spans:
+        return markdown
+    counts = Counter(kind for _, _, kind in spans)
+    described = ", ".join(
+        f"{n} {kind}" + ("" if n == 1 else "es" if kind.endswith("s") else "s") for kind, n in counts.items()
+    )
+    first_line = markdown.count("\n", 0, spans[0][0]) + 1
+    print(
+        f"PII scrubber: the final check redacted {described} that the first pass missed "
+        f"(first at line {first_line}).",
+        file=sys.stderr,
+    )
+    return _redact(markdown, spans)
+
+
+def strip_notice(markdown: str) -> str:
+    """Take out the NOTICE, so a report re-scrubbed with Rampart loses it."""
+    return NOTICE_AT_TOP.sub("", NOTICE_AFTER_TITLE.sub("", markdown, count=1), count=1)
+
+
+def finish_report(markdown: str, *, exempt: Iterable[str] | None = None) -> str:
+    """The last step before a scrubbed report is written: redact leftovers, and say if Rampart didn't run."""
+    out = redact_residual_pii(strip_notice(markdown), exempt=exempt)
+    if _rampart_failure is None:
+        return out
+    title = re.search(r"^# .*$", out, re.MULTILINE)
+    if title:
+        return out[: title.end()] + "\n\n" + NOTICE + out[title.end() :]
+    return NOTICE + "\n\n" + out
 
 
 def _normalize_encodings(encodings: Iterable[str] | str | None) -> set[str]:
@@ -176,29 +341,6 @@ def _infer_report_encodings(markdown: str) -> set[str]:
     return _normalize_encodings(found)
 
 
-def assert_no_residual_pii(markdown: str) -> None:
-    """Check the entire scrubbed report with code_checks.find_pii() before writing.
-
-    Raises SystemExit naming the kind and line number (never the PII value itself)
-    if any realistic SSN, Luhn-valid card number, non-fictional phone number, or
-    non-test email address remains in the report.
-    """
-    # Same length, so line numbers stay right.
-    checked = UUID.sub(lambda m: "x" * len(m.group(0)), markdown)
-    found = find_pii(checked)
-    for kind, values in found.items():
-        if values:
-            first_val = values[0]
-            idx = checked.find(first_val)
-            line_no = checked.count("\n", 0, idx) + 1 if idx >= 0 else 1
-            count = len(values)
-            label = kind if count == 1 else f"{kind}s"
-            raise SystemExit(
-                f"PII scrubber: {count} {label} still in the report at line {line_no}; report not written. "
-                "Pass `--no-scrub` (or set `RT_SCRUB=0`) if this run contains only synthetic data."
-            )
-
-
 def _stop_worker() -> None:
     global _worker
     if _worker is not None:
@@ -213,6 +355,13 @@ def _stop_worker() -> None:
 
 
 atexit.register(_stop_worker)
+
+
+def reset() -> None:
+    """Stop the worker and forget any Rampart failure, so the next scrub tries Rampart again."""
+    global _rampart_failure
+    _stop_worker()
+    _rampart_failure = None
 
 
 def _get_worker() -> subprocess.Popen:
@@ -231,11 +380,7 @@ def _get_worker() -> subprocess.Popen:
             bufsize=1,
         )
     except FileNotFoundError as e:
-        raise RuntimeError(
-            "Node.js (`node`) is not installed or not on PATH. "
-            "Install Node.js and run `npm install` from the repo root, "
-            "or pass `--no-scrub` (or set `RT_SCRUB=0`) if this run contains only synthetic data."
-        ) from e
+        raise RuntimeError("Node.js (`node`) is not installed or not on PATH") from e
     return _worker
 
 
@@ -424,42 +569,112 @@ def _build_normalized_view(text: str, encodings: set[str] | None = None) -> dict
     return item
 
 
-def scrub_texts(
-    texts: list[str],
-    *,
-    exempt: list[str] | None = None,
-    encodings: Iterable[str] | str | None = None,
-) -> list[str]:
-    """Scrub a batch of strings in one Rampart session so placeholders stay consistent."""
-    if not texts or all(not t or not t.strip() for t in texts):
-        return list(texts)
-    extra = list(exempt) if exempt is not None else default_exempt()
-    enc_set = _normalize_encodings(encodings)
-    items = [_build_normalized_view(t, enc_set) for t in texts]
+def _pattern_scrub_item(item: dict[str, object], exempt: list[str]) -> str:
+    """The pattern layer on one text, read as Rampart reads it (_build_normalized_view).
+
+    Look-alike letters, zero-width characters, and %XX escapes are undone before
+    matching. A base64 token (or a ROT13/leetspeak line, when the run used those) is
+    replaced by its decoded text, scrubbed and marked, when decoding finds more than
+    the text as written.
+    """
+    text = str(item["text"])
+    norm = str(item.get("norm", text))
+    raw_start = item.get("rawStart")
+    raw_end = item.get("rawEnd")
+
+    def to_raw(start: int, end: int) -> tuple[int, int]:
+        return (raw_start[start], raw_end[end - 1]) if raw_start and raw_end else (start, end)
+
+    norm_spans = _pattern_spans(norm, exempt)
+    accepted: list[dict] = []
+    for cand in item.get("decodedSpans", []):
+        if any(cand["start"] < a["end"] and cand["end"] > a["start"] for a in accepted):
+            continue
+        plain = sum(1 for s, e, _ in norm_spans if s >= cand["normStart"] and e <= cand["normEnd"])
+        if len(_pattern_spans(cand["decoded"], exempt)) > plain:
+            accepted.append(cand)
+
+    splices = []
+    for start, end, kind in norm_spans:
+        start, end = to_raw(start, end)
+        if not any(start < a["end"] and end > a["start"] for a in accepted):
+            splices.append((start, end, f"[{PATTERN_LABELS[kind]}_REDACTED]"))
+    for a in accepted:
+        decoded = _pattern_scrub(a["decoded"], exempt)
+        splices.append((a["start"], a["end"], f"{a['prefix']}[{a['kind']} reply, decoded and scrubbed: {decoded}]"))
+    for start, end, replacement in sorted(splices, reverse=True):
+        text = text[:start] + replacement + text[end:]
+    return text
+
+
+def _allowed_as_written(items: list[dict[str, object]], exempt: list[str]) -> list[str]:
+    """The allowed numbers as each text writes them, for Rampart, which matches exempt values only as written."""
+    keys = {_digit_key(value) for value in exempt if len(_digit_key(value)) >= 7}
+    if not keys:
+        return []
+    found = set()
+    for item in items:
+        texts = [item["text"], item.get("norm", "")] + [c["decoded"] for c in item.get("decodedSpans", [])]
+        for text in texts:
+            for kind, m in pii_matches(str(text)):
+                if kind != "email" and _digit_key(m.group(0)) in keys:
+                    found.add(m.group(0))
+    return sorted(found)
+
+
+def _rampart_scrub(items: list[dict[str, object]], exempt: list[str]) -> list[str]:
+    """Scrub a batch with the Rampart worker. Raises RuntimeError, saying why, when it can't run."""
     worker = _get_worker()
-    payload = json.dumps({"items": items, "exempt": extra}, ensure_ascii=False)
+    payload = json.dumps({"items": items, "exempt": exempt}, ensure_ascii=False)
     assert worker.stdin is not None and worker.stdout is not None
     try:
         worker.stdin.write(payload + "\n")
         worker.stdin.flush()
         line = worker.stdout.readline()
     except Exception as e:
-        _stop_worker()
-        raise RuntimeError(
-            f"Rampart worker failed ({e}). Run `npm install` from the repo root, "
-            "or pass `--no-scrub` (or set `RT_SCRUB=0`) if this run contains only synthetic data."
-        ) from e
+        raise RuntimeError(f"the Rampart worker failed: {e}") from e
     if not line:
-        err = worker.stderr.read() if worker.stderr else ""
-        _stop_worker()
-        raise RuntimeError(
-            "Rampart worker exited unexpectedly. Run `npm install` from the repo root to install "
-            "`@nationaldesignstudio/rampart` and `@huggingface/transformers`, "
-            "or pass `--no-scrub` (or set `RT_SCRUB=0`) if this run contains only synthetic data.\n"
-            f"{err.strip()}"
-        )
-    response = json.loads(line)
-    return response["texts"]
+        err = [ln.strip() for ln in (worker.stderr.read() if worker.stderr else "").splitlines() if ln.strip()]
+        # Node ends with its version line; the error line says what went wrong (e.g. the package isn't installed).
+        reason = next((ln for ln in err if "Error" in ln), err[-1] if err else "no error output")
+        raise RuntimeError(f"the Rampart worker stopped: {reason[:300]}")
+    try:
+        return json.loads(line)["texts"]
+    except (ValueError, KeyError) as e:
+        raise RuntimeError(f"the Rampart worker sent an unreadable reply: {e}") from e
+
+
+def scrub_texts(
+    texts: list[str],
+    *,
+    exempt: list[str] | None = None,
+    encodings: Iterable[str] | str | None = None,
+) -> list[str]:
+    """Scrub a batch of strings in one Rampart session so placeholders stay consistent.
+
+    Without Rampart (no Node, no `npm install`, or the worker fails), the batch is
+    scrubbed by the pattern layer instead, with a warning the first time.
+    """
+    global _rampart_failure
+    if not texts or all(not t or not t.strip() for t in texts):
+        return list(texts)
+    extra = list(exempt) if exempt is not None else default_exempt()
+    enc_set = _normalize_encodings(encodings)
+    items = [_build_normalized_view(t, enc_set) for t in texts]
+    if _rampart_failure is None:
+        try:
+            return _rampart_scrub(items, extra + _allowed_as_written(items, extra))
+        except RuntimeError as e:
+            _stop_worker()
+            _rampart_failure = str(e)
+            print(
+                f"PII scrubber: Rampart is not available ({e}).\n"
+                "  Scrubbing with patterns only: SSNs, card numbers, phone numbers, emails, and street addresses.\n"
+                "  Names are NOT checked, and each report says so at the top. To scrub names too,\n"
+                "  install Node.js and run `npm install` in the kit's folder.",
+                file=sys.stderr,
+            )
+    return [_pattern_scrub_item(item, extra) for item in items]
 
 
 def scrub_text(
@@ -468,7 +683,7 @@ def scrub_text(
     exempt: list[str] | None = None,
     encodings: Iterable[str] | str | None = None,
 ) -> str:
-    """Scrub a single string with Rampart."""
+    """Scrub a single string (scrub_texts)."""
     return scrub_texts([text], exempt=exempt, encodings=encodings)[0]
 
 
@@ -506,33 +721,28 @@ def scrub_report(
 
     All segments in the report are sent in a single Rampart batch so the model loads
     once and the same entity gets the same placeholder (`[GIVEN_NAME_1]`, `[SSN_1]`)
-    throughout the file. Fails closed with SystemExit if Rampart cannot run or if
-    residual PII patterns remain in the output.
+    throughout the file. Then finish_report() redacts what the patterns still find
+    anywhere in the report, and adds the NOTICE if Rampart did not run.
     """
     if not scrub_enabled(no_scrub) or not markdown.strip():
         return markdown
 
+    markdown = strip_notice(markdown)
     effective_encodings = _normalize_encodings(encodings) if encodings is not None else _infer_report_encodings(markdown)
     spans = _collect_report_spans(markdown)
-    try:
-        if not spans:
-            out = scrub_text(markdown, exempt=exempt, encodings=effective_encodings)
-            assert_no_residual_pii(out)
-            return out
-        scrubbed_segments = scrub_texts(
-            [text for _, _, text in spans],
-            exempt=exempt,
-            encodings=effective_encodings,
-        )
-    except RuntimeError as e:
-        raise SystemExit(f"PII scrubber error: {e}") from e
+    if not spans:
+        return finish_report(scrub_text(markdown, exempt=exempt, encodings=effective_encodings), exempt=exempt)
+    scrubbed_segments = scrub_texts(
+        [text for _, _, text in spans],
+        exempt=exempt,
+        encodings=effective_encodings,
+    )
 
     # Splice from right to left so earlier character offsets remain valid.
     out = markdown
     for (start, end, _), replacement in reversed(list(zip(spans, scrubbed_segments))):
         out = out[:start] + replacement + out[end:]
-    assert_no_residual_pii(out)
-    return out
+    return finish_report(out, exempt=exempt)
 
 
 def markdown_files(paths: list[Path]) -> list[Path]:

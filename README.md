@@ -60,9 +60,14 @@ optional — reach for it only when you need it.
 
 ```bash
 pip install -r requirements.txt
-npm install                   # installs @nationaldesignstudio/rampart for report PII scrubbing
+npm install                   # optional: Rampart, so report scrubbing also covers names (needs Node.js)
 cp .env.example .env          # use `copy` on Windows
 ```
+
+`npm install` needs [Node.js](https://nodejs.org). Without it the kit still runs, and reports are
+still scrubbed of SSNs, card numbers, phone numbers, emails, and street addresses, but not of
+names. Install it on any machine that tests a deployed app or anything holding real data
+(see [Scrubbing personal data from reports](#scrubbing-personal-data-from-reports)).
 
 Add **one** provider's API key to `.env`. This model is the **judge** — it grades the
 app's replies, since the app can't grade itself. Gemini, OpenAI, and Anthropic each need
@@ -121,7 +126,7 @@ it — see [Deployment profiles](#deployment-profiles).
 ### 4. Read the results
 
 Every run writes a full summary to `findings/` — every probe, reply, verdict, and the
-judge's reasons — and automatically scrubs personal data with `@nationaldesignstudio/rampart`
+judge's reasons — and scrubs personal data from it first
 (see [Scrubbing personal data from reports](#scrubbing-personal-data-from-reports)). To
 regenerate, export, or scrub existing reports:
 
@@ -152,7 +157,7 @@ The rest of this README is reference — reach for a section when you need it:
 - **[Deployment profiles](#deployment-profiles)** — the built-in default and the presets: which probes run, and what's left to check by hand
 - **[Running a subset of probes](#running-a-subset-of-probes)** — filter probes by category (`core`, `general`, `bias`, `bias-core`, `bias-templated`), `m-n` range, or name
 - **[What to customize first](#what-to-customize-first)** — making generic probes specific to your system
-- **[Scrubbing personal data from reports](#scrubbing-personal-data-from-reports)** — how Rampart redacts PII in generated reports, how to scrub existing files, and `--no-scrub` / `RT_SCRUB=0`
+- **[Scrubbing personal data from reports](#scrubbing-personal-data-from-reports)** — how Rampart and the pattern check redact PII in generated reports, what happens without Rampart, keeping public contact details (`RT_SCRUB_ALLOW`), scrubbing existing files, and `--no-scrub` / `RT_SCRUB=0`
 
 ## Choosing a target
 
@@ -1034,7 +1039,8 @@ addresses, SSNs, or payment card numbers.
 Every report generator (`scripts/run_summary.py`, `scripts/export_finding_report.py`,
 `scripts/rescore.py`, and `harnesses/access_checks.py`) automatically runs
 [National Design Studio's Rampart](https://www.npmjs.com/package/@nationaldesignstudio/rampart)
-(`@nationaldesignstudio/rampart`) via `scripts/scrub.py` before writing Markdown to disk:
+(`@nationaldesignstudio/rampart`), when installed, and then a pattern check via `scripts/scrub.py`
+before writing Markdown to disk:
 
 - **Consistent numbered placeholders:** Rampart combines deterministic validators (Luhn card
   numbers, SSA-valid SSNs, email addresses, IP addresses) with a local 14.7 MB ONNX
@@ -1053,15 +1059,36 @@ Every report generator (`scripts/run_summary.py`, `scripts/export_finding_report
   runs that used those converters (`--converters`), and a ROT13 line only when decoding makes it
   read more like English, so plain lines stay readable. A decoded replacement is marked:
   `[base64 reply, decoded and scrubbed: ...]`.
-- **Fails closed:** Requires Node.js (`node`) and `npm install` from the repo root. If Node or
-  Rampart is missing, report generation stops with an error instead of writing an unscrubbed
-  report. After scrubbing, a final check looks over the whole report for a real-looking SSN,
-  card number, phone number, or email address; if one is left, the report is not written and
-  the error gives the line number, not the value.
+- **A final pattern check:** After Rampart, a Python check looks over the whole report for a
+  real-looking SSN, card number, phone number, email address, or street address, and redacts
+  any it finds (`[PHONE_REDACTED]`). The report is still written; the console says what was
+  redacted and on which line, never the value. This catches what Rampart misses (a street
+  address its model reads past), and redacts the occasional ID that only looks like a
+  card number.
+- **Without Rampart:** Rampart needs Node.js and `npm install` from the repo root. If either is
+  missing, reports are still scrubbed and written, by the patterns alone: SSNs, card numbers,
+  phone numbers, emails, and street addresses (a simple pattern, which misses irregular ones).
+  **Names are not checked.** The console warns once, and every report says so in a note under
+  its title. Install Rampart and run `python -m scripts.scrub` on the report to scrub names
+  too; the note comes out.
+- **Public contact details:** Rampart and the patterns redact every phone number and email,
+  including an agency's own. When a finding depends on one (a bot giving the wrong hotline),
+  list them in `RT_SCRUB_ALLOW`, comma-separated; they stay visible. A phone number matches in
+  any format, an email ignoring case. List only public contact details here.
+
+**Which scrubber ran?** A report with no `Scrubbing note:` line under its title was scrubbed by
+Rampart. One with the note was scrubbed by the patterns alone; check it for names before
+sharing it, or install Rampart and scrub it again.
+
+In PowerShell, set `RT_SCRUB_ALLOW` in `.env`, or run `$env:RT_SCRUB_ALLOW = "410-767-1100,info@maryland.gov"`
+before the command, in place of the `VAR=value` prefix below.
 
 ```bash
-# Install the Node dependencies once per clone
+# Optional, once per clone: install Rampart (needs Node.js), so names are scrubbed too
 npm install
+
+# Keep the agency's public hotline and help-desk address visible (or put it in .env)
+RT_SCRUB_ALLOW="410-767-1100,info@maryland.gov" python -m scripts.export_finding_report --rubric any --latest-run
 
 # Scrub an existing report or every .md file in findings/ in place
 python -m scripts.scrub findings/2026-09-30_0951_scan_public_conversational_7f264395.md
@@ -1084,6 +1111,10 @@ python -m harnesses.access_checks --no-scrub
   sent.
 - **`findings/` and the PyRIT database are gitignored** because they contain full
   transcripts. Review before sharing, even internally.
+- **Scrubbing reduces, not removes, the risk.** Reports are scrubbed (see
+  [Scrubbing personal data from reports](#scrubbing-personal-data-from-reports)), but no
+  scrubber catches everything, and the PyRIT database is never scrubbed. Read a report
+  before it leaves the team.
 - **Authorization first** for anything beyond a raw model endpoint.
 - **Test apps your agency builds and controls.** The profiles assume you can change the
   system prompt, retrieval, and tools. Don't point the pack at a commercial product
@@ -1101,6 +1132,9 @@ and it never reads your `.env` (the probes that test *your* system live in
 pip install -r requirements-dev.txt
 python -m pytest
 ```
+
+The scrubber tests that run the real Rampart worker are skipped unless Node.js and
+`npm install` are set up; the rest of the scrubber is tested either way.
 
 Turn on the pre-commit hooks once per clone to run gitleaks on every commit (this repo is
 public):
