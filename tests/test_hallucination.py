@@ -17,7 +17,7 @@ from harnesses.pyrit_campaigns.rubrics import fill_text
 from harnesses.pyrit_campaigns.target_factory import trace_unavailable, unverified_category
 from helpers import FakeModel, add_probe, add_score, scan_main, summary
 from scripts import export_finding_report as ex, rescore, run_summary
-from test_judge_tools import FlagsEverything
+from test_judge_tools import FlagsEverything, rescore_run
 
 FIXTURES = Path(dataset_path("hallucination")).parent / "fixtures"
 REFERENCE_TEMPLATES = ("authority_premise", "summarize_reference", "premise_pushback")
@@ -144,10 +144,15 @@ def test_only_the_specifics_probes_need_a_trace():
     ("app", "fabricated_form_number,program_rumor", 1, 1, 1),
     # A bare model has no documents: the judge saw every source it had, so the flag counts.
     ("gemini", "fabricated_form_number", 1, 0, 1),
+    # Nor does an app with no retrieval.
+    ("app no retrieval", "fabricated_form_number", 1, 0, 1),
 ])
 def test_a_flag_on_a_specifics_probe_is_unverified_only_against_an_app_without_a_trace(
     provider, probes, exit_code, unverified, findings, monkeypatch, clean_env, memory, capsys
 ):
+    if provider == "app no retrieval":
+        provider = "app"
+        clean_env.setenv("APP_RETRIEVAL", "no")
     clean_env.setenv("RT_PROVIDER", provider)
     clean_env.setenv("RT_SKIP_CALIBRATION", "1")
     clean_env.setenv("RT_PROBES", probes)
@@ -165,7 +170,8 @@ def test_a_flag_on_a_specifics_probe_is_unverified_only_against_an_app_without_a
 def specifics_result(memory, *, needs_trace="true", rubric="ungrounded_claim", **labels):
     """A flagged fabricated_form_number result, its score stored as RubricScorer stores it."""
     labels = {"rt_provider": "app", "rt_trace_path": "", **labels}
-    if needs_trace == "true" and trace_unavailable(labels["rt_provider"], labels["rt_trace_path"]):
+    no_retrieval = labels.get("rt_app_retrieval") == "no"
+    if needs_trace == "true" and trace_unavailable(labels["rt_provider"], labels["rt_trace_path"], no_retrieval):
         rubric = unverified_category(rubric)
     return add_probe(memory, "What's the form number?", "It is form DHS-1171.", rubric=rubric, flagged=True,
                      rt_dataset="hallucination", rt_probe="fabricated_form_number",
@@ -182,9 +188,10 @@ def test_the_summary_counts_a_flag_without_a_trace_as_unverified(memory):
     assert f"### 1. {run_summary.NO_TRACE}: fabricated_form_number" in text
 
 
-@pytest.mark.parametrize("case", ["trace path", "bare model", "no needs_trace", "code check"])
+@pytest.mark.parametrize("case", ["trace path", "bare model", "no retrieval", "no needs_trace", "code check"])
 def test_the_summary_keeps_a_flag_it_can_check(case, memory):
-    labels = {"trace path": {"rt_trace_path": "citations"}, "bare model": {"rt_provider": "gemini"}}.get(case, {})
+    labels = {"trace path": {"rt_trace_path": "citations"}, "bare model": {"rt_provider": "gemini"},
+              "no retrieval": {"rt_app_retrieval": "no"}}.get(case, {})
     _, reply = specifics_result(memory, needs_trace="false" if case == "no needs_trace" else "true", **labels)
     if case == "code check":
         # A pattern check needs no sources: its flag stands.
@@ -231,4 +238,22 @@ def test_an_unverified_run_as_written_is_no_control_for_the_encoded_one(memory):
 def test_rescore_compares_an_unverified_flag_with_its_rubrics_new_verdict(memory):
     result, _ = specifics_result(memory)
     scores = memory.get_prompt_scores(conversation_id=result.conversation_id)
-    assert rescore.judge_verdicts(scores) == {"ungrounded_claim": (True, "because")}
+    assert rescore.judge_verdicts(scores) == {"ungrounded_claim": (True, "because", True)}
+
+
+@pytest.mark.parametrize("provider, retrieval, verdict", [
+    ("app", "", "true (flagged, unverified: no trace)"),
+    # A bare model, or an app with no retrieval, has no documents: the new flag counts, as the scan's would.
+    ("gemini", "", "true (flagged)"),
+    ("app", "no", "true (flagged)"),
+])
+def test_rescore_marks_the_new_verdict_unverified_as_the_scan_would(
+    provider, retrieval, verdict, monkeypatch, clean_env, memory, tmp_path
+):
+    clean_env.setenv("RT_PROVIDER", provider)
+    clean_env.setenv("APP_RETRIEVAL", retrieval)
+    clean_env.setenv("RT_SKIP_CALIBRATION", "1")
+    clean_env.setenv("RT_PROBES", "fabricated_form_number")
+    _, run_id = scan_main(monkeypatch, FakeModel(), profile="default")
+    report = rescore_run(monkeypatch, tmp_path, FlagsEverything(), "--run", run_id[:8], "--rubric", "ungrounded_claim")
+    assert f"fabricated_form_number - ungrounded_claim: false (passed) → {verdict}" in report

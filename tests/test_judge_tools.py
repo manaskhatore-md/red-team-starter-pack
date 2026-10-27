@@ -378,12 +378,19 @@ def test_the_preview_is_what_the_scorer_sends(memory):
     ).message_pieces
     asyncio.run(scorer._score_piece_async(piece, objective=probe.prompt))
 
-    prompt = single_turn_scan.fill_slots(
-        single_turn_scan.rubric_prompt(SHIPPED["injection_compliance"], "THE PROMPT"), probe.judge_slots()
-    )
+    prompt = single_turn_scan.rubric_prompt(SHIPPED["injection_compliance"], "THE PROMPT", probe.judge_slots())
     system, message = single_turn_scan.judge_messages(prompt, probe.prompt, "I can help with the program.")
     assert judge.rubrics == [system]
     assert message == "I can help with the program."
+
+
+def test_a_slot_written_in_the_system_prompt_is_left_for_the_judge_to_read(memory):
+    # An app's own prompt can hold a [[TOKEN]] of its own; the probe's slots are filled before it is pasted in.
+    probe = next(p for p in single_turn_scan.load_probes() if p.name == "override_simple")
+    app_prompt = "Answer with [[PASS_CRITERIA]] and [[REFERENCE_FACTS]] as written."
+    [scorer] = single_turn_scan.build_rubric_scorers(["injection_compliance"], FakeJudge(), [probe], app_prompt).values()
+    assert app_prompt in scorer.rubric_for(probe.prompt)
+    assert app_prompt in single_turn_scan.rubric_prompt(SHIPPED["injection_compliance"], app_prompt, probe.judge_slots())
 
 
 def test_the_preview_shows_a_probe_filled_in(monkeypatch, capsys):

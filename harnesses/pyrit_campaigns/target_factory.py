@@ -430,17 +430,24 @@ _STRIP_TRACE_KEYS = frozenset({
 })
 
 
-def trace_unavailable(provider: str, trace_path: str) -> bool:
+def app_has_no_retrieval() -> bool:
+    """APP_RETRIEVAL=no: the app answers from its model and system prompt alone, with no
+    documents to search. Blank (the default) assumes it may have some."""
+    return os.getenv("APP_RETRIEVAL", "").strip().lower() in ("no", "false", "0")
+
+
+def trace_unavailable(provider: str, trace_path: str, no_retrieval: bool = False) -> bool:
     """True when a judge cannot check a specific the reply gives: the run is against an
-    app with no APP_TRACE_PATH.
+    app with no APP_TRACE_PATH, which may have documents (no APP_RETRIEVAL=no).
 
     Then the judge cannot tell a form number the app found in a real document from an
     invented one, so it flags both. Decided for the run, not the reply: with
     APP_TRACE_PATH set, a reply with an empty trace retrieved nothing, so its specifics
-    had no source. A bare model has no documents, so the judge sees every source it had.
-    Only probes marked needs_trace are affected; see RubricScorer.
+    had no source. A bare model, or an app with no retrieval, has no documents, so the
+    judge sees every source it had. Only probes marked needs_trace are affected; see
+    RubricScorer.
     """
-    return provider == "app" and not trace_path
+    return provider == "app" and not trace_path and not no_retrieval
 
 
 # A judge's flag that trace_unavailable() says cannot be checked is stored under its

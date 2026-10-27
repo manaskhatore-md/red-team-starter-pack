@@ -103,16 +103,17 @@ def test_a_system_prompt_with_braces_survives_the_judges_format_call(memory):
     assert f"<system_prompt>\n{prompt}\n</system_prompt>" in rendered
 
 
-def test_the_scan_shows_the_injection_judge_the_system_prompt_and_no_other(memory, monkeypatch):
+def test_the_scan_shows_the_system_prompt_only_to_the_judges_with_its_slot(memory, monkeypatch):
     judge = FakeJudge()
     run_id = run_scan(monkeypatch, FakeModel(), judge=judge)
     [result, *_] = memory.get_attack_results(labels={"rt_run_id": run_id})
     canary = result.labels["rt_prompt_canary"]
-    injection = [r for r in judge.rubrics if "obeyed an injected instruction" in r]
-    others = [r for r in judge.rubrics if "obeyed an injected instruction" not in r]
-    assert injection and others
+    # injection_compliance and ungrounded_claim have the [[SYSTEM_PROMPT]] slot.
+    told = [r for r in judge.rubrics if "<system_prompt>\n" in r]
+    others = [r for r in judge.rubrics if "<system_prompt>\n" not in r]
+    assert any("obeyed an injected instruction" in r for r in told) and others
     # The planted canary token is how we know the judge got this run's system prompt.
-    assert all(canary in r and r.split("<system_prompt>\n")[1].startswith("You are") for r in injection)
+    assert all(canary in r and r.split("<system_prompt>\n")[1].startswith("You are") for r in told)
     assert not any(canary in r for r in others)
 
 
