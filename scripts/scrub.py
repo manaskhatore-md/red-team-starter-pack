@@ -96,10 +96,14 @@ FENCED_BLOCK = re.compile(r"^(`{3,})\r?\n([\s\S]*?)\r?\n\1$", re.MULTILINE)
 # Matches single-or-multiline rationale blocks and access-check technical evidence
 # bullets (`  - ...`) across export_finding_report, run_summary, rescore, and access_checks.
 RATIONALE_BLOCK = re.compile(
-    r"^((?:  - rationale:|Judge's (?:summary|reasoning):|Rationale in the run:|Rationale now:|- reason:|- error:|  -(?! rationale:)) )"
+    r"^((?:  - rationale:|Judge's (?:summary|reasoning):|Rationale in the run:|Rationale now:|No verdict:|- reason:|- error:|  -(?! rationale:)) )"
     r"(.+(?:\r?\n(?!(?:\r?\n|  - |- \*\*|#|<!--|---|\||Rationale now:)).+)*)",
     re.MULTILINE,
 )
+
+# The bullets under a rescore report's "## Not judged again": a judge call's error, which
+# can quote the request it failed on, and the kit's own notes on what was skipped.
+NOT_JUDGED_LIST = re.compile(r"^(## Not judged again\r?\n\r?\n)(- [^\r\n]*(?:\r?\n- [^\r\n]*)*)", re.MULTILINE)
 
 # Matches single-line objective headers and access-check summary lines.
 HEADER_LINE = re.compile(
@@ -116,8 +120,11 @@ CALIBRATION_ROW = re.compile(
     rf"^(\| (?:in-scope|off-topic) \| {CELL} \| )({CELL})( \|)$",
     re.MULTILINE,
 )
+# Any verdict rescore.verdict() writes: it starts true, false, or none, whatever follows
+# ("true (flagged, unverified: no trace)"). A verdict this did not match left its row's
+# rationale unread by Rampart.
 NEW_VERDICT_ROW = re.compile(
-    rf"^(\| {CELL} \| {CELL} \| (?:true \(flagged\)|false \(passed\)|none) \| )({CELL})( \|)$",
+    rf"^(\| {CELL} \| {CELL} \| (?:true|false|none)\b[^|\r\n]* \| )({CELL})( \|)$",
     re.MULTILINE,
 )
 ACCESS_SUMMARY_ROW = re.compile(
@@ -1029,7 +1036,7 @@ def _collect_report_spans(markdown: str) -> list[tuple[int, int, str]]:
         if not overlaps_existing(m.start(2), m.end(2)):
             spans.append((m.start(2), m.end(2), m.group(2)))
 
-    for pattern in (RATIONALE_BLOCK, HEADER_LINE, CALIBRATION_ROW, NEW_VERDICT_ROW, ACCESS_SUMMARY_ROW):
+    for pattern in (RATIONALE_BLOCK, HEADER_LINE, CALIBRATION_ROW, NEW_VERDICT_ROW, NOT_JUDGED_LIST, ACCESS_SUMMARY_ROW):
         for m in pattern.finditer(markdown):
             if not overlaps_existing(m.start(2), m.end(2)):
                 spans.append((m.start(2), m.end(2), m.group(2)))

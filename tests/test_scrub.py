@@ -1300,3 +1300,105 @@ def test_guarantee_app_output_in_access_check_report_is_never_exempted():
             assert kept in text, text
         for gone in ("maria", "gonzalez", "robert", "smith", "dorothy", "jenkins"):
             assert gone not in text.lower(), f"leaked {gone!r} in:\n{text}"
+
+
+@requires_rampart
+def test_a_rescore_report_is_scrubbed_whatever_its_verdicts_say():
+    """Every verdict rescore.verdict() can write, in a report rescore.build_report() writes.
+
+    The rationale cell of a New verdicts row is found by its verdict: a verdict string the
+    pattern did not know ("true (flagged, unverified: no trace)") left its rationale unread,
+    and the patterns alone do not look for names.
+    """
+    from scripts import rescore
+
+    def item(rubric, old, new, *, old_unverified=False, new_unverified=False):
+        return rescore.Rejudged(
+            rubric, f"probe_{rubric}", "Maria Gonzalez was told her claim was approved.",
+            old=old, old_rationale="It told Maria Gonzalez the claim was approved." if old is not None else "",
+            old_unverified=old_unverified,
+            new=new, new_rationale="It told Robert Smith the claim was approved." if new is not None else "",
+            new_unverified=new_unverified, error="" if new is not None else "Timeout talking to Dorothy Jenkins",
+        )
+
+    items = [
+        # New verdicts: one of each verdict a rubric can give now.
+        item("a", None, True), item("b", None, True, new_unverified=True), item("c", None, False),
+        item("d", None, None),
+        # Changed and unchanged verdicts, unverified on either side.
+        item("e", False, True, new_unverified=True), item("f", True, False, old_unverified=True),
+        item("g", True, True, old_unverified=True, new_unverified=True),
+    ]
+    report = rescore.build_report("1a2b3c4d-0000", {"rt_campaign": "single_turn_scan"}, "judge", items, [])
+    assert "true (flagged, unverified: no trace)" in report, "the report no longer writes the unverified verdict"
+    out = scrub.scrub_report(report)
+    leaked = [line for line in out.splitlines() if any(n in line for n in ("Maria", "Gonzalez", "Robert", "Smith", "Dorothy", "Jenkins"))]
+    assert not leaked, "\n".join(leaked)
+
+
+_E2E_NAMES = ("Maria", "Gonzalez", "Robert", "Smith", "410-729-8834", "213-44-8821")
+
+
+@requires_rampart
+def test_every_report_of_a_scan_is_scrubbed_end_to_end(monkeypatch, clean_env, memory, tmp_path):
+    """A scan with every kind of section, written as the kit writes it: its run summary and its findings.
+
+    The app answers every probe with a name and a phone number (Base64 when the probe was encoded),
+    and the judge flags every reply, quoting another name. Nothing either wrote may survive, in any
+    section: unverified flags, a matched pair, repeats, the encoded comparison, or calibration.
+    """
+    import asyncio
+    import json
+    import sys
+
+    from pyrit.prompt_target import PromptTarget
+    from pyrit.prompt_target.common.utils import construct_response_from_request
+
+    from helpers import nothing, scan_main
+    from scripts import run_summary
+    from test_judge_tools import FakeJudge
+
+    plain = "Maria Gonzalez at 410-729-8834 has form DHS-1171, due by Friday."
+    encoded = base64.b64encode(plain.encode()).decode("ascii")
+
+    class NamesEverywhere(PromptTarget):
+        def __init__(self):
+            super().__init__(model_name="fake-model")
+
+        async def _send_prompt_to_target_async(self, *, normalized_conversation):
+            request = normalized_conversation[-1].message_pieces[0]
+            was_encoded = request.converted_value != request.original_value
+            # Calibration's off-topic questions get a fixed reply, as from a real app; the rest name a person.
+            off_topic = any(q in request.original_value for q in ("boiling point", "banana bread"))
+            reply = "I can only help with SNAP." if off_topic else encoded if was_encoded else plain
+            return [construct_response_from_request(request=request, response_text_pieces=[reply])]
+
+    class QuotesANameEverywhere(FakeJudge):
+        async def _send_prompt_to_target_async(self, *, normalized_conversation):
+            request = normalized_conversation[-1].message_pieces[0]
+            reply = json.dumps({"score_value": "true", "rationale": "It told Robert Smith (SSN 213-44-8821) yes."})
+            return [construct_response_from_request(request=request, response_text_pieces=[reply])]
+
+    clean_env.setenv("RT_PROVIDER", "app")  # no APP_TRACE_PATH: the specifics probe's flag is unverified
+    clean_env.setenv("RT_PROBES", "fabricated_form_number,override_simple,dialect_01")
+    clean_env.setenv("RT_REPEATS", "2")
+    clean_env.setenv("RT_CONVERTERS", "base64")
+    clean_env.setenv("RT_PROGRAM_NAME", "SNAP")
+    _, run_id = scan_main(monkeypatch, NamesEverywhere(), judge=QuotesANameEverywhere(), profile="default")
+
+    unscrubbed = run_summary.write_summary(memory, run_id, tmp_path / "raw", no_scrub=True).read_text(encoding="utf-8")
+    assert all(n in unscrubbed for n in _E2E_NAMES[:4]), "the run wrote none of the names this test looks for"
+    summary_text = run_summary.write_summary(memory, run_id, tmp_path / "summary").read_text(encoding="utf-8")
+    for section in ("UNVERIFIED", "Calibration", "Failure rates", "Encoded vs. as written"):
+        assert section.lower() in summary_text.lower(), f"the summary has no {section!r} section to check"
+
+    monkeypatch.setattr(ex, "initialize_pyrit_async", nothing)
+    monkeypatch.setattr(sys, "argv", ["export", "--rubric", "any", "--run-id", run_id[:8], "--out", str(tmp_path / "exports")])
+    asyncio.run(ex.main())
+    exports = [f.read_text(encoding="utf-8") for f in (tmp_path / "exports").glob("*.md")]
+    assert exports, "no finding report was exported"
+
+    for name, text in [("summary", summary_text), *(("export", t) for t in exports)]:
+        leaked = [line for line in text.splitlines() if any(n in line for n in _E2E_NAMES)]
+        assert not leaked, f"{name}:\n" + "\n".join(leaked[:10])
+
