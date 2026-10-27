@@ -63,6 +63,7 @@ truststore.inject_into_ssl()
 
 import httpx
 
+from redteam.cli import full_form
 from harnesses.pyrit_campaigns.browser_target import (
     DEFAULT_PROFILE,
     POLL_SECONDS,
@@ -1779,7 +1780,8 @@ async def check_outsider_account(
             what_it_tests=what_it_tests,
             details=[
                 "To test that a signed-in Google account outside your organization is blocked, "
-                "run `python -m harnesses.access_checks --outsider` and sign in once with an outside account."
+                f"run `rt access --outsider` (or `{full_form('access --outsider')}`) and sign in once with an "
+                "outside account."
             ],
         )
 

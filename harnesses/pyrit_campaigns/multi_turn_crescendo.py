@@ -93,6 +93,7 @@ from pyrit.score import MessageTrueFalseScorer, SelfAskGeneralTrueFalseScorer, S
 from pyrit.score.scorer_prompt_validator import ScorerPromptValidator
 from pyrit.setup import SQLITE, initialize_pyrit_async
 
+from redteam.cli import full_form
 from harnesses.pyrit_campaigns.profiles import PAIR_RUBRICS, Objective, Profile, describe, get_profile, placeholders
 from harnesses.pyrit_campaigns.single_turn_scan import (
     CONVERTER_BUILDERS,
@@ -666,7 +667,9 @@ async def main(
         print(f"\n!! {objective[:70]!r} did not complete: {exception}")
 
     write_after_run(run_id)
-    print(f"Next: python -m scripts.export_finding_report --outcome success --run-id {run_id[:8]} --out findings/")
+    export = f"findings --outcome success --run-id {run_id[:8]}"
+    print(f"Next: rt {export}")
+    print(f"      (or: {full_form(export)})")
     print("      writes a finding report for each attack that reached its objective.")
 
     for t in (target, adversarial, judge):

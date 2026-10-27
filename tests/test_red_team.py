@@ -51,7 +51,7 @@ def test_reproduction_steps_run_the_red_team_module():
         "rt_adversarial_provider": "bedrock", "rt_adversarial": "bedrock/model", "rt_max_turns": "5",
         "rt_system_prompt": "none",
     })
-    assert "Run `python -m harnesses.pyrit_campaigns.multi_turn_red_team`." in steps
+    assert "Run `rt adaptive` (or `python -m harnesses.pyrit_campaigns.multi_turn_red_team`)." in steps
     assert "`RT_ADVERSARIAL_PROVIDER=bedrock` and `RT_ADVERSARIAL_MODEL=bedrock/model`, `RT_MAX_TURNS=5`." in steps
     # The red team has no backtracks setting.
     assert "RT_MAX_BACKTRACKS" not in steps

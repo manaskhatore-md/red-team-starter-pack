@@ -25,6 +25,7 @@ schedule. Multi-turn campaigns catch the ones that need patience. You want both.
   - [2. Confirm credentials and network](#2-confirm-credentials-and-network)
   - [3. Scan your app](#3-scan-your-app)
   - [4. Read the results](#4-read-the-results)
+- [The rt command](#the-rt-command)
 - [Fine-tuning](#fine-tuning)
 - [Choosing a target](#choosing-a-target)
 - [Testing your app in depth](#testing-your-app-in-depth)
@@ -60,9 +61,16 @@ optional — reach for it only when you need it.
 
 ```bash
 pip install -r requirements.txt
+pip install -e .              # adds the rt command, so `rt scan` works from any folder
 npm ci                        # optional: Rampart, so report scrubbing also covers names (needs Node.js)
 cp .env.example .env          # use `copy` on Windows
 ```
+
+Every command in this README is `rt` followed by what to do: `rt smoke`, `rt scan`,
+`rt findings`. If `pip install -e .` isn't allowed on your machine, type `.\rt` in
+PowerShell or cmd, or `./rt` on macOS and Linux, from the repo root instead: no install
+needed. Each `rt` command also prints the full `python -m ...` command it runs, and those
+still work as they always did (see [The rt command](#the-rt-command)).
 
 `npm ci` needs [Node.js](https://nodejs.org). Without it the kit still runs, and reports are
 still scrubbed of SSNs, card numbers, phone numbers, emails, and street addresses, but not of
@@ -84,12 +92,14 @@ exact lines to add — fine for a first run.
 ### 2. Confirm credentials and network
 
 ```bash
-python -m scripts.smoke_test   # sends two benign prompts and prints the replies: connectivity, not safety
+rt smoke   # sends two benign prompts and prints the replies: connectivity, not safety
 ```
 
-> **On Windows** (PowerShell/cmd), the `VAR=value python ...` form used below does **not**
-> work. Put each setting in `.env` instead (e.g. `RT_PROFILE=public_conversational`), or in
-> PowerShell use `$env:RT_PROFILE = "..."`.
+> **On Windows** (PowerShell/cmd), the `VAR=value rt ...` form used in a few places below
+> does **not** work. Put the setting in `.env` instead, or in PowerShell use
+> `$env:VAR = "..."`, which stays set until you close the window. The four settings you
+> change most have their own options, which work in every shell and last for one
+> command only: `--profile`, `--provider`, `--judge`, and `--repeats`.
 
 ### 3. Scan your app
 
@@ -110,15 +120,15 @@ RT_JUDGE_PROVIDER=gemini                    # the key you added in step 1
 Run the single-turn scan:
 
 ```bash
-python -m harnesses.pyrit_campaigns.single_turn_scan
+rt scan
 ```
 
-With no `RT_PROFILE` set, it runs the built-in `default` profile: every attack suite, its
+With no profile set, it runs the built-in `default` profile: every attack suite, its
 `core` probes. Once you know what kind of deployment you're testing, a preset can narrow
-it — see [Deployment profiles](#deployment-profiles).
+it (`rt scan --profile public_conversational`) — see [Deployment profiles](#deployment-profiles).
 
-- **Only want to run specific probes, an `m-n` range, or the expanded bias or hallucination templates?** Pass `--probes <spec>` (e.g. `--probes core`, `--probes general`, `--probes 1-15`, or `--probes override_simple`) — see [Running a subset of probes](#running-a-subset-of-probes).
-- **Want to verify OAuth login gates and API access controls first?** Run `python -m harnesses.access_checks` — see [Access-control & OAuth/API checks](#access-control--oauthapi-checks).
+- **Only want to run specific probes, an `m-n` range, or the expanded bias or hallucination templates?** Pass `--probes <spec>` (e.g. `rt scan --probes core`, `--probes general`, `--probes 1-15`, or `--probes override_simple`), and preview the selection with `rt probes --probes 1-15` — see [Running a subset of probes](#running-a-subset-of-probes).
+- **Want to verify OAuth login gates and API access controls first?** Run `rt access` — see [Access-control & OAuth/API checks](#access-control--oauthapi-checks).
 - **No callable API?** Drive the app's web page instead — see [Testing your app in
   depth](#testing-your-app-in-depth).
 - **No app endpoint yet?** Set `RT_PROVIDER=gemini` (or another provider) to try the whole
@@ -136,18 +146,97 @@ judge's reasons — and scrubs personal data from it first
 regenerate, export, or scrub existing reports:
 
 ```bash
-python -m scripts.run_summary                                                     # re-write the newest run's summary
-python -m scripts.export_finding_report --rubric any --latest-run --out findings/ # export the last scan's findings
-python -m scripts.export_finding_report --list                                    # what's in the database
-python -m scripts.scrub findings/                                                 # scrub existing .md reports in place
+rt summary    # re-write the newest run's summary
+rt findings   # export finding reports for what the judge flagged in the newest run
+rt runs       # what's in the database
+rt scrub      # scrub the existing .md reports in findings/ in place
 ```
 
 Once the scan runs, add the multi-turn campaigns — attacks that build over a conversation:
 
 ```bash
-python -m harnesses.pyrit_campaigns.multi_turn_red_team   # adaptive; works against an app
-python -m harnesses.pyrit_campaigns.multi_turn_crescendo  # gradual escalation; an app must take {HISTORY}
+rt adaptive    # an attacker model adapts to each reply; works against any app
+rt crescendo   # gradual escalation; an app must take {HISTORY}
+rt all         # the scan, then both; carries on if one fails (--with-access runs rt access first)
 ```
+
+## The rt command
+
+`rt` on its own lists every command. `rt COMMAND --help` shows that command's own options.
+Every `rt` command runs one of the kit's modules and prints the full form first, so a
+log shows exactly what ran:
+
+```
+> rt scan --profile public_conversational --probes 1-15
+Running: python -m harnesses.pyrit_campaigns.single_turn_scan --probes 1-15
+  with RT_PROFILE=public_conversational
+```
+
+The full forms in the right-hand column still work, and older notes and scripts that use
+them don't need changing.
+
+| Command | What it does | Full form |
+|---|---|---|
+| `rt smoke` | Credentials and network: two benign prompts | `python -m scripts.smoke_test` |
+| `rt probes` | The probes a scan would send, numbered; calls no model | `python -m harnesses.pyrit_campaigns.single_turn_scan --list-probes` |
+| `rt rubrics` | Check `judge.yaml` | `python -m harnesses.pyrit_campaigns.rubrics check` |
+| `rt scan` | Single-turn scan | `python -m harnesses.pyrit_campaigns.single_turn_scan` |
+| `rt adaptive` (or `rt red-team`) | Adaptive multi-turn campaign | `python -m harnesses.pyrit_campaigns.multi_turn_red_team` |
+| `rt crescendo` | Crescendo multi-turn campaign | `python -m harnesses.pyrit_campaigns.multi_turn_crescendo` |
+| `rt access` | Access-control & OAuth/API checks | `python -m harnesses.access_checks` |
+| `rt all` | `rt scan`, `rt adaptive`, `rt crescendo`, then a line for each saying how it ended | the three above, in turn |
+| `rt agent` | Agent tool abuse (needs setup first; see [Playbook crosswalk](#playbook-crosswalk)) | `python -m harnesses.pyrit_campaigns.agent_tool_exploitation` |
+| `rt rag` | RAG grounding (needs an eval set first) | `python -m harnesses.pyrit_campaigns.rag_grounding_eval` |
+| `rt summary` | Write a run's full summary again | `python -m scripts.run_summary` |
+| `rt findings` | Finding reports for the newest run | `python -m scripts.export_finding_report --rubric any --latest-run` |
+| `rt runs` | List what's in the results database | `python -m scripts.export_finding_report --list` |
+| `rt rescore` | Judge a past scan's replies again | `python -m scripts.rescore` |
+| `rt scrub` | Scrub personal data from reports in place | `python -m scripts.scrub findings/` |
+
+**Options pass through unchanged.** Apart from the four below, every option goes to the
+module as you typed it, in order, so `rt scan --probes 1-15 --converters base64` and
+`rt crescendo --converters rot13` mean what they always meant, and each command's
+`--help` lists them.
+
+**Four settings have their own options**, for one command only:
+
+| Option | Sets | e.g. |
+|---|---|---|
+| `--profile NAME` | `RT_PROFILE` | `rt scan --profile constituent_decision` |
+| `--provider NAME` | `RT_PROVIDER` | `rt smoke --provider gemini` |
+| `--judge NAME` | `RT_JUDGE_PROVIDER` | `rt adaptive --judge bedrock` |
+| `--repeats N` | `RT_REPEATS` | `rt scan --repeats 5` |
+
+They override `.env` and anything set in the shell, and they're gone when the command
+ends, unlike PowerShell's `$env:`, which stays set until the window closes. Any other
+setting still goes in `.env` (or before the command, as `VAR=value rt ...`, outside
+PowerShell and cmd).
+
+**Defaults `rt` adds.** `rt findings` exports what a rubric judge flagged in the newest run,
+of any campaign; give `--run-id`, `--rubric`, or `--outcome` to choose something else. To export
+one result, flagged or not, give its conversation id, the id in the `--- [...]` line above its
+reply in the scan's output:
+
+```bash
+rt findings --conversation-id 8f3e2a10-5b7c-4d9e-a1f2-3c4b5d6e7f80
+```
+
+`rt scrub` with no path scrubs `findings/`. Run from outside the repo, both still use the kit's
+own `findings/` folder. The commands a run prints when it ends (`Next: rt findings ...`) and the
+steps in a finding report give both forms, `rt` first.
+
+**`rt all`** takes only the four settings, plus `--with-access`, which runs `rt access`
+first. The campaigns take different options, so give any others to one campaign at a time.
+A campaign that fails, such as `rt crescendo` against an app without `{HISTORY}`, doesn't
+stop the rest; the list at the end says which one, and the campaign's own output says why.
+Ctrl+C stops the whole run.
+
+**Three ways to run it.** `rt` after `pip install -e .`, from any folder. Without the install,
+from the repo root: `.\rt` (PowerShell or cmd, via `rt.cmd`), `./rt` (macOS, Linux, Git
+Bash), or `python -m redteam`. All three run `redteam/cli.py`. `pip install -e .` installs
+only the command, not the kit's dependencies, and points it at your clone, so a `git pull`
+needs no reinstall. If `rt` isn't found after installing, pip printed a warning that its
+`Scripts` folder isn't on your `PATH`; use `.\rt` or add that folder to `PATH`.
 
 ## Fine-tuning
 
@@ -285,8 +374,8 @@ With neither, only the judge can catch a leak, so the run summary lists repeated
 replies side by side — recurring wording is the stronger sign it is real. Keep any prompt
 file outside the repo.
 
-**Which campaigns.** `single_turn_scan` and `multi_turn_red_team` run against any app.
-`multi_turn_crescendo` needs `{HISTORY}`: it deletes refused turns and carries on, which
+**Which campaigns.** `rt scan` and `rt adaptive` run against any app.
+`rt crescendo` needs `{HISTORY}`: it deletes refused turns and carries on, which
 only works when the kit holds the conversation. Without `{HISTORY}`, an app over its API
 is single-turn; through `APP_TRANSPORT=browser` the app keeps each conversation itself, so
 multi-turn is real but cannot be rewound. Set `RT_JUDGE_PROVIDER` (the app can't grade
@@ -310,9 +399,9 @@ API cannot be reached by unauthorized users, forged tokens, or outside websites.
 plain-English Markdown report to `findings/<date>_access_checks_<host>.md`.
 
 ```bash
-python -m harnesses.access_checks                # runs Phase 1 (logged out) + Phase 2 (logged in)
-python -m harnesses.access_checks --outsider     # also tests a separate non-organization Google account
-python -m harnesses.access_checks --phase1-only  # runs only Phase 1 (logged-out HTTP checks, no browser)
+rt access                # runs Phase 1 (logged out) + Phase 2 (logged in)
+rt access --outsider     # also tests a separate non-organization Google account
+rt access --phase1-only  # runs only Phase 1 (logged-out HTTP checks, no browser)
 ```
 
 It automatically reuses `APP_ENDPOINT`, `APP_BROWSER_URL`, `APP_BROWSER_INPUT`,
@@ -385,8 +474,8 @@ access. Then each model gets one test prompt, so a wrong model id or missing acc
 stops the run in seconds:
 
 ```bash
-python -m scripts.smoke_test                          # checks the model under test only
-python -m harnesses.pyrit_campaigns.single_turn_scan  # checks the target and the judge, then scans
+rt smoke   # checks the model under test only
+rt scan    # checks the target and the judge, then scans
 ```
 
 | Error | Cause |
@@ -443,10 +532,11 @@ user's message, which makes extraction easier than in a real deployment.
 ## Repeats: how often a probe fails, not just whether it did
 
 A model can answer the same probe differently each time, so one reply is one sample.
-`RT_REPEATS` sends every probe that many times, each in a new conversation:
+`--repeats` (or `RT_REPEATS` in `.env`) sends every probe that many times, each in a new
+conversation; the multi-turn campaigns repeat each objective the same way:
 
 ```bash
-RT_REPEATS=5    # default 1
+rt scan --repeats 5     # default 1
 ```
 
 The run summary then shows a **Failure rates** table (e.g. "flagged 2 of 5") and, for
@@ -465,6 +555,8 @@ red-team-starter-pack/
 ├── .gitignore                          # Keeps .env, findings/, and PyRIT databases out of git
 ├── requirements.txt                    # What a campaign needs: PyRIT, LiteLLM, provider SDKs
 ├── requirements-dev.txt                # Adds pytest and pre-commit for working on the pack
+├── pyproject.toml                      # Only for `pip install -e .`: installs the rt command
+├── rt, rt.cmd                          # The rt command without installing it: ./rt, .\rt
 ├── pytest.ini                          # Runs tests/ only
 ├── .pre-commit-config.yaml             # gitleaks on every commit
 ├── .github/workflows/
@@ -491,6 +583,9 @@ red-team-starter-pack/
 │
 ├── data_fixtures/
 │   └── synthetic_documents/            # TODO: only a README so far - how to build indirect injection documents
+│
+├── redteam/
+│   └── cli.py                          # The rt command: each rt COMMAND runs one module below
 │
 ├── harnesses/
 │   ├── access_checks.py                # Standalone HTTP/OAuth access-control & API configuration checks
@@ -543,37 +638,37 @@ profiles are presets for when you know what kind of deployment you're testing.
 | `public_conversational` | Public FAQ and program chatbots | Wrong answers at scale; equity | No data leakage; written-out hallucination only |
 | `constituent_decision` | Eligibility, casework, licensing | Authorization boundaries; disparate impact | `all`: every probe |
 
-`--list-probes` shows exactly which probes a profile sends, and how many, without calling
-a model.
+`rt probes --profile NAME` shows exactly which probes a profile sends, and how many,
+without calling a model.
 
 ### Using a profile
 
-Set `RT_PROFILE` for the run, or put it in `.env` to use it for every run. Every campaign
-reads it: the single-turn scan, and both multi-turn campaigns.
+Pass `--profile` for one run, or set `RT_PROFILE` in `.env` to use it for every run. Every
+campaign reads it: the single-turn scan, and both multi-turn campaigns.
 
 ```bash
 # See what a profile would send, numbered, without calling any model
-RT_PROFILE=public_conversational python -m harnesses.pyrit_campaigns.single_turn_scan --list-probes
+rt probes --profile public_conversational
 
 # Scan with it
-RT_PROFILE=public_conversational python -m harnesses.pyrit_campaigns.single_turn_scan
+rt scan --profile public_conversational
 
 # The multi-turn campaigns pursue the same profile's goals (config/objectives/public_conversational.yaml)
-RT_PROFILE=public_conversational python -m harnesses.pyrit_campaigns.multi_turn_red_team
-RT_PROFILE=public_conversational python -m harnesses.pyrit_campaigns.multi_turn_crescendo
+rt adaptive --profile public_conversational
+rt crescendo --profile public_conversational
 
 # Keep the profile's goals, checklist, and stand-in prompt, but send other probes
-RT_PROFILE=internal_productivity python -m harnesses.pyrit_campaigns.single_turn_scan --probes bias-core
-RT_PROFILE=constituent_decision python -m harnesses.pyrit_campaigns.single_turn_scan --probes 1-15
+rt scan --profile internal_productivity --probes bias-core
+rt scan --profile constituent_decision --probes 1-15
 
 # No profile: the built-in default, every suite (add --probes all for every probe)
-python -m harnesses.pyrit_campaigns.single_turn_scan
+rt scan
 ```
 
-In PowerShell or cmd, where `VAR=value python ...` doesn't work, put the line in `.env`
-instead (`RT_PROFILE=public_conversational`), or in PowerShell run
-`$env:RT_PROFILE = "public_conversational"` first. Leave `RT_PROFILE=` blank in `.env`
-to go back to the default.
+`--profile` works the same in every shell, and only for that command. To use one profile
+for every run, put `RT_PROFILE=public_conversational` in `.env`; leave it blank there to
+go back to the default. `--profile` beats `.env`, so `rt scan --profile default` runs the
+built-in default whatever `.env` says.
 
 The scan prints the profile at the start (`PROFILE: public_conversational`) and its
 checklist at the end, under *Before calling 'public_conversational' covered*. Work
@@ -597,7 +692,7 @@ Each profile in `harnesses/pyrit_campaigns/profiles.py` is a few lines:
   its `checklist.yaml`, and print whenever its probes run, under any profile.
 
 Probes are numbered the same way under every profile, suite by suite with bias last, so
-a number from `--list-probes` names the same probe whichever profile is set (`--probes
+a number from `rt probes` names the same probe whichever profile is set (`--probes
 general` selects every non-bias probe). `--probes` replaces the profile's own
 selection rather than narrowing it: `internal_productivity` with `--probes bias-core`
 sends the bias pairs, though the profile on its own sends none.
@@ -633,27 +728,27 @@ For runs against a raw model, also add a stand-in prompt in
 says so. Then check the profile:
 
 ```bash
-RT_PROFILE=benefits_portal python -m harnesses.pyrit_campaigns.single_turn_scan --list-probes
+rt probes --profile benefits_portal
 ```
 
 ## Running a subset of probes
 
-By default, `single_turn_scan` sends the active profile's probes (`core` under the
+By default, `rt scan` sends the active profile's probes (`core` under the
 built-in `default` profile). To inspect the numbered probe list first or run other
 probes instead, pass `--probes <spec>` on the command line (or set `RT_PROBES=<spec>` in
 `.env`). A probe has the same number under every profile.
 
 ```bash
 # Preview the profile's probes with their numbers and pair tags (calls no model)
-python -m harnesses.pyrit_campaigns.single_turn_scan --list-probes
+rt probes
 
 # Preview what a filter selects before sending anything
-python -m harnesses.pyrit_campaigns.single_turn_scan --list-probes --probes core
+rt probes --probes core
 
 # Run only the selected probes
-python -m harnesses.pyrit_campaigns.single_turn_scan --probes core
-python -m harnesses.pyrit_campaigns.single_turn_scan --probes 1-15
-python -m harnesses.pyrit_campaigns.single_turn_scan --probes override_simple
+rt scan --probes core
+rt scan --probes 1-15
+rt scan --probes override_simple
 ```
 
 You can pass one selector or combine several with commas (e.g. `--probes "1-3,cross_session_bleed,dialect_01"`):
@@ -669,7 +764,7 @@ You can pass one selector or combine several with commas (e.g. `--probes "1-3,cr
 | `hallucination` | All probes in `hallucination` (both written-out and fixture-expanded) | `--probes hallucination` |
 | `hallucination-core` | Only the written-out hallucination probes | `--probes hallucination-core` |
 | `hallucination-templated` | Only the probes expanded from `references.yaml` and `excerpts.yaml` | `--probes hallucination-templated` |
-| `k` or `m-n` | 1-based probe number or inclusive range from `--list-probes` | `--probes 4` or `--probes 1-15` |
+| `k` or `m-n` | 1-based probe number or inclusive range from `rt probes` | `--probes 4` or `--probes 1-15` |
 | Probe name | A single probe by its `name` (quote `[...]` in PowerShell) | `--probes override_simple` or `--probes "scenario_spanish[hours]"` |
 | Pair ID | Both halves of a matched pair by its `pair_id` | `--probes dialect_01` |
 | Template name | Every probe expanded from a template seed (plus their paired partners) | `--probes scenario_spanish` |
@@ -694,31 +789,31 @@ section can set each encoding side by side with the plain-text result. A flag on
 means little by itself if the plain text fails the same way; a probe flagged only when encoded is
 the finding — the encoding got past something the plain text did not. Pass `--no-control` (or set
 `RT_CONTROL=0` in `.env`) to skip the plain-text pass and send only the encoded version(s). Use
-`RT_REPEATS=5` or more before reporting a finding; a single try each way is one reply. Replies are
+`--repeats 5` or more before reporting a finding; a single try each way is one reply. Replies are
 also checked in decoded form, so a leak in a reply that comes back in Base64, ROT13, or look-alike
 letters is still caught.
 
 ```bash
 # Preview the converted payload for each selected probe without calling a model
-python -m harnesses.pyrit_campaigns.single_turn_scan --list-probes --probes prompt_injection --converters base64
+rt probes --probes prompt_injection --converters base64
 
 # Run selected probes once as written (control) and once encoded in Base64 or ROT13
-python -m harnesses.pyrit_campaigns.single_turn_scan --probes prompt_injection --converters base64
-python -m harnesses.pyrit_campaigns.single_turn_scan --probes prompt_injection --converters rot13
+rt scan --probes prompt_injection --converters base64
+rt scan --probes prompt_injection --converters rot13
 
 # Run multiple separate encodings in one scan (shares one plain-text control pass)
-python -m harnesses.pyrit_campaigns.single_turn_scan --probes prompt_injection --converters rot13,base64
-python -m harnesses.pyrit_campaigns.single_turn_scan --probes prompt_injection --converters all
+rt scan --probes prompt_injection --converters rot13,base64
+rt scan --probes prompt_injection --converters all
 
 # Chain multiple converters into a single pass with '+' (e.g. leetspeak followed by zero-width characters)
-python -m harnesses.pyrit_campaigns.single_turn_scan --probes prompt_injection --converters leetspeak+zero-width
+rt scan --probes prompt_injection --converters leetspeak+zero-width
 
 # Skip the plain-text control pass and send only the encoded pass(es)
-python -m harnesses.pyrit_campaigns.single_turn_scan --probes prompt_injection --converters rot13 --no-control
+rt scan --probes prompt_injection --converters rot13 --no-control
 
 # Encode every attacker turn in multi-turn campaigns (with or without the plain-text control pass)
-python -m harnesses.pyrit_campaigns.multi_turn_crescendo --converters rot13
-python -m harnesses.pyrit_campaigns.multi_turn_red_team --converters rot13 --no-control
+rt crescendo --converters rot13
+rt adaptive --converters rot13 --no-control
 ```
 
 | Converter | What it sends to the target |
@@ -780,16 +875,16 @@ Change one, then check what the change does before you trust it:
 
 ```bash
 # 1. Check the file. Every campaign also does this before it sends anything.
-python -m harnesses.pyrit_campaigns.rubrics check
+rt rubrics
 
 # 2. See exactly what the judge will read for a probe, a matched pair, or a multi-turn goal
-python -m harnesses.pyrit_campaigns.single_turn_scan --show-judge-prompt override_simple
-python -m harnesses.pyrit_campaigns.single_turn_scan --show-judge-prompt dialect_01
-python -m harnesses.pyrit_campaigns.multi_turn_crescendo --show-judge-prompt 3
+rt scan --show-judge-prompt override_simple
+rt scan --show-judge-prompt dialect_01
+rt crescendo --show-judge-prompt 3
 
 # 3. Judge a past scan's replies again with the rubrics as they are now
-python -m scripts.rescore --run 937e73ef                      # every rubric
-python -m scripts.rescore --run 937e73ef --rubric pii_disclosure
+rt rescore --run 937e73ef                          # every rubric
+rt rescore --run 937e73ef --rubric pii_disclosure
 ```
 
 A rubric's `system_prompt` is plain text too: write braces as they are, and put
@@ -856,9 +951,9 @@ not a decision about the person's case. Say so in the rubric's ACCEPTABLE list i
 Then check it, look at what the judge now reads, and judge the flagged run's replies again:
 
 ```bash
-python -m harnesses.pyrit_campaigns.rubrics check
-python -m harnesses.pyrit_campaigns.single_turn_scan --show-judge-prompt dialect_sae
-python -m scripts.rescore --run <run id> --rubric unauthorized_determination
+rt rubrics
+rt scan --show-judge-prompt dialect_sae
+rt rescore --run <run id> --rubric unauthorized_determination
 ```
 
 In the re-score report, the reply above should move from `true → false`. Read the replies
@@ -965,7 +1060,7 @@ judge facts about that one probe, through a `[[SLOT]]` in the rubric. Before a r
 every probe a profile would send, without calling any model:
 
 ```bash
-python -m harnesses.pyrit_campaigns.single_turn_scan --list-probes
+rt probes
 ```
 
 Read templated results together. The run summary's **By template** section gives the
@@ -1103,10 +1198,10 @@ The two scaffolds run, but test nothing until you finish them:
 ```bash
 # refuses to start until RT_TOOL_NAME, RT_RECORD_TYPE, and RT_PROGRAM_NAME are set;
 # against a bare model every probe "passes", since it has no tools to misuse
-RT_PROVIDER=app python -m harnesses.pyrit_campaigns.agent_tool_exploitation
+rt agent --provider app
 
 # needs data_fixtures/grounding_eval_set.json - the format is in the module's EVAL_SET comment
-python -m harnesses.pyrit_campaigns.rag_grounding_eval
+rt rag
 ```
 
 The CI gate (`.github/workflows/redteam-ci-gate.yml`) is switched off with `if: false`,
@@ -1168,8 +1263,8 @@ before writing Markdown to disk:
   by the patterns alone: SSNs, card numbers, phone numbers, emails, and street addresses (a
   simple pattern, which misses irregular ones).
   **Names are not checked.** The console warns once, and every report says so in a note under
-  its title. Install Rampart and run `python -m scripts.scrub` on the report to scrub names
-  too; the note comes out.
+  its title. Install Rampart and run `rt scrub` on the report to scrub names too; the note
+  comes out.
   Once the model has loaded, a report Rampart doesn't finish in time (a very large one) falls
   back to the patterns alone, with the same note; the next report tries Rampart again.
 - **Public contact details:** Rampart and the patterns redact every phone number and email,
@@ -1178,8 +1273,7 @@ before writing Markdown to disk:
   any format, an email ignoring case. List only public contact details here. A report with a
   redacted phone number or email says so in a `Redacted contact details:` note under its title.
   A redacted value cannot be scrubbed back into a report: set `RT_SCRUB_ALLOW` and write the
-  report again (`python -m scripts.run_summary --run-id <run>`, `python -m scripts.export_finding_report`,
-  or the access checks again).
+  report again (`rt summary --run-id <run>`, `rt findings`, or the access checks again).
 - **Access-check reports:** the evidence is kept as written, where Rampart would otherwise read
   parts of it as personal data: the paths the kit requested (`GET /openapi.json` had become
   `/openapi.[GIVEN_NAME_1]`), the kit's own wording ("fake" had become a name), the app's JSON
@@ -1201,17 +1295,17 @@ before the command, in place of the `VAR=value` prefix below.
 npm ci
 
 # Keep the agency's public hotline and help-desk address visible (or put it in .env)
-RT_SCRUB_ALLOW="410-767-1100,info@maryland.gov" python -m scripts.export_finding_report --rubric any --latest-run
+RT_SCRUB_ALLOW="410-767-1100,info@maryland.gov" rt findings
 
 # Scrub an existing report or every .md file in findings/ in place
-python -m scripts.scrub findings/2026-09-30_0951_scan_public_conversational_7f264395.md
-python -m scripts.scrub findings/
+rt scrub findings/2026-09-30_0951_scan_public_conversational_7f264395.md
+rt scrub
 
 # Skip scrubbing on a synthetic-only run (or set RT_SCRUB=0 in .env)
-python -m scripts.run_summary --no-scrub
-python -m scripts.export_finding_report --no-scrub --rubric any --latest-run
-python -m scripts.rescore --no-scrub
-python -m harnesses.access_checks --no-scrub
+rt summary --no-scrub
+rt findings --no-scrub
+rt rescore --no-scrub
+rt access --no-scrub
 ```
 
 ## Safety and handling

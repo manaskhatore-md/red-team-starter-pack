@@ -55,6 +55,7 @@ from pyrit.memory import CentralMemory
 from pyrit.models import ConversationType
 from pyrit.setup import SQLITE, initialize_pyrit_async
 
+from redteam.cli import command_for, full_form
 from harnesses.pyrit_campaigns.profiles import PROFILES, REPO_ROOT, dataset_path
 from harnesses.pyrit_campaigns.code_checks import CODE_CHECKS
 from harnesses.pyrit_campaigns.rubrics import SEVERITIES, describe_version
@@ -329,7 +330,7 @@ def reproduction_steps(labels: dict) -> str:
         )
     )
     version_step = (
-        f"The judge used {describe_version(labels)}. If `python -m harnesses.pyrit_campaigns.rubrics check` "
+        f"The judge used {describe_version(labels)}. If `rt rubrics` (or `{full_form('rubrics')}`) "
         "prints a different fingerprint, the rubrics have changed since, and the verdict may differ for that "
         "reason alone."
         if labels.get("rt_rubric_sha")
@@ -339,7 +340,7 @@ def reproduction_steps(labels: dict) -> str:
         conv_flag = f" --converters {labels['rt_converters']}" if labels.get("rt_converters") else ""
         steps = [
             f"In `.env`, set `RT_PROFILE={labels.get('rt_profile')}`{prompt_setting}, {target}, and {judge}.",
-            f"Run `python -m harnesses.pyrit_campaigns.single_turn_scan{conv_flag}`.",
+            f"Run `rt scan{conv_flag}` (or `{full_form('scan' + conv_flag)}`).",
             probe_step(labels),
         ]
         if version_step:
@@ -360,7 +361,8 @@ def reproduction_steps(labels: dict) -> str:
             f"In `.env`, set `RT_PROFILE={labels.get('rt_profile')}`{prompt_setting}, {target}, {judge}, `RT_ADVERSARIAL_PROVIDER="
             f"{labels.get('rt_adversarial_provider')}` and `RT_ADVERSARIAL_MODEL={labels.get('rt_adversarial')}`, "
             f"`RT_MAX_TURNS={labels.get('rt_max_turns')}`{backtracks_line}.",
-            f"Run `python -m harnesses.pyrit_campaigns.{campaign_module}{conv_flag}`. It runs every objective in the "
+            f"Run `rt {command_for(f'harnesses.pyrit_campaigns.{campaign_module}')}{conv_flag}` (or "
+            f"`python -m harnesses.pyrit_campaigns.{campaign_module}{conv_flag}`). It runs every objective in the "
             "profile's `objectives` (`harnesses/pyrit_campaigns/profiles.py`); the Objective above is one of them. "
             "To run only this one, comment out the others.",
             "The attacker writes new turns on every run, so the transcript will not repeat word "
