@@ -29,7 +29,10 @@ What is judged again, and how:
   - Each rubric verdict, with the reply, the probe as it was sent, the system prompt
     the run showed its judge, and the reply's trace. The pass criteria and reference
     facts come from the suite files as they are now; if a probe's text has changed
-    since the run, the report says so.
+    since the run, the report says so. A flag the run could not check against a trace
+    (a needs_trace probe, against an app with no APP_TRACE_PATH and no APP_RETRIEVAL=no)
+    is marked unverified,
+    old and new alike.
   - A rubric that now grades a probe's suite but did not then is judged too, as new.
   - Each matched pair, in the order the judge read it in the run. Control pairs are
     counted on their own, as in the run summary.
@@ -64,12 +67,13 @@ from harnesses.pyrit_campaigns import single_turn_scan as scan
 from harnesses.pyrit_campaigns.calibration import CALIBRATION_LABEL
 from harnesses.pyrit_campaigns.code_checks import CODE_CHECKS
 from harnesses.pyrit_campaigns.profiles import PAIR_RUBRICS, dataset_path
-from harnesses.pyrit_campaigns.rubrics import describe_version, require_valid, version_labels
+from harnesses.pyrit_campaigns.rubrics import describe_version, require_valid, rubric_format_string, version_labels
 from harnesses.pyrit_campaigns.target_factory import (
     build_scoring_target,
     check_models,
     close_target,
     model_name,
+    trace_unavailable,
     unverified_rubric,
 )
 from scripts.export_finding_report import select_run
@@ -88,8 +92,10 @@ class Rejudged:
     reply: str                      # what was judged; both replies for a pair
     old: bool | None = None         # None: not judged in the run
     old_rationale: str = ""
+    old_unverified: bool = False    # the run's flag could not be checked (see trace_unavailable())
     new: bool | None = None         # None: the judge gave no verdict (see error)
     new_rationale: str = ""
+    new_unverified: bool = False
     error: str = ""
     control: bool = False
     notes: list[str] = field(default_factory=list)
@@ -99,7 +105,9 @@ class Rejudged:
         return self.old is not None and self.new is not None and self.old != self.new
 
 
-def verdict(value: bool | None) -> str:
+def verdict(value: bool | None, unverified: bool = False) -> str:
+    if value and unverified:
+        return "true (flagged, unverified: no trace)"
     return {True: "true (flagged)", False: "false (passed)", None: "none"}[value]
 
 
@@ -127,15 +135,16 @@ def system_prompt_of(messages, labels: dict) -> tuple[str | None, str]:
     return None, ""
 
 
-def judge_verdicts(scores) -> dict[str, tuple[bool, str]]:
-    """The run's rubric verdicts on a reply: rubric -> (value, rationale). Not the code checks or the pair rubric."""
+def judge_verdicts(scores) -> dict[str, tuple[bool, str, bool]]:
+    """The run's rubric verdicts on a reply: rubric -> (value, rationale, unverified). Not the code
+    checks or the pair rubric."""
     verdicts = {}
     for score in scores:
         for category in score.score_category or []:
             # An unverified flag is still the judge's verdict on its rubric: the judge is what is re-run.
-            category = unverified_rubric(category) or category
-            if category not in CODE_CHECKS and category != PAIR_RUBRIC:
-                verdicts[category] = (score.get_value() is True, score.score_rationale or "")
+            rubric = unverified_rubric(category) or category
+            if rubric not in CODE_CHECKS and rubric != PAIR_RUBRIC:
+                verdicts[rubric] = (score.get_value() is True, score.score_rationale or "", rubric != category)
     return verdicts
 
 
@@ -179,6 +188,10 @@ def plan(results, memory, rubrics: dict, only_rubrics: set[str] | None, only_pro
         system_prompt, prompt_note = system_prompt_of(messages, labels)
         if prompt_note:
             notes.append(prompt_note)
+        # As the scan decides it: the run's target and trace path, and the probe as it is now.
+        unverifiable = probe.needs_trace and trace_unavailable(
+            labels.get("rt_provider", ""), labels.get("rt_trace_path", ""), labels.get("rt_app_retrieval") == "no"
+        )
 
         # Each encoding pass compares its own pairs, as the scan did.
         if probe.pair_id and wanted(only_rubrics, PAIR_RUBRIC) and wanted(only_probes, name, probe.pair_id, dataset):
@@ -194,7 +207,7 @@ def plan(results, memory, rubrics: dict, only_rubrics: set[str] | None, only_pro
             if key not in rubrics:
                 skipped.append(f"{shown}: rubric {key!r} is no longer in the rubric file.")
                 continue
-            singles.append((key, probe, result.objective, reply, system_prompt, old.get(key), shown, notes))
+            singles.append((key, probe, result.objective, reply, system_prompt, unverifiable, old.get(key), shown, notes))
 
     pair_tasks = []
     for (pair_id, encoding, repeat), members in pairs.items():
@@ -232,21 +245,24 @@ async def rejudge(singles, pair_tasks, rubrics: dict, judge) -> list[Rejudged]:
     """Judge every task again, MAX_CONCURRENCY at a time. A failed call is reported, not raised."""
     gate = asyncio.Semaphore(scan.MAX_CONCURRENCY)
 
-    async def one(key, probe, objective, reply, system_prompt, old, shown, notes) -> Rejudged:
+    async def one(key, probe, objective, reply, system_prompt, unverifiable, old, shown, notes) -> Rejudged:
         item = Rejudged(key, shown, reply.converted_value or "", notes=list(notes))
         if old is not None:
-            item.old, item.old_rationale = old
+            item.old, item.old_rationale, item.old_unverified = old
         scorer = scan.RubricScorer(
-            rubric_prompt=scan.rubric_prompt(rubrics[key], system_prompt),
+            rubric_prompt=rubric_format_string(rubrics[key]["system_prompt"]),
             judge=judge,
             category=key,
             judge_context={objective: probe.judge_slots()},
+            system_prompt=system_prompt,
+            unverifiable=frozenset({objective}) if unverifiable else frozenset(),
         )
         async with gate:
             try:
                 # The scorer's own judging, without saving the score: the run's scores stay as they were.
                 [score] = await scorer._score_piece_async(reply, objective=objective)
                 item.new, item.new_rationale = score.get_value() is True, score.score_rationale or ""
+                item.new_unverified = any(unverified_rubric(c) for c in score.score_category or [])
             except Exception as e:
                 item.error = f"{type(e).__name__}: {str(e)[:200]}"
         return item
@@ -336,7 +352,11 @@ def build_report(run_id: str, labels: dict, judge_shown: str, items: list[Rejudg
     lines.append("")
 
     def detail(item: Rejudged) -> list[str]:
-        out = [f"### {item.shown} - {item.rubric}: {verdict(item.old)} → {verdict(item.new)}", ""]
+        out = [
+            f"### {item.shown} - {item.rubric}: {verdict(item.old, item.old_unverified)} → "
+            f"{verdict(item.new, item.new_unverified)}",
+            "",
+        ]
         out += [f"- Note: {note}." for note in item.notes]
         out += ["", "Reply:", "", fence(item.reply), ""]
         if item.old is not None:
@@ -355,7 +375,10 @@ def build_report(run_id: str, labels: dict, judge_shown: str, items: list[Rejudg
     if new:
         lines += ["## New verdicts", "", "From rubrics that grade these probes now but did not in the run.", ""]
         lines += ["| Probe | Rubric | Verdict | Rationale |", "|---|---|---|---|"]
-        lines += [f"| {cell(i.shown)} | {i.rubric} | {verdict(i.new)} | {cell(i.new_rationale, 160)} |" for i in new]
+        lines += [
+            f"| {cell(i.shown)} | {i.rubric} | {verdict(i.new, i.new_unverified)} | {cell(i.new_rationale, 160)} |"
+            for i in new
+        ]
         lines.append("")
 
     failed = [i for i in items if i.new is None]

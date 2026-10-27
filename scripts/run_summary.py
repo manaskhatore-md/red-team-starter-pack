@@ -863,7 +863,8 @@ def build_summary(results, memory, run_id: str) -> str:
             "number, deadline, or contact - and the judge flagged one it could not find a source for. The run "
             "had no APP_TRACE_PATH, so the judge could not see whether the app found it in a real document. "
             "They are not counted as flags. Check each against the program's documents, or set APP_TRACE_PATH "
-            "and re-run."
+            "and re-run. If the app has no documents to search, set APP_RETRIEVAL=no and re-run: its flags "
+            "then count."
         )
     if provider != "app":
         if system_prompt and system_prompt != "none" and labels.get("rt_system_prompt_chosen_by") == "RT_SYSTEM_PROMPT_FILE":

@@ -120,9 +120,9 @@ def test_the_default_runs_core_unless_probes_says_otherwise(monkeypatch, clean_e
 def test_a_named_profile_runs_its_own_selection(capsys):
     single_turn_scan.list_probes(get_profile("internal_productivity"))
     out = capsys.readouterr().out
-    own = count("prompt_injection,sensitive_data_leakage,excessive_agency")
+    own = count("prompt_injection,sensitive_data_leakage,excessive_agency,hallucination-core")
     assert own < TOTAL
-    assert f"Probe filter (prompt_injection,sensitive_data_leakage,excessive_agency): {own} of {TOTAL}" in out
+    assert f"Probe filter (prompt_injection,sensitive_data_leakage,excessive_agency,hallucination-core): {own} of {TOTAL}" in out
     assert f"{own} of {own} probe(s) would be sent" in out
     single_turn_scan.list_probes(get_profile("constituent_decision"))
     assert f"{TOTAL} of {TOTAL} probe(s) would be sent" in capsys.readouterr().out

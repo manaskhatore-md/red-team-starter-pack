@@ -298,6 +298,8 @@ def reproduction_steps(labels: dict) -> str:
     target = f"`RT_PROVIDER={labels.get('rt_provider')}` and `RT_MODEL={labels.get('rt_target')}`"
     if labels.get("rt_trace_path"):
         target += f", `APP_TRACE_PATH={labels['rt_trace_path']}`"
+    if labels.get("rt_app_retrieval") == "no":
+        target += ", `APP_RETRIEVAL=no`"
     # Set the judge's model explicitly: it no longer follows RT_MODEL, and the
     # provider's default can change between releases. Runs recorded before the
     # provider labels only have the judge's model name.
