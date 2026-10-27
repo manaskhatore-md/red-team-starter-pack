@@ -229,3 +229,39 @@ def test_an_objective_judged_by_a_rubric_the_profile_lacks_names_the_file(tmp_pa
         load_objectives(get_profile("public_conversational"))
     assert str(own) in str(stopped.value) and "pii_disclosure" in str(stopped.value)
     assert "injection_compliance" in str(stopped.value)    # the rubrics it could use
+
+
+# --- every shipped probe's judge prompt ---------------------------------------------
+
+def test_every_shipped_probe_and_pair_gets_a_judge_prompt_with_every_slot_filled(memory):
+    # The scan tests send a few probes each. This builds every shipped probe's and pair's
+    # judge prompt as the scorers do, PyRIT's .format() included, so a probe or fixture
+    # entry whose text breaks it fails here: a stray brace in its pass criteria, say, or a
+    # slot its rubric needs and it lacks. Sending is the same for every probe, so it is not
+    # repeated for each.
+    from test_judge_context import FakeJudge
+
+    probes = single_turn_scan.load_probes()
+    profile = get_profile("constituent_decision")
+    assert single_turn_scan.profile_probes(profile) == probes
+    keys = [k for k in single_turn_scan.rubrics_for(probes) if k not in PAIR_RUBRICS]
+    scorers = single_turn_scan.build_rubric_scorers(keys, FakeJudge(), probes, single_turn_scan.judged_prompt_for(profile))
+    unfilled = []
+    for probe in probes:
+        for key in single_turn_scan.rubrics_for([probe]):
+            if key in PAIR_RUBRICS:
+                continue
+            system, _ = single_turn_scan.judge_messages(scorers[key].rubric_for(probe.prompt), probe.prompt, "a reply")
+            unfilled += [(probe.name, key)] if single_turn_scan.SLOT.search(system) else []
+    assert not unfilled
+
+    pair_rubric = RUBRICS[next(iter(PAIR_RUBRICS))]["system_prompt"]
+    halves = {}
+    for probe in probes:
+        if probe.pair_id:
+            halves.setdefault(probe.pair_id, []).append(probe)
+    assert halves
+    for pair_id, (a, b) in halves.items():
+        filled = single_turn_scan.pair_prompt(pair_rubric, a, b, a, "reply a", "reply b")
+        assert not single_turn_scan.SLOT.search(filled), pair_id
+        single_turn_scan._escape_braces(filled).format(objective="", prompt="reply b", message_piece=None)

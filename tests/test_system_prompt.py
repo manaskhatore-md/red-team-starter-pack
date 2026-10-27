@@ -116,6 +116,8 @@ class FakeSystemlessModel(FakeModel):
 
 
 def test_the_scan_sends_the_system_prompt_and_flags_a_leak(memory, monkeypatch, capsys):
+    # The probe that asks for the prompt, and one that does not.
+    monkeypatch.setenv("RT_PROBES", "system_prompt_extraction,override_simple")
     target = FakeModel()
     run_id = run_scan(monkeypatch, target)
     out = capsys.readouterr().out
@@ -151,6 +153,7 @@ def test_the_scan_sends_the_system_prompt_and_flags_a_leak(memory, monkeypatch, 
 
 
 def test_a_target_without_system_prompts_gets_a_warning(memory, monkeypatch, capsys):
+    monkeypatch.setenv("RT_PROBES", "override_simple")
     target = FakeSystemlessModel()
     run_scan(monkeypatch, target)
     assert "does not take a system prompt" in capsys.readouterr().out
@@ -160,6 +163,7 @@ def test_a_target_without_system_prompts_gets_a_warning(memory, monkeypatch, cap
 
 def test_a_bare_model_run_records_that_it_had_no_system_prompt(memory, monkeypatch, capsys):
     monkeypatch.setenv("RT_SYSTEM_PROMPT_FILE", "none")
+    monkeypatch.setenv("RT_PROBES", "override_simple")
     target = FakeModel()
     run_id = run_scan(monkeypatch, target)
     assert all("system" not in roles for roles in target.seen)

@@ -46,7 +46,9 @@ sys.path.insert(0, str(REPO_ROOT))
 
 import pytest  # noqa: E402
 from pyrit.memory import CentralMemory  # noqa: E402
+from pyrit.memory.memory_models import Base  # noqa: E402
 from pyrit.setup import IN_MEMORY, initialize_pyrit_async  # noqa: E402
+from sqlalchemy import inspect  # noqa: E402
 
 PROVIDER_KEYS = (
     "GEMINI_API_KEY",
@@ -96,8 +98,24 @@ def memory():
     asyncio.run(initialize_pyrit_async(memory_db_type=IN_MEMORY, env_files=[], silent=True))
     memory = CentralMemory.get_memory_instance()
     # Re-initializing can hand back the same in-memory database, so empty it: a
-    # test must not see another test's results.
-    memory.reset_database()
+    # test must not see another test's results. Deleting the rows leaves the same empty
+    # database as memory.reset_database(), which reruns the schema migration: 0.2s a
+    # test, against a few milliseconds. A table PyRIT adds outside its models would
+    # carry rows from one test to the next, so that stops the run instead.
+    emptied = {table.name for table in Base.metadata.sorted_tables} | {"pyrit_memory_alembic_version"}
+    others = set(inspect(memory.engine).get_table_names()) - emptied
+    if others:
+        pytest.fail(
+            f"PyRIT's database has tables the memory fixture does not empty: {', '.join(sorted(others))}. "
+            "Delete their rows in tests/conftest.py too, or go back to memory.reset_database()."
+        )
+    session = memory.get_session()
+    try:
+        for table in reversed(Base.metadata.sorted_tables):
+            session.execute(table.delete())
+        session.commit()
+    finally:
+        session.close()
     return memory
 
 

@@ -165,8 +165,11 @@ def failing_provider(clean_env, fake_keys, memory):
     server = HTTPServer(("127.0.0.1", 0), Handler)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     clean_env.setenv("OPENAI_API_BASE", f"http://127.0.0.1:{server.server_port}/v1")
-    # Two attempts at most for the errors worth retrying, to keep the test quick.
+    # Two attempts at most for the errors worth retrying, with no wait between, to keep
+    # the test quick.
     clean_env.setenv("RETRY_MAX_NUM_ATTEMPTS", "2")
+    clean_env.setenv("RETRY_WAIT_MIN_SECONDS", "0")
+    clean_env.setenv("RETRY_WAIT_MAX_SECONDS", "0")
 
     def send(status):
         state.update(status=status, hits=0)

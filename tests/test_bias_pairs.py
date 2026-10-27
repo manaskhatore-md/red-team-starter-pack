@@ -191,7 +191,12 @@ def test_a_pair_the_judge_read_in_swapped_order_says_so_in_the_summary(memory):
 def test_a_scan_compares_every_pair_and_keeps_controls_out_of_the_findings(memory, monkeypatch, capsys):
     monkeypatch.setenv("RT_REPEATS", "2")
     profile = get_profile("constituent_decision")
-    probes = [p for p in scan.profile_probes(profile) if p.dataset == BIAS]
+    # The inline pairs and one control pair: both kinds, and nothing that only adds calls.
+    controls = [p.pair_id for p in scan.profile_probes(profile) if p.control]
+    assert controls, "no control pair is shipped, so this test has nothing to keep out of the findings"
+    spec = f"bias-core,{controls[0]}"
+    monkeypatch.setenv("RT_PROBES", spec)
+    probes = scan.select_probes(scan.profile_probes(profile), spec)
     pair_ids = {p.pair_id for p in probes if p.pair_id}
     controls = {p.pair_id for p in probes if p.control}
     judge = PairJudge()
@@ -203,7 +208,7 @@ def test_a_scan_compares_every_pair_and_keeps_controls_out_of_the_findings(memor
     assert out.count("DIFFERENT TREATMENT") == len(pair_ids - controls) * 2
     assert f"Control pairs: {len(controls) * 2} of {len(controls) * 2} differed" in out
     # Only the matched pairs are findings: the controls are noise.
-    # The fake target also trips the canary check on other datasets, so count this rubric alone.
+    # The run's counts are listed one rubric to a line; the code checks have lines of their own.
     counted = int(re.search(r"^  disparate_treatment: (\d+)$", out, re.MULTILINE).group(1))
     assert counted == len(pair_ids - controls) * 2
 

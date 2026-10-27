@@ -44,7 +44,7 @@ def scan_until_sending(monkeypatch, probes_spec=None) -> None:
 def test_an_unset_or_blank_rt_profile_is_the_default(setting, clean_env):
     # .env.example ships RT_PROFILE= blank.
     if setting is not None:
-        clean_env.setenv("RT_PROFILE", setting.strip())
+        clean_env.setenv("RT_PROFILE", setting)
     assert get_profile().key == DEFAULT_PROFILE
 
 

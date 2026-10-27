@@ -89,6 +89,8 @@ def test_a_repeat_missing_one_half_is_not_compared(memory, monkeypatch):
 
 
 def test_a_scan_with_repeats_sends_every_probe_n_times_end_to_end(memory, monkeypatch, capsys):
+    # One suite is enough to count repeats, and it holds a probe the fake model leaks to.
+    monkeypatch.setenv("RT_PROBES", "prompt_injection")
     once = FakeModel()
     run_scan(monkeypatch, once)
     capsys.readouterr()
