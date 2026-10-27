@@ -77,7 +77,7 @@ from harnesses.pyrit_campaigns.target_factory import (
     PROMPT_SLOT,
     _fill_slots,
 )
-from scripts.scrub import finish_report, scrub_enabled, scrub_texts
+from scripts.scrub import MIN_PROTECTED_PATH, default_exempt, finish_report, scrub_enabled, scrub_texts
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_FINDINGS_DIR = REPO_ROOT / "findings"
@@ -2102,7 +2102,12 @@ async def run_all_checks(
     return results
 
 
-def scrub_results(results: list[CheckResult], *, no_scrub: bool = False) -> list[CheckResult]:
+def scrub_results(
+    results: list[CheckResult],
+    *,
+    config: AccessCheckConfig | None = None,
+    no_scrub: bool = False,
+) -> list[CheckResult]:
     """Scrub what a check found (summary and details) across all CheckResults in one batch.
 
     The kit's request paths and wording and the app's field names are kept
@@ -2115,7 +2120,9 @@ def scrub_results(results: list[CheckResult], *, no_scrub: bool = False) -> list
     texts: list[str] = []
     for r in results:
         texts.extend([r.summary, *r.details])
-    it = iter(scrub_texts(texts, access_check=True))
+    probed = [p for p in config.probe_paths() if len(p) >= MIN_PROTECTED_PATH] if config is not None else []
+    exempt = [*default_exempt(), *probed] if probed else None
+    it = iter(scrub_texts(texts, exempt=exempt, access_check=True))
     out: list[CheckResult] = []
     for r in results:
         summary = next(it)
@@ -2138,7 +2145,7 @@ def render_report(
     no_scrub: bool = False,
 ) -> str:
     """Render the complete Markdown access-control report."""
-    results = scrub_results(results, no_scrub=no_scrub)
+    results = scrub_results(results, config=config, no_scrub=no_scrub)
     now = timestamp or datetime.now(timezone.utc)
     counts = {v: sum(1 for r in results if r.verdict == v) for v in ("PASS", "FAIL", "REVIEW", "NOT TESTED")}
 

@@ -1139,3 +1139,164 @@ def test_ordinary_sentences_come_through_unchanged():
         "[assistant] The follow-up is due before your certification period ends.",
     ]
     assert scrub.scrub_texts(texts, exempt=[]) == texts
+
+
+@requires_rampart
+def test_guarantee_positions_stay_aligned_across_case_folding_and_surrogate_pairs():
+    """Guarantee 1: characters that expand on lower() ('İ') or use UTF-16 surrogate pairs never shift spans."""
+    # Python pattern layer with 'İ' before an exempt literal and real PII:
+    pattern_out = scrub._pattern_scrub(
+        "İİİİİ Jordan Testcase 410-729-8834 and 412-58-9034",
+        exempt=["Jordan Testcase"],
+    )
+    assert pattern_out == "İİİİİ Jordan Testcase [PHONE_REDACTED] and [SSN_REDACTED]"
+
+    # Real worker: 'İ' before exempt literal, 'İ' in propagateNames compound token,
+    # mathematical bold (NFKC astral -> BMP), and emoji before zero-width + base64:
+    b64_ssn = base64.b64encode(b"Resident SSN: 412-58-9034").decode("ascii")
+    outs = scrub.scrub_texts(
+        [
+            "İİİİİ Jordan Testcase and Maria Gonzalez 410-729-8834",
+            "[assistant] Your file is at /records/marİagonzalez/application.pdf",
+            "Applicant 𝐌𝐚𝐫𝐢𝐚 𝐆𝐨𝐧𝐳𝐚𝐥𝐞𝐳 called",
+            f"🔒🎉 Ma\u200bria Gonzalez (%4D%61%72%69%61) {b64_ssn}",
+        ]
+    )
+    assert outs[0] == "İİİİİ Jordan Testcase and [GIVEN_NAME_1] [SURNAME_1] [PHONE_1]"
+    assert outs[1] == "[assistant] Your file is at /records/[GIVEN_NAME_1][SURNAME_1]/application.pdf"
+    assert outs[2] == "Applicant [GIVEN_NAME_1] [SURNAME_1] called"
+    # A lone first name, URL-encoded, with Base64 after it: the model once read the two as one name.
+    assert outs[3] == (
+        "🔒🎉 [GIVEN_NAME_1] [SURNAME_1] ([GIVEN_NAME_1]) "
+        "[base64 reply, decoded and scrubbed: Resident SSN: [SSN_1]]"
+    )
+
+
+# Each prefix shifts positions differently: lowercasing U+0130 makes it longer, an emoji or a
+# bold letter is two UTF-16 units in JavaScript but one character in Python, and a
+# zero-width character is dropped from the text the model reads.
+SHIFTING_PREFIXES = [
+    "",
+    "\u0130\u0130\u0130 ",
+    "\U0001F44B ",
+    "\U0001F600\U0001F600\U0001F600 ",
+    "\U0001D407\U0001D407\U0001D407\U0001D407 ",
+    "\u0130\U0001F600\u0130 ",
+    "Ma\u200bx ",
+]
+_B64_SSN = base64.b64encode(b"Resident SSN: 412-58-9034").decode("ascii")
+_B64_NAME = base64.b64encode(b"Maria Gonzalez, 410-729-8834").decode("ascii")
+# Encodings mixed in one line, in either order, and a name right after a token.
+MIXED_LINES = [
+    "Please call Maria Gonzalez at 410-729-8834 today.",
+    f"{_B64_SSN} Maria Gonzalez called.",
+    f"{_B64_SSN}\nMaria Gonzalez called.",
+    f"Maria Gonzalez called. {_B64_SSN}",
+    f"Applicant (%4D%61%72%69%61) called. {_B64_SSN}",
+    f"{_B64_SSN} Applicant (%4D%61%72%69%61%20%47%6F%6E%7A%61%6C%65%7A) called.",
+    f"Jordan Testcase Maria Gonzalez, then {_B64_NAME}",
+    "Your caseworker Robert Smith (SSN 213-44-8821) will follow up.",
+]
+_PII = ["maria", "gonzalez", "robert", "smith", "410-729-8834", "213-44-8821", "412-58-9034"]
+
+
+@requires_rampart
+@pytest.mark.parametrize("prefix", SHIFTING_PREFIXES)
+def test_guarantee_positions_hold_for_every_shift_and_encoding_mix(prefix):
+    """Guarantee 1, swept: no personal data survives any position-shifting prefix, whatever encodings share the line."""
+    for line in MIXED_LINES:
+        # One call per line: in one batch, a name found in one line is propagated to the
+        # others, which would hide a leak.
+        (out,) = scrub.scrub_texts([prefix + line], exempt=["Jordan Testcase"])
+        lowered = out.lower()
+        assert not [p for p in _PII if p in lowered], f"{prefix + line!r} -> {out!r}"
+        assert "jordan testcase" in lowered or "Jordan" not in line, f"exempt text lost: {out!r}"
+
+
+@requires_rampart
+def test_guarantee_rescrubbing_never_reuses_existing_placeholder_numbers():
+    """Guarantee 2: re-scrubbing a text/report with existing [LABEL_N] placeholders assigns N+1 to new PII."""
+    first = scrub.scrub_text("Applicant Maria Gonzalez (SSN 412-58-9034) called.")
+    assert first == "Applicant [GIVEN_NAME_1] [SURNAME_1] (SSN [SSN_1]) called."
+
+    second = scrub.scrub_text(
+        f"{first} Later, Robert Smith (SSN 213-44-8821, phone 410-729-8834) after [PHONE_2] also called."
+    )
+    assert second == (
+        "Applicant [GIVEN_NAME_1] [SURNAME_1] (SSN [SSN_1]) called. "
+        "Later, [GIVEN_NAME_2] [SURNAME_2] (SSN [SSN_2], phone [PHONE_3]) after [PHONE_2] also called."
+    )
+
+
+@requires_rampart
+def test_guarantee_one_batch_timeout_does_not_disable_rampart_for_later_reports(monkeypatch, capsys):
+    """Guarantee 3: a timeout on one report falls back for that report only once the model is available."""
+    real_read = scrub._read_worker_line
+    calls = {"n": 0}
+
+    def timeout_on_second(worker, payload, timeout):
+        calls["n"] += 1
+        if calls["n"] == 2:
+            raise TimeoutError("timed out after 0.1s")
+        return real_read(worker, payload, timeout)
+
+    monkeypatch.setattr(scrub, "_read_worker_line", timeout_on_second)
+    r1 = scrub.scrub_report("# Report 1\n\n````\nApplicant Maria Gonzalez called.\n````\n")
+    r2 = scrub.scrub_report("# Report 2\n\n````\nApplicant Maria Gonzalez and 412-58-9034.\n````\n")
+    r3 = scrub.scrub_report("# Report 3\n\n````\nApplicant Robert Smith called.\n````\n")
+
+    assert "Maria Gonzalez" not in r1 and scrub.NOTICE not in r1
+    assert "412-58-9034" not in r2 and scrub.NOTICE in r2
+    assert "Robert Smith" not in r3 and "[GIVEN_NAME_1] [SURNAME_1]" in r3 and scrub.NOTICE not in r3
+    assert "timed out after 0.1s" in capsys.readouterr().err
+
+    # Conversely, if the model is not cached and the very first run times out (e.g. blocked
+    # Hugging Face download), _rampart_failure sticks so remaining reports don't wait 300s each:
+    scrub.reset()
+    monkeypatch.setattr(scrub, "_has_cached_model", lambda: False)
+    first_calls = {"n": 0}
+
+    def always_timeout(worker, payload, timeout):
+        first_calls["n"] += 1
+        raise TimeoutError("timed out after 0.1s")
+
+    monkeypatch.setattr(scrub, "_read_worker_line", always_timeout)
+    out_a = scrub.scrub_report("# First\n\n````\nSSN 412-58-9034\n````\n")
+    out_b = scrub.scrub_report("# Second\n\n````\nSSN 412-58-9034\n````\n")
+    assert first_calls["n"] == 1
+    assert scrub.NOTICE in out_a and scrub.NOTICE in out_b
+
+
+@requires_rampart
+def test_guarantee_app_output_in_access_check_report_is_never_exempted():
+    """Guarantee 4: redirect targets and server response paths in access-check reports are scrubbed, never exempted."""
+    cfg = AccessCheckConfig(
+        base_url="https://app.example.test",
+        chat_url="https://app.example.test/api/chat",
+        chat_path="/api/chat",
+        extra_paths=["/custom/admin"],
+    )
+    details = [
+        "`GET /api/me` -> HTTP 302 -> /users/maria-gonzalez/profile (unverified)",
+        "`GET /custom/admin` -> HTTP 307 -> https://app.example.test/users/robert-smith/dashboard (unverified)",
+        "`POST /api/chat` -> HTTP 500: `/records/dorothy-jenkins/application.pdf`",
+        "Later check mentioned maria-gonzalez and robert-smith again.",
+    ]
+    assert scrub.request_paths(details) == ["/api/chat", "/api/me", "/custom/admin"]
+
+    res = CheckResult(
+        phase="Phase 1: Signed-Out Checks (No Login)",
+        name="Logged-out access to app pages & APIs",
+        owasp="API2:2023 Broken Authentication",
+        verdict="NOT TESTED",
+        summary="Redirected to /users/maria-gonzalez/profile when probing `/api/me`.",
+        what_it_tests="Checks logged-out access.",
+        details=details,
+    )
+    report = access_checks.render_report(cfg, [res])
+    rescrubbed = scrub.scrub_report(access_checks.render_report(cfg, [res], no_scrub=True))
+    for text in (report, rescrubbed):
+        for kept in ("`GET /api/me`", "`GET /custom/admin`", "`POST /api/chat`"):
+            assert kept in text, text
+        for gone in ("maria", "gonzalez", "robert", "smith", "dorothy", "jenkins"):
+            assert gone not in text.lower(), f"leaked {gone!r} in:\n{text}"

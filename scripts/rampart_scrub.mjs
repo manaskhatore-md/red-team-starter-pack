@@ -61,6 +61,7 @@ const EXEMPT_PATTERNS = [
   /\b(?:\+?1[-. ]?)?\(?\d{3}\)?[-. ]555[-. ]01\d{2}\b/g,
   /\b[\w.+-]+@(?:[\w-]+\.)*(?:example\.(?:com|org|net)|example|invalid|test|localhost)\b/gi,
   /\[(?:user(?: original)?|assistant(?: trace)?)\]/g,
+  /\[[A-Z_]+_(?:\d+|REDACTED)\]/g,
 ];
 
 const EXTENDABLE_NAME_LABELS = new Set(["GIVEN_NAME", "SURNAME", "STREET_NAME"]);
@@ -93,6 +94,32 @@ async function getClassifiers() {
 
 function isWordChar(ch) {
   return Boolean(ch && /[\p{L}\p{M}\p{N}]/u.test(ch));
+}
+
+function escapeRegExp(s) {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+// `text` with each [start, end) range replaced by as many spaces: the same length, so
+// positions found in the result are positions in `text`.
+function blankRanges(text, ranges) {
+  let out = text;
+  for (const [start, end] of ranges) {
+    out = out.slice(0, start) + " ".repeat(Math.max(0, end - start)) + out.slice(end);
+  }
+  return out;
+}
+
+// Lowercase `s` without changing its UTF-16 length (U+0130 "İ" -> "i" instead of
+// "i\u0307"), so positions found in the lowercased string land on the same characters
+// in `s`.
+function sameLengthLower(s) {
+  let out = "";
+  for (const ch of s) {
+    const lc = ch === "\u0130" ? "i" : ch.toLowerCase();
+    out += lc.length === ch.length ? lc : ch;
+  }
+  return out;
 }
 
 function detectAllHeuristics(text) {
@@ -128,14 +155,11 @@ function findExemptRanges(text, extraLiterals = [], extraRanges = []) {
       ranges.push([m.index, m.index + m[0].length]);
     }
   }
-  const lower = text.toLowerCase();
-  for (const lit of extraLiterals) {
+  for (const lit of new Set(extraLiterals)) {
     if (!lit) continue;
-    const needle = lit.toLowerCase();
-    let idx = lower.indexOf(needle);
-    while (idx !== -1) {
-      ranges.push([idx, idx + needle.length]);
-      idx = lower.indexOf(needle, idx + needle.length);
+    const re = new RegExp(escapeRegExp(lit), "gi");
+    for (let m = re.exec(text); m !== null; m = re.exec(text)) {
+      ranges.push([m.index, m.index + m[0].length]);
     }
   }
   return ranges;
@@ -148,6 +172,33 @@ function overlapsExempt(start, end, exemptRanges) {
     }
   }
   return false;
+}
+
+// The parts of a model span outside the given ranges, each trimmed to its words. An
+// exemption protects only the exempt text: a span the model ran across it into a real
+// name ("Max <Base64 token> Maria", "Testcase Maria") keeps that name, where dropping
+// the whole span left it visible.
+function splitAroundExempt(text, span, exemptRanges) {
+  if (!overlapsExempt(span.start, span.end, exemptRanges)) return [span];
+  let pieces = [[span.start, span.end]];
+  for (const [exStart, exEnd] of exemptRanges) {
+    pieces = pieces.flatMap(([s, e]) =>
+      exEnd <= s || exStart >= e ? [[s, e]] : [[s, Math.min(e, exStart)], [Math.max(s, exEnd), e]],
+    );
+  }
+  const out = [];
+  for (let [s, e] of pieces) {
+    while (s < e && !isWordChar(text[s])) s++;
+    while (e > s && !isWordChar(text[e - 1])) e--;
+    const piece = text.slice(s, e);
+    // A piece of a name span is kept only if it reads as a name word, as adjustSpan
+    // extends one: capitalized, with a lowercase letter ("Maria", not "İİİİİ" or "SSN").
+    const nameLabel = span.label === "GIVEN_NAME" || span.label === "SURNAME";
+    if (e > s && (!nameLabel || (/^\p{Lu}/u.test(piece) && /\p{Ll}/u.test(piece)))) {
+      out.push({ ...span, start: s, end: e, text: piece });
+    }
+  }
+  return out;
 }
 
 function adjustSpan(text, span, exemptRanges) {
@@ -235,9 +286,12 @@ function adjustSpan(text, span, exemptRanges) {
 }
 
 async function runNer(maskedText) {
-  // Replace URL query delimiters with spaces so parameters like ?name=Maria&ssn=...
-  // tokenize as separate words while preserving exact character offsets.
-  const cleanText = maskedText.replace(/[?&=+]/g, " ");
+  // Replace URL query delimiters and UTF-16 surrogate pairs (emojis) with same-length
+  // spaces so parameters like ?name=Maria&ssn=... tokenize as words and Rampart's
+  // foldForModel() (which indexes rawStart by code point) stays aligned with UTF-16 offsets.
+  const cleanText = maskedText
+    .replace(/[?&=+]/g, " ")
+    .replace(/[\uD800-\uDBFF][\uDC00-\uDFFF]/g, "  ");
   const { rawClassifier: raw, fastClassifier: fast } = await getClassifiers();
   if (!raw.countTokens || raw.countTokens(cleanText) <= NER_TOKEN_BUDGET) {
     const spans = await detectNer(cleanText, fast);
@@ -275,8 +329,13 @@ async function detectNormSpans(normText, extraLiterals, extraExemptRanges = []) 
   for (const s of maskedSpans) {
     const projected = projectMaskedSpan(s, normText, map);
     if (projected !== null) {
-      const adj = adjustSpan(normText, projected, exemptRanges);
-      if (adj !== null) contextual.push(adj);
+      // Split only around the blanked Base64 tokens. A span into an exempt literal is still
+      // dropped whole: split there, kit wording beside it ("/openapi.json returned") would
+      // be kept as a name, since the model reads lowercase words capitalized (ner_view).
+      for (const piece of splitAroundExempt(normText, projected, extraExemptRanges)) {
+        const adj = adjustSpan(normText, piece, exemptRanges);
+        if (adj !== null) contextual.push(adj);
+      }
     }
   }
   const filteredContextual = contextual.filter((s) => {
@@ -323,11 +382,14 @@ async function scrubOne(item, table, extraLiterals) {
 
   // Base64 token ranges in normText are exempt from plain NER so random subwords
   // inside base64 strings are not mistaken for names when the decoded payload is clean.
+  // The model reads them as blanks of the same length: read as text, a token's last
+  // characters joined the name after it ("...NA== Maria"), and the exempt range then
+  // dropped that whole name.
   const b64NormRanges = decodedCandidates
     .filter((c) => c.kind === "base64")
     .map((c) => [c.normStart, c.normEnd]);
 
-  const normSpans = await detectNormSpans(normText, extraLiterals, b64NormRanges);
+  const normSpans = await detectNormSpans(blankRanges(normText, b64NormRanges), extraLiterals, b64NormRanges);
   const redactableNorm = applyPolicy(normSpans, KEEP_LABELS);
 
   // Check each decoded candidate (base64 tokens, and ROT13/leetspeak lines when the
@@ -421,11 +483,42 @@ class RecordingTable extends SessionEntityTable {
   placeholderFor(label, value) {
     const token = super.placeholderFor(label, value);
     if (label === "GIVEN_NAME" || label === "SURNAME") {
-      for (const word of value.toLowerCase().split(/[^\p{L}']+/u)) {
+      for (const word of sameLengthLower(value).split(/[^\p{L}\p{M}']+/u)) {
         if (word.length >= MIN_PROPAGATED_NAME && !this.nameWords.has(word)) this.nameWords.set(word, token);
       }
     }
     return token;
+  }
+
+  // When re-scrubbing a report that already holds placeholders (`[GIVEN_NAME_1]`),
+  // advance each label's counter past the highest number present so a newly found
+  // person gets `_2` instead of colliding with `_1`. Uses super.placeholderFor so
+  // the dummy keys are not recorded in `this.nameWords`.
+  reserveExisting(items) {
+    const highest = new Map();
+    const scan = (text) => {
+      if (typeof text !== "string" || !text) return;
+      for (const m of text.matchAll(/\[([A-Z_]+)_(\d+)\]/g)) {
+        const label = m[1];
+        const n = Number(m[2]);
+        if (n > (highest.get(label) ?? 0)) highest.set(label, n);
+      }
+    };
+    for (const item of items) {
+      if (typeof item === "string") {
+        scan(item);
+      } else if (item) {
+        scan(item.text);
+        for (const cand of item.decodedSpans ?? []) {
+          scan(cand.decoded);
+        }
+      }
+    }
+    for (const [label, n] of highest) {
+      for (let i = 1; i <= n; i++) {
+        super.placeholderFor(label, `\0existing-${i}`);
+      }
+    }
   }
 }
 
@@ -490,7 +583,7 @@ function propagateNames(text, nameWords, extraLiterals, namePairs) {
   const splices = [];
   tokens.forEach((t, k) => {
     if (PLACEHOLDER_TOKEN.test(t.text) || overlapsExempt(t.start, t.end, exemptRanges)) return;
-    const lower = t.text.toLowerCase();
+    const lower = sameLengthLower(t.text);
     if (nameWords.has(lower)) {
       // On its own, only as half of a full name the model found: beside the other half,
       // as a placeholder or as written, in the same order. "will grant" is two words, unless
@@ -500,7 +593,7 @@ function propagateNames(text, nameWords, extraLiterals, namePairs) {
       const other = (o) =>
         NAME_PLACEHOLDER.test(o.text)
           ? o.text
-          : !overlapsExempt(o.start, o.end, exemptRanges) && nameWords.get(o.text.toLowerCase());
+          : !overlapsExempt(o.start, o.end, exemptRanges) && nameWords.get(sameLengthLower(o.text));
       const before = tokens[k - 1];
       const after = tokens[k + 1];
       if (
@@ -538,6 +631,7 @@ for await (const line of rl) {
   const items = req.items ?? (req.texts ?? []).map((t) => ({ text: t }));
   const exempt = req.exempt ?? [];
   const table = new RecordingTable({}, KEEP_LABELS);
+  table.reserveExisting(items);
   const outTexts = [];
   const allPlaceholders = [];
   for (const item of items) {

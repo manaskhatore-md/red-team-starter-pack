@@ -212,14 +212,18 @@ RAMPART_TIMEOUT = 300.0
 
 # In an access-check report, the paths the kit requested (`GET /openapi.json`, `/.env`)
 # are the evidence, and Rampart's model reads parts of them as names or house numbers.
-# They are sent to the worker as exempt values. The access checks quote what the app sent
-# back in backticks, so a path in backticks is the kit's only when the span is its own
-# request (`GET /api/me`) or a bare path (`/docs`): a path in a quoted reply can carry a
-# name, and is still scrubbed.
+# They are sent to the worker as exempt values. Only paths on the request side of a
+# check line (after an HTTP verb, in a `Checked ...:` list, or before `: request error`,
+# and never after ` -> `) are kept: a redirect target or quoted reply from the app can
+# carry a name, and is still scrubbed.
 REQUEST_PATH = re.compile(r"(?<![\w/.~%-])/(?:[A-Za-z0-9_.~%{}-]+/)*[A-Za-z0-9_.~%{}-]*[A-Za-z0-9_~%{}-]")
-URL_PATH = re.compile(r"\bhttps?://[^\s/`'\"<>()]+(/[^\s?#`'\"<>()]*[^\s?#`'\"<>().,;:])")
+METHOD_PATH = re.compile(
+    r"\b(?:GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)\s+(?:https?://[^\s/`'\"<>()]+)?(/[^\s?#`'\"<>()]*[^\s?#`'\"<>().,;:])"
+)
+CHECKED_PATHS = re.compile(r"\bChecked\s+([^\r\n:]+):")
+REQUEST_ERROR_PATH = re.compile(r"^`(/[^\s`]+)`: request error\b")
 BACKTICK_SPAN = re.compile(r"`[^`\n]*`")
-KIT_SPAN = re.compile(r"`(?:(?:GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS) )?/[^`\s]*`")
+KIT_SPAN = re.compile(r"`(?:GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS) /[^`\s]*`")
 # Shorter paths ("/a") would also exempt the same letters inside a name elsewhere in the batch.
 MIN_PROTECTED_PATH = 4
 
@@ -262,10 +266,17 @@ during except inside near off onto over past since than through toward under unt
 via within without
 """.split())
 
+MODEL_CACHE = Path(__file__).resolve().parents[1] / "node_modules" / "@huggingface" / "transformers" / ".cache"
+
 _worker: subprocess.Popen | None = None
-# Why Rampart could not run, once it has failed in this process; every later report
-# then uses the patterns only, and carries the NOTICE.
+# Why Rampart could not run, once it is unavailable for this process (no Node, no
+# `npm ci`, or the first-run model download timed out); every later report then uses
+# the patterns only, and carries the NOTICE.
 _rampart_failure: str | None = None
+# Why the most recent batch fell back to patterns (set even on a one-report timeout,
+# and cleared at the start of the next batch so later reports still use Rampart).
+_batch_failure: str | None = None
+_model_loaded: bool = False
 
 
 def scrub_enabled(no_scrub: bool = False) -> bool:
@@ -303,16 +314,13 @@ def _pattern_spans(text: str, exempt: Iterable[str] = ()) -> list[tuple[int, int
     records' streets, UUIDs (their digit runs can pass the card checksum), and the
     exempt values: a number in any format, anything else as written, ignoring case.
     """
-    exempt = [value for value in exempt if value]
-    exempt_lower = {value.lower() for value in exempt}
-    exempt_digits = {_digit_key(value) for value in exempt if len(_digit_key(value)) >= 7}
-    lowered = text.lower()
-    exempt_ranges = []
-    for value in exempt_lower:
-        start = lowered.find(value)
-        while start != -1:
-            exempt_ranges.append((start, start + len(value)))
-            start = lowered.find(value, start + len(value))
+    exempt_literals = list(dict.fromkeys(value for value in exempt if value))
+    exempt_digits = {_digit_key(value) for value in exempt_literals if len(_digit_key(value)) >= 7}
+    exempt_ranges = [
+        (m.start(), m.end())
+        for value in exempt_literals
+        for m in re.finditer(re.escape(value), text, re.IGNORECASE)
+    ]
 
     # Same length, so positions stay right.
     checked = UUID.sub(lambda m: "x" * len(m.group(0)), text)
@@ -327,7 +335,7 @@ def _pattern_spans(text: str, exempt: Iterable[str] = ()) -> list[tuple[int, int
     # Earliest first and, at the same start, longest first; a match inside one already kept is dropped.
     for start, end, kind in sorted(found, key=lambda f: (f[0], f[0] - f[1])):
         value = text[start:end]
-        if value.lower() in exempt_lower or (kind != "email" and _digit_key(value) in exempt_digits):
+        if kind != "email" and _digit_key(value) in exempt_digits:
             continue
         if any(s < end and e > start for s, e in exempt_ranges):
             continue
@@ -391,7 +399,7 @@ def finish_report(markdown: str, *, exempt: Iterable[str] | None = None) -> str:
     """The last step before a scrubbed report is written: redact leftovers, and add any scrubbing notes."""
     out = redact_residual_pii(_strip_contact_notice(strip_notice(markdown)), exempt=exempt)
     notices: list[str] = []
-    if _rampart_failure is not None:
+    if _rampart_failure is not None or _batch_failure is not None:
         notices.append(NOTICE)
     if CONTACT_PLACEHOLDER.search(out):
         notices.append(CONTACT_NOTICE)
@@ -470,9 +478,16 @@ atexit.register(_stop_worker)
 
 def reset() -> None:
     """Stop the worker and forget any Rampart failure, so the next scrub tries Rampart again."""
-    global _rampart_failure
+    global _rampart_failure, _batch_failure, _model_loaded
     _stop_worker()
     _rampart_failure = None
+    _batch_failure = None
+    _model_loaded = False
+
+
+def _has_cached_model() -> bool:
+    """True once Rampart's ONNX model has been downloaded to the local Hugging Face cache."""
+    return MODEL_CACHE.is_dir() and any(MODEL_CACHE.rglob("*.onnx"))
 
 
 def _get_worker() -> subprocess.Popen:
@@ -758,15 +773,66 @@ def rampart_timeout() -> float:
     return value
 
 
+def _utf16_offsets(text: str) -> list[int]:
+    """Map each Python code-point index (0..len(text)) to its UTF-16 code-unit index for JavaScript."""
+    offsets = [0] * (len(text) + 1)
+    u = 0
+    for i, ch in enumerate(text):
+        u += 2 if ord(ch) > 0xFFFF else 1
+        offsets[i + 1] = u
+    return offsets
+
+
+def _to_utf16_item(item: dict[str, object]) -> dict[str, object]:
+    """Convert `rawStart`, `rawEnd`, and `decodedSpans` offsets from Python code points to JS UTF-16 units."""
+    text = str(item["text"])
+    norm = str(item.get("norm", text))
+    if all(ord(c) <= 0xFFFF for c in text) and all(ord(c) <= 0xFFFF for c in norm):
+        return item
+    text_u16 = _utf16_offsets(text)
+    norm_u16 = _utf16_offsets(norm)
+    out = dict(item)
+    raw_start = item.get("rawStart")
+    raw_end = item.get("rawEnd")
+    if isinstance(raw_start, list) and isinstance(raw_end, list):
+        u16_start: list[int] = []
+        u16_end: list[int] = []
+        for k, ch in enumerate(norm):
+            units = 2 if ord(ch) > 0xFFFF else 1
+            u16_start.extend([text_u16[raw_start[k]]] * units)
+            u16_end.extend([text_u16[raw_end[k]]] * units)
+        out["rawStart"] = u16_start
+        out["rawEnd"] = u16_end
+    if "decodedSpans" in item:
+        out["decodedSpans"] = [
+            {
+                **c,
+                "start": text_u16[int(c["start"])],
+                "end": text_u16[int(c["end"])],
+                "normStart": norm_u16[int(c["normStart"])],
+                "normEnd": norm_u16[int(c["normEnd"])],
+            }
+            for c in item["decodedSpans"]  # type: ignore[index]
+        ]
+    return out
+
+
 def request_paths(texts: Iterable[str]) -> list[str]:
-    """The request paths in access-check text, leaving out any in quoted output (REQUEST_PATH)."""
+    """The request paths in access-check text, leaving out any in server replies or redirects."""
     found = set()
     for text in texts:
-        outside_bodies = BACKTICK_SPAN.sub(
-            lambda m: m.group(0) if KIT_SPAN.fullmatch(m.group(0)) else " " * len(m.group(0)), text or ""
-        )
-        found.update(m.group(0) for m in REQUEST_PATH.finditer(outside_bodies))
-        found.update(m.group(1) for m in URL_PATH.finditer(outside_bodies))
+        for line in (text or "").splitlines():
+            request_part = line.split(" -> ", 1)[0]
+            outside_bodies = BACKTICK_SPAN.sub(
+                lambda m: m.group(0) if KIT_SPAN.fullmatch(m.group(0)) else " " * len(m.group(0)),
+                request_part,
+            )
+            found.update(m.group(1) for m in METHOD_PATH.finditer(outside_bodies))
+            for checked_m in CHECKED_PATHS.finditer(outside_bodies):
+                found.update(m.group(0) for m in REQUEST_PATH.finditer(checked_m.group(1)))
+            err_m = REQUEST_ERROR_PATH.match(request_part.strip())
+            if err_m:
+                found.add(err_m.group(1))
     return sorted(path for path in found if len(path) >= MIN_PROTECTED_PATH)
 
 
@@ -798,7 +864,10 @@ def ner_view(text: str) -> str:
     def capitalize(m: re.Match) -> str:
         # Common words stay lowercase: capitalized, the model read "With Maria" as a name.
         word = m.group(0).lower()
-        return m.group(0) if word in COMMON_WORDS or word in FUNCTION_WORDS else word[0].upper() + m.group(0)[1:]
+        upper = word[0].upper()
+        if word in COMMON_WORDS or word in FUNCTION_WORDS or len(upper) != 1:
+            return m.group(0)
+        return upper + m.group(0)[1:]
 
     def rewrite(part: str, english: bool) -> str:
         return VIEW_WORD.sub(capitalize, part) if english else part
@@ -876,9 +945,10 @@ def scrub_texts(
     fails or times out), the batch is scrubbed by the pattern layer instead, with a
     warning the first time.
     """
-    global _rampart_failure
+    global _rampart_failure, _batch_failure, _model_loaded
     if not texts or all(not t or not t.strip() for t in texts):
         return list(texts)
+    _batch_failure = None
     extra = list(exempt) if exempt is not None else default_exempt()
     enc_set = _normalize_encodings(encodings)
     items = [_build_normalized_view(t, enc_set) for t in texts]
@@ -887,7 +957,7 @@ def scrub_texts(
         worker_exempt = list(dict.fromkeys([*_kit_exempt(items), *extra, *_allowed_as_written(items, extra), *kept]))
         # The patterns read the text as normalized; only the model reads ner_view().
         worker_items = [
-            {
+            _to_utf16_item({
                 **item,
                 "norm": ner_view(str(item.get("norm", item["text"]))),
                 **(
@@ -895,27 +965,42 @@ def scrub_texts(
                     if "decodedSpans" in item
                     else {}
                 ),
-            }
+            })
             for item in items
         ]
         try:
-            return _rampart_scrub(worker_items, worker_exempt)
+            out = _rampart_scrub(worker_items, worker_exempt)
+            _model_loaded = True
+            return out
         except RuntimeError as e:
             _stop_worker()
-            _rampart_failure = str(e)
-            if isinstance(e.__cause__, TimeoutError):
-                # Node and Rampart are there; the model download or the batch took too long.
-                fix = ("  check that this machine can reach huggingface.co (the first run downloads the model),\n"
-                       "  or raise RT_SCRUB_TIMEOUT for a very large report.")
+            _batch_failure = str(e)
+            is_timeout = isinstance(e.__cause__, TimeoutError)
+            if not is_timeout or not (_model_loaded or _has_cached_model()):
+                _rampart_failure = str(e)
+            if _rampart_failure is None:
+                # The model is there and this report alone was too slow: only it falls back.
+                print(
+                    f"PII scrubber: Rampart did not finish this report ({e}).\n"
+                    "  This report is scrubbed with patterns only, and says so at the top; names are NOT\n"
+                    "  checked in it. The next report tries Rampart again. For very large reports,\n"
+                    "  raise RT_SCRUB_TIMEOUT.",
+                    file=sys.stderr,
+                )
             else:
-                fix = "  install Node.js and run `npm ci` in the kit's folder."
-            print(
-                f"PII scrubber: Rampart is not available ({e}).\n"
-                "  Scrubbing with patterns only: SSNs, card numbers, phone numbers, emails, and street addresses.\n"
-                "  Names are NOT checked, and each report says so at the top. To scrub names too,\n"
-                f"{fix}",
-                file=sys.stderr,
-            )
+                if is_timeout:
+                    # Node and Rampart are there; the model never loaded (its first download).
+                    fix = ("  check that this machine can reach huggingface.co (the first run downloads the model),\n"
+                           "  or raise RT_SCRUB_TIMEOUT.")
+                else:
+                    fix = "  install Node.js and run `npm ci` in the kit's folder."
+                print(
+                    f"PII scrubber: Rampart is not available ({e}).\n"
+                    "  Scrubbing with patterns only: SSNs, card numbers, phone numbers, emails, and street addresses.\n"
+                    "  Names are NOT checked, and each report says so at the top. To scrub names too,\n"
+                    f"{fix}",
+                    file=sys.stderr,
+                )
     return [_pattern_scrub_item(item, extra) for item in items]
 
 

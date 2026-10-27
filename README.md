@@ -1153,13 +1153,15 @@ before writing Markdown to disk:
   address its model reads past), and redacts the occasional ID that only looks like a
   card number.
 - **Without Rampart:** Rampart needs Node.js and `npm ci` from the repo root. If either is
-  missing, or Rampart has not answered within `RT_SCRUB_TIMEOUT` seconds (default 300, for a
-  model download stuck behind a proxy, say), reports are still scrubbed and written, by the
-  patterns alone: SSNs, card numbers, phone numbers, emails, and street addresses (a simple
-  pattern, which misses irregular ones).
+  missing, or its model never loads within `RT_SCRUB_TIMEOUT` seconds (default 300; a first
+  download stuck behind a proxy, say), every report of the run is still scrubbed and written,
+  by the patterns alone: SSNs, card numbers, phone numbers, emails, and street addresses (a
+  simple pattern, which misses irregular ones).
   **Names are not checked.** The console warns once, and every report says so in a note under
   its title. Install Rampart and run `python -m scripts.scrub` on the report to scrub names
   too; the note comes out.
+  Once the model has loaded, a report Rampart doesn't finish in time (a very large one) falls
+  back to the patterns alone, with the same note; the next report tries Rampart again.
 - **Public contact details:** Rampart and the patterns redact every phone number and email,
   including an agency's own. When a finding depends on one (a bot giving the wrong hotline),
   list them in `RT_SCRUB_ALLOW`, comma-separated; they stay visible. A phone number matches in
