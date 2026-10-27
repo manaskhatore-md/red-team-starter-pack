@@ -80,6 +80,7 @@ def clean_env(monkeypatch):
     for name in list(os.environ):
         if name.startswith(("RT_", "APP_")) or name in PROVIDER_KEYS:
             monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("RT_SCRUB", "0")
     return monkeypatch
 
 

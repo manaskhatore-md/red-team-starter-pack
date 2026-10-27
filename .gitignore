@@ -30,3 +30,6 @@ data_fixtures/grounding_eval_set.json
 
 # pytest
 .pytest_cache/
+
+# Node packages for @nationaldesignstudio/rampart report scrubber
+node_modules/

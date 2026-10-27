@@ -60,6 +60,12 @@ from harnesses.pyrit_campaigns.code_checks import CODE_CHECKS
 from harnesses.pyrit_campaigns.rubrics import SEVERITIES, describe_version
 from harnesses.pyrit_campaigns.rubrics import load_rubrics as load_judge_rubrics
 from harnesses.pyrit_campaigns.target_factory import TRACE_METADATA_KEY, unverified_rubric
+from scripts.scrub import (
+    encodings_from_labels,
+    finish_report,
+    scrub_enabled,
+    scrub_texts,
+)
 
 TEMPLATE = Path(__file__).resolve().parents[1] / "templates" / "finding_report_template.md"
 
@@ -120,11 +126,11 @@ def format_transcript(messages) -> str:
     return "\n\n".join(lines) if lines else "(no messages found for this conversation)"
 
 
-def format_scores(scores) -> str:
+def format_scores(scores, rationales: list[str] | None = None) -> str:
     if not scores:
         return "(no scores recorded - was a scorer configured?)"
     lines = []
-    for score in scores:
+    for idx, score in enumerate(scores):
         # scorer_class_identifier is a ComponentIdentifier object (PyRIT 1.1+), not a dict.
         identifier = score.scorer_class_identifier
         scorer = identifier.class_name if identifier else "unknown scorer"
@@ -133,8 +139,9 @@ def format_scores(scores) -> str:
         rubric = ", ".join(score.score_category or [])
         label = f"{scorer} [{rubric}]" if rubric else scorer
         lines.append(f"- **{label}** -> `{score.score_value}` ({score.score_type})")
-        if score.score_rationale:
-            lines.append(f"  - rationale: {score.score_rationale}")
+        rationale = rationales[idx] if rationales is not None else score.score_rationale
+        if rationale:
+            lines.append(f"  - rationale: {rationale}")
     return "\n".join(lines)
 
 
@@ -427,7 +434,7 @@ def full_conversation_scores(memory, result) -> list:
     return [s for cid in full_conversation_ids(result) for s in memory.get_prompt_scores(conversation_id=cid)]
 
 
-def build_report(result, memory, template: str, all_results) -> str:
+def build_report(result, memory, template: str, all_results, *, no_scrub: bool = False) -> str:
     messages = full_conversation_messages(memory, result)
     scores = full_conversation_scores(memory, result)
     labels = result.labels or {}
@@ -494,32 +501,49 @@ def build_report(result, memory, template: str, all_results) -> str:
             f"{transcript}"
         )
 
+    objective = result.objective
+    outcome_reason = result.outcome_reason or "no reason recorded"
+    # TODO: pull real tool-call data from your application's logs. PyRIT records
+    # the conversation, not your backend's activity - see the Evidence section of
+    # the template for why this matters.
+    tool_calls = (
+        "TODO: paste the tool-call log for this window, or delete this "
+        "section if the system has no tools."
+    )
+    rationales = [s.score_rationale or "" for s in scores]
+    if scrub_enabled(no_scrub):
+        encodings = encodings_from_labels(labels, partner.labels if partner else None)
+        scrubbed = scrub_texts(
+            [objective, outcome_reason, transcript, tool_calls, *rationales],
+            encodings=encodings,
+        )
+        objective, outcome_reason, transcript, tool_calls, *rationales = scrubbed
+
     values |= {
         "finding_id": str(result.attack_result_id)[:8].upper(),
-        "title": result.objective if len(result.objective) <= 100 else result.objective[:100] + "...",
-        "objective": result.objective,
+        "title": objective if len(objective) <= 100 else objective[:100] + "...",
+        "objective": objective,
         "status": "Open",
         "harm_category": labels.get("rt_harm_categories")
         or ", ".join(result.targeted_harm_categories or ["TODO: categorize"]),
         "discovered_date": result.timestamp.date().isoformat() if result.timestamp else "unknown",
         "summary": (
             verdict
-            + f"Attack outcome: {result.outcome.value} ({result.outcome_reason or 'no reason recorded'}). "
+            + f"Attack outcome: {result.outcome.value} ({outcome_reason}). "
             "TODO: rewrite this in plain language - what can the system be made to do, and who is harmed?"
         ),
         "test_artifact": f"attack_result_id={result.attack_result_id}, conversation_id={result.conversation_id}",
         "reproduction_steps": reproduction_steps(labels),
         "reproducibility": reproducibility(result, all_results, memory),
         "transcript": transcript,
-        "scores": format_scores(scores),
-        # TODO: pull real tool-call data from your application's logs. PyRIT records
-        # the conversation, not your backend's activity - see the Evidence section of
-        # the template for why this matters.
-        "tool_calls": "TODO: paste the tool-call log for this window, or delete this "
-        "section if the system has no tools.",
+        "scores": format_scores(scores, rationales),
+        "tool_calls": tool_calls,
         "generated_date": date.today().isoformat(),
     }
-    return render(template, values)
+    rendered = render(template, values)
+    if scrub_enabled(no_scrub):
+        rendered = finish_report(rendered)
+    return rendered
 
 
 def test_key(result) -> tuple:
@@ -629,6 +653,11 @@ async def main():
     runs.add_argument("--run-id", help="Only this campaign run. The first 8 characters are enough (see --list).")
     runs.add_argument("--latest-run", action="store_true", help="Only the most recent campaign run")
     parser.add_argument("--limit", type=int, default=50)
+    parser.add_argument(
+        "--no-scrub",
+        action="store_true",
+        help="Write reports without running the Rampart PII scrubber (or set RT_SCRUB=0)",
+    )
     args = parser.parse_args()
 
     # Must match the memory_db_type the campaign used, or the run will not be here.
@@ -692,7 +721,7 @@ async def main():
 
     manifest = []
     for result in results:
-        report = build_report(result, memory, template, all_results)
+        report = build_report(result, memory, template, all_results, no_scrub=args.no_scrub)
         name = f"{str(result.attack_result_id)[:8]}-{slug(result.objective)}.md"
         (args.out / name).write_text(report, encoding="utf-8")
         manifest.append({

@@ -145,23 +145,35 @@ def luhn_valid(digits: str) -> bool:
     return total % 10 == 0
 
 
-def find_pii(text: str) -> dict[str, list[str]]:
-    """Personal-data patterns in a reply, with known test values left out."""
-    found = {"SSN": [], "card number": [], "phone number": [], "email": []}
+def pii_matches(text: str) -> list[tuple[str, re.Match]]:
+    """Each personal-data match in the text, with its kind, known test values left out.
+
+    find_pii() lists the values; the report scrubber (scripts/scrub.py) uses the
+    positions to redact them.
+    """
+    matches = []
     for m in SSN.finditer(text):
         if ssn_is_issuable(*m.groups()):
-            found["SSN"].append(m.group(0))
+            matches.append(("SSN", m))
     for m in CARD.finditer(text):
         digits = re.sub(r"\D", "", m.group(0))
         if 13 <= len(digits) <= 19 and digits not in TEST_CARDS and luhn_valid(digits):
-            found["card number"].append(m.group(0))
+            matches.append(("card number", m))
     for m in PHONE.finditer(text):
         # 555-0100 to 555-0199 is reserved for fiction.
         if not (m.group(2) == "555" and m.group(3).startswith("01")):
-            found["phone number"].append(m.group(0))
+            matches.append(("phone number", m))
     for m in EMAIL.finditer(text):
         if not TEST_DOMAINS.search(m.group(1)):
-            found["email"].append(m.group(0))
+            matches.append(("email", m))
+    return matches
+
+
+def find_pii(text: str) -> dict[str, list[str]]:
+    """Personal-data patterns in a reply, with known test values left out."""
+    found = {"SSN": [], "card number": [], "phone number": [], "email": []}
+    for kind, m in pii_matches(text):
+        found[kind].append(m.group(0))
     return found
 
 
