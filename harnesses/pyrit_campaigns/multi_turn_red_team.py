@@ -77,6 +77,7 @@ from pyrit.prompt_target import CapabilityName
 from pyrit.score import MessageScorer
 from pyrit.setup import SQLITE, initialize_pyrit_async
 
+from redteam.cli import full_form
 from harnesses.pyrit_campaigns.profiles import describe, get_profile, placeholders
 from harnesses.pyrit_campaigns.single_turn_scan import (
     FAIL_ON_FINDING,
@@ -415,7 +416,9 @@ async def main(
         print(f"\n!! {objective[:70]!r} did not complete: {exception}")
 
     write_after_run(run_id)
-    print(f"Next: python -m scripts.export_finding_report --outcome success --run-id {run_id[:8]} --out findings/")
+    export = f"findings --outcome success --run-id {run_id[:8]}"
+    print(f"Next: rt {export}")
+    print(f"      (or: {full_form(export)})")
 
     for t in (target, adversarial, judge):
         await close_target(t)

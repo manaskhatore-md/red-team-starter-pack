@@ -191,7 +191,7 @@ NOTICE = (
     "> **Scrubbing note:** Rampart was not available when this report was scrubbed, so names were not "
     "checked for and street addresses were checked only by a simple pattern. SSNs, card numbers, phone "
     "numbers, and email addresses were scrubbed. To scrub names too, install Node.js, run `npm ci` "
-    "in the kit's folder, and re-scrub this file with `python -m scripts.scrub <file>`."
+    "in the kit's folder, and re-scrub this file with `rt scrub <file>` (or `python -m scripts.scrub <file>`)."
 )
 NOTICE_AFTER_TITLE = re.compile(r"\n\n> \*\*Scrubbing note:\*\*[^\n]*")
 NOTICE_AT_TOP = re.compile(r"\A> \*\*Scrubbing note:\*\*[^\n]*\n\n")
@@ -203,7 +203,8 @@ CONTACT_NOTICE = (
     "> **Redacted contact details:** Phone numbers or email addresses in this report were replaced with "
     "`[PHONE_...]` or `[EMAIL_...]`. If a redacted value is a public hotline or address that should stay "
     "visible as evidence, list it in `RT_SCRUB_ALLOW` (comma-separated) and write the report again from "
-    "its source: `python -m scripts.run_summary` or `python -m scripts.export_finding_report` for a run, "
+    "its source: `rt summary` or `rt findings` for a run (or `python -m scripts.run_summary` or "
+    "`python -m scripts.export_finding_report`), "
     "or the access checks again. Scrubbing this file again cannot bring a redacted value back."
 )
 CONTACT_PLACEHOLDER = re.compile(r"\[(?:PHONE|EMAIL)_(?:\d+|REDACTED)\]")

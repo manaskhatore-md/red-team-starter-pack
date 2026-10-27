@@ -56,6 +56,7 @@ from pathlib import Path
 
 import yaml
 
+from redteam.cli import full_form
 from harnesses.pyrit_campaigns.profiles import PAIR_RUBRICS, REPO_ROOT, dataset_path
 
 RUBRIC_FILE = Path(__file__).resolve().parent / "judge.yaml"
@@ -186,7 +187,7 @@ def _entry(name: str) -> str:
     if not found:
         raise SystemExit(
             f"{_shown(RUBRIC_FILE)} has no judge_text `{name}:`, which the judge is sent. Add it back, "
-            "then check with: python -m harnesses.pyrit_campaigns.rubrics check"
+            f"then check with: rt rubrics (or: {full_form('rubrics')})"
         )
     return found
 
@@ -479,7 +480,7 @@ def require_valid(rubrics: dict | None = None, probes=None) -> None:
         raise SystemExit(
             f"\nThe rubrics in {_shown(RUBRIC_FILE)} have {len(errors)} error(s). Nothing was sent.\n"
             + "\n".join(f"  - {p}" for p in errors)
-            + "\nFix them, then check again with: python -m harnesses.pyrit_campaigns.rubrics check"
+            + f"\nFix them, then check again with: rt rubrics (or: {full_form('rubrics')})"
         )
 
 

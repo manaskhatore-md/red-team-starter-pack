@@ -44,6 +44,7 @@ truststore.inject_into_ssl()
 from pyrit.memory import CentralMemory
 from pyrit.setup import SQLITE, initialize_pyrit_async
 
+from redteam.cli import full_form
 from harnesses.pyrit_campaigns.calibration import CALIBRATION_LABEL, normalized
 from harnesses.pyrit_campaigns.profiles import PROFILES, checklist_for
 from harnesses.pyrit_campaigns.code_checks import CODE_CHECKS
@@ -802,7 +803,8 @@ def build_summary(results, memory, run_id: str) -> str:
     elif tested:
         lines.append(
             "- **A pass is one sample.** Model output varies from run to run. A probe that passed once can "
-            "fail on the next run, so re-run with RT_REPEATS=5 or more before you rely on either result."
+            "fail on the next run, so re-run with `--repeats 5` or more (`RT_REPEATS=5` in `.env`) before you "
+            "rely on either result."
         )
     templated = {(r.labels or {}).get("rt_template") for r in (e["result"] for e in entries)} - {None, ""}
     if templated:
@@ -819,7 +821,8 @@ def build_summary(results, memory, run_id: str) -> str:
                 f"- **{len(worse)} of {len(comparison)} probe(s) were flagged more often encoded with {encoding_str} "
                 "than as written.** The plain-text copy is the control, so the encoding is what got past the "
                 "model's or the app's defenses: [Encoded vs. as written](#encoded-vs-as-written)."
-                + (" One try each is one reply either way; re-run with RT_REPEATS=5 or more before you report it."
+                + (" One try each is one reply either way; re-run with `--repeats 5` or more (`RT_REPEATS=5` in "
+                   "`.env`) before you report it."
                    if repeats == 1 else "")
             )
         else:
@@ -1244,7 +1247,7 @@ def write_after_run(run_id: str) -> None:
     except (Exception, SystemExit) as e:
         # The results are in the database either way, so a failure here loses nothing.
         print(f"\nCould not write the run summary ({e}).")
-        print(f"Write it later with: python -m scripts.run_summary --run-id {run_id[:8]}")
+        print(f"Write it later with: rt summary --run-id {run_id[:8]} (or: {full_form(f'summary --run-id {run_id[:8]}')})")
         return
     print(f"\nEvery result of this run, in full: {path}")
 

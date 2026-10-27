@@ -1,0 +1,10 @@
+#!/bin/sh
+# The rt command without installing it: ./rt scan from the repo root (macOS, Linux, Git Bash).
+# `pip install -e .` once makes plain `rt` work from any folder. See redteam/cli.py.
+here=$(cd "$(dirname "$0")" && pwd)
+case "$(uname -s)" in
+    # Windows: python3 is often only the Microsoft Store placeholder.
+    MINGW* | MSYS* | CYGWIN*) python=python ;;
+    *) python=python3 ;;
+esac
+PYTHONPATH="$here${PYTHONPATH:+:$PYTHONPATH}" exec "$python" -m redteam "$@"

@@ -33,3 +33,7 @@ data_fixtures/grounding_eval_set.json
 
 # Node packages for @nationaldesignstudio/rampart report scrubber
 node_modules/
+
+# pip install -e . (pyproject.toml) writes these
+*.egg-info/
+build/

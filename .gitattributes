@@ -1,0 +1,3 @@
+# Launchers: the shell script must keep LF endings to run on macOS/Linux; cmd.exe wants CRLF.
+rt text eol=lf
+*.cmd text eol=crlf

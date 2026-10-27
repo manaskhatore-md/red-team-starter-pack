@@ -1,0 +1,24 @@
+# Optional. `pip install -e .`, once from the repo root, adds the rt command
+# (redteam/cli.py), so `rt scan` works from any folder. Without it, run .\rt (Windows)
+# or ./rt from the repo root instead.
+#
+# This installs the command only. The kit's dependencies stay in requirements.txt
+# (pip install -r requirements.txt), and the kit runs from this clone: -e (editable)
+# points rt at these files, so a git pull needs no reinstall.
+
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "red-team-starter-pack"
+version = "0.1.0"
+description = "AI red-teaming kit for state agency pilots: the rt command"
+dependencies = []
+
+[project.scripts]
+rt = "redteam.cli:main"
+
+[tool.setuptools]
+# Only the command's own package. The kit's modules run from the clone (see above).
+packages = ["redteam"]

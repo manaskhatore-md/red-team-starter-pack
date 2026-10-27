@@ -140,6 +140,7 @@ from pyrit.score import MessageTrueFalseScorer, SelfAskGeneralTrueFalseScorer
 from pyrit.score.scorer_prompt_validator import ScorerPromptValidator
 from pyrit.setup import SQLITE, initialize_pyrit_async
 
+from redteam.cli import full_form
 from harnesses.pyrit_campaigns import calibration, profiles
 from harnesses.pyrit_campaigns.probe_templates import expand, fill, load_dataset
 from harnesses.pyrit_campaigns.profiles import (
@@ -1698,10 +1699,14 @@ async def main(
             print(f"  [ ] {item}")
 
     write_after_run(run_labels["rt_run_id"])
-    print(f"Next: python -m scripts.export_finding_report --rubric any --run-id {run_labels['rt_run_id'][:8]} --out findings/")
-    print("      writes a report for each finding you agree with (--conversation-id exports one).")
+    export = f"findings --run-id {run_labels['rt_run_id'][:8]}"
+    print(f"Next: rt {export}")
+    print(f"      (or: {full_form(export)})")
+    print("      writes a report for each finding you agree with. To export one result, even one that")
+    print("      passed: rt findings --conversation-id ID, with the ID from its --- [ID] line above.")
     if repeats == 1:
-        print("LLM output is stochastic - re-run with RT_REPEATS=5 or more before you report a finding.")
+        print("LLM output is stochastic - re-run with --repeats 5 or more (RT_REPEATS=5 in .env) before you "
+              "report a finding.")
     else:
         print("The run summary's Failure rates table shows how often each probe was flagged.")
 
