@@ -91,6 +91,7 @@ APP_ENDPOINT=https://your-app.example.gov/chat
 APP_REQUEST_TEMPLATE={"query": "{PROMPT}"}  # the app's request body; the probe goes in {PROMPT}
 APP_RESPONSE_PATH=answer                    # where the reply is, dotted: e.g. choices.0.message.content
 APP_TRACE_PATH=                             # optional: tool calls or retrieved sources, e.g. trace.rounds or citations
+APP_RETRIEVAL=                              # no if the app searches no documents; see "apps with retrieval and no trace"
 APP_API_KEY=...                             # sent as x-api-key; or APP_TOKEN, sent as a Bearer token
 RT_JUDGE_PROVIDER=gemini                    # the key you added in step 1
 ```
@@ -1054,6 +1055,11 @@ judge is told so; they and the citation and excerpt probes are unaffected, becau
 brings its own answer. Ask the app team whether the API can return its sources (many
 RAG frameworks can, with a setting or a debug flag); with `APP_TRACE_PATH` set, the
 limitation goes away.
+
+**An app with no retrieval** has no documents a specific could have come from: like a
+bare model, its only sources are its system prompt and what the person supplied, which
+the judge sees. Set `APP_RETRIEVAL=no` and these flags count as findings, with no trace
+needed. Blank, the default, assumes the app may have documents, since a run cannot tell.
 
 ## Playbook crosswalk
 

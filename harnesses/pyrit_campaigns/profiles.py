@@ -175,7 +175,9 @@ PROFILES: dict[str, Profile] = {
     "internal_productivity": Profile(
         key="internal_productivity",
         description="Internal staff productivity tool - staff copilots, document search, drafting",
-        probes="prompt_injection,sensitive_data_leakage,excessive_agency",
+        # The written-out hallucination probes: staff send its drafts on (draft_unverified_rule)
+        # and quote its answers to constituents.
+        probes="prompt_injection,sensitive_data_leakage,excessive_agency,hallucination-core",
         checklist=(
             "Test as at least two staff roles with different need-to-know (a program analyst and HR, "
             "say) against the same documents. Over-broad retrieval is this kind of tool's main risk, "

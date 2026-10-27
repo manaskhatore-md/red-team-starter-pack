@@ -176,6 +176,7 @@ from scripts.run_summary import write_after_run
 from harnesses.pyrit_campaigns.target_factory import (
     NEEDS_TRACE_LABEL,
     TRACE_METADATA_KEY,
+    app_has_no_retrieval,
     build_scoring_target,
     build_target,
     check_models,
@@ -826,9 +827,14 @@ class RubricScorer(MessageTrueFalseScorer):
         judge,
         category: str,
         judge_context: dict[str, dict[str, str]],
+        system_prompt: str | None = None,
         unverifiable: frozenset[str] = frozenset(),
     ) -> None:
+        # The rubric's format string with its [[SYSTEM_PROMPT]] slot still open: the
+        # probe's slots are filled first, so a [[TOKEN]] in the system prompt's own text
+        # is left as it is.
         self._rubric_prompt = rubric_prompt
+        self._system_prompt = system_prompt
         self._judge = judge
         self._category = category
         # Probe text -> its slots, as Probe.judge_slots() gives them. The objective
@@ -840,12 +846,17 @@ class RubricScorer(MessageTrueFalseScorer):
 
     def _build_identifier(self) -> ComponentIdentifier:
         return self._create_identifier(
-            params={"system_prompt_template": self._rubric_prompt, "category": self._category},
+            params={
+                "system_prompt_template": fill_system_prompt(self._rubric_prompt, self._system_prompt),
+                "category": self._category,
+            },
             prompt_target=self._judge.get_identifier(),
         )
 
     def rubric_for(self, objective: str | None) -> str:
-        return fill_slots(self._rubric_prompt, self._judge_context.get(objective or "", {}))
+        return fill_system_prompt(
+            fill_slots(self._rubric_prompt, self._judge_context.get(objective or "", {})), self._system_prompt
+        )
 
     async def _score_piece_async(self, message_piece: MessagePiece, *, objective: str | None = None) -> list[Score]:
         reply = message_piece.converted_value or ""
@@ -893,10 +904,11 @@ def build_rubric_scorers(
         if key in PAIR_RUBRICS:
             continue
         scorers[key] = RubricScorer(
-            rubric_prompt=rubric_prompt(rubrics[key], system_prompt),
+            rubric_prompt=rubric_format_string(rubrics[key]["system_prompt"]),
             judge=judge,
             category=key,
             judge_context=judge_context,
+            system_prompt=system_prompt,
             unverifiable=unverifiable,
         )
     return scorers
@@ -912,6 +924,12 @@ def rubric_prompt(rubric: dict, system_prompt: str | None, slots: dict[str, str]
     text = rubric_format_string(rubric["system_prompt"])
     if slots is not None:
         text = fill_slots(text, slots)
+    return fill_system_prompt(text, system_prompt)
+
+
+def fill_system_prompt(text: str, system_prompt: str | None) -> str:
+    """A rubric's [[SYSTEM_PROMPT]] slot filled with the system prompt the model was sent, or with
+    the text saying it had none."""
     return text.replace("[[SYSTEM_PROMPT]]", _escape_braces(system_prompt or fill_text("no_system_prompt")))
 
 
@@ -1228,7 +1246,7 @@ def show_judge_prompt(profile: Profile, name: str) -> int:
         ))
         return 0
     for key in keys:
-        prompt = fill_slots(rubric_prompt(rubrics[key], system_prompt), probe.judge_slots())
+        prompt = rubric_prompt(rubrics[key], system_prompt, probe.judge_slots())
         system, message = judge_messages(prompt, probe.prompt, PREVIEW_REPLY, trace)
         _print_judge_prompt(f"{probe.dataset} / {probe.name}, judged by {key}", system, message)
     if probe.pair_id:
@@ -1364,7 +1382,9 @@ async def main(
         print("\nSystem prompt: none. The model gets each probe with no instructions.")
     judge = build_scoring_target()
     judged_prompt = system_prompt.text if system_prompt else (app_prompt.text if app_prompt else "") or None
-    no_trace = trace_unavailable(resolve_provider("target"), os.getenv("APP_TRACE_PATH", "").strip())
+    no_trace = trace_unavailable(
+        resolve_provider("target"), os.getenv("APP_TRACE_PATH", "").strip(), app_has_no_retrieval()
+    )
     scorers = build_rubric_scorers(rubrics, judge, probes, judged_prompt, no_trace)
 
     compare = "disparate_treatment" in rubrics and any(p.pair_id for p in probes)
@@ -1437,6 +1457,8 @@ async def main(
         # Settings still at "TODO ...", so the summary can say the probes named a placeholder.
         "rt_placeholders": ", ".join(unfilled),
         "rt_trace_path": os.getenv("APP_TRACE_PATH", "").strip(),
+        # "no" when APP_RETRIEVAL=no: the app has no documents, so a flag needs no trace to stand.
+        "rt_app_retrieval": "no" if app_has_no_retrieval() else "",
         # Which rubrics judged the run: the rubric file's fingerprint and the pack's version.
         **version_labels(),
     }
@@ -1654,7 +1676,8 @@ async def main(
         print(
             f"\n{len(unverified)} judge flag(s) are UNVERIFIED, not counted as findings: the probe asks for a "
             "specific the app may have found in its own documents, and with no APP_TRACE_PATH the run has no "
-            "trace to show which. Check each against the program's documents, or set APP_TRACE_PATH and re-run:"
+            "trace to show which. Check each against the program's documents, or set APP_TRACE_PATH and re-run "
+            "(APP_RETRIEVAL=no if the app has no documents to search):"
         )
         for rubric, probe in dict.fromkeys((rubric, probe) for rubric, probe, _ in unverified):
             print(f"  - [{rubric}] {probe[:120]}")
