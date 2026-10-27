@@ -102,7 +102,7 @@ Run the single-turn scan:
 python -m harnesses.pyrit_campaigns.single_turn_scan
 ```
 
-With no `RT_PROFILE` set, it runs the built-in `default` profile: every attack suite, 77
+With no `RT_PROFILE` set, it runs the built-in `default` profile: every attack suite, its
 `core` probes. Once you know what kind of deployment you're testing, a preset can narrow
 it — see [Deployment profiles](#deployment-profiles).
 
@@ -521,12 +521,15 @@ what will I still have to check by hand?* `RT_PROFILE` picks one. You don't have
 it: unset, a run uses the built-in `default`, which covers every suite. The named
 profiles are presets for when you know what kind of deployment you're testing.
 
-| `RT_PROFILE` | Use for | Primary risk | Probes sent |
+| `RT_PROFILE` | Use for | Primary risk | What it sends |
 |---|---|---|---|
-| unset (`default`) | A first run, or a system no preset fits | All of them, broadly | 77 (`core`) |
-| `internal_productivity` | Staff copilots, document search | Over-broad retrieval; pasted untrusted content | 60 (no bias or hallucination) |
-| `public_conversational` | Public FAQ and program chatbots | Wrong answers at scale; equity | 105 (no data leakage; written-out hallucination only) |
-| `constituent_decision` | Eligibility, casework, licensing | Authorization boundaries; disparate impact | 128 (all) |
+| unset (`default`) | A first run, or a system no preset fits | All of them, broadly | `core`: every suite, without the bias and hallucination probes made from fixtures |
+| `internal_productivity` | Staff copilots, document search | Over-broad retrieval; pasted untrusted content | No bias; written-out hallucination only |
+| `public_conversational` | Public FAQ and program chatbots | Wrong answers at scale; equity | No data leakage; written-out hallucination only |
+| `constituent_decision` | Eligibility, casework, licensing | Authorization boundaries; disparate impact | `all`: every probe |
+
+`--list-probes` shows exactly which probes a profile sends, and how many, without calling
+a model.
 
 ### Using a profile
 
@@ -548,7 +551,7 @@ RT_PROFILE=public_conversational python -m harnesses.pyrit_campaigns.multi_turn_
 RT_PROFILE=internal_productivity python -m harnesses.pyrit_campaigns.single_turn_scan --probes bias-core
 RT_PROFILE=constituent_decision python -m harnesses.pyrit_campaigns.single_turn_scan --probes 1-15
 
-# No profile: the built-in default, every suite (add --probes all for all 128)
+# No profile: the built-in default, every suite (add --probes all for every probe)
 python -m harnesses.pyrit_campaigns.single_turn_scan
 ```
 
@@ -566,10 +569,10 @@ through that list: it is what the probes can't check for you.
 Each profile in `harnesses/pyrit_campaigns/profiles.py` is a few lines:
 
 - **Which probes run** — a `--probes` spec over every suite (see [Running a subset of
-  probes](#running-a-subset-of-probes)). `default` runs `core`: every probe except the 36
-  bias probes made from fixtures, which need repeats to mean anything, and the 15
+  probes](#running-a-subset-of-probes)). `default` runs `core`: every probe except the
+  bias probes made from fixtures, which need repeats to mean anything, and the
   hallucination probes made from fixtures, which mean most once the references are yours.
-  `constituent_decision` runs `all` 128. The rubrics follow from the probes: each rubric grades the suites its
+  `constituent_decision` runs `all`. The rubrics follow from the probes: each rubric grades the suites its
   `grades` list names.
 - **Multi-turn goals** written for that kind of system, in `config/objectives/<profile>.yaml`.
 - **A stand-in system prompt** for runs against a raw model, in `config/system_prompts/<profile>.txt`.
@@ -579,7 +582,8 @@ Each profile in `harnesses/pyrit_campaigns/profiles.py` is a few lines:
   its `checklist.yaml`, and print whenever its probes run, under any profile.
 
 Probes are numbered the same way under every profile, suite by suite with bias last, so
-`--probes 1-82` is always the non-bias probes. `--probes` replaces the profile's own
+a number from `--list-probes` names the same probe whichever profile is set (`--probes
+general` selects every non-bias probe). `--probes` replaces the profile's own
 selection rather than narrowing it: `internal_productivity` with `--probes bias-core`
 sends the bias pairs, though the profile on its own sends none.
 
@@ -625,7 +629,7 @@ probes instead, pass `--probes <spec>` on the command line (or set `RT_PROBES=<s
 `.env`). A probe has the same number under every profile.
 
 ```bash
-# Preview the profile's probes with their [1]..[128] numbers and pair tags (calls no model)
+# Preview the profile's probes with their numbers and pair tags (calls no model)
 python -m harnesses.pyrit_campaigns.single_turn_scan --list-probes
 
 # Preview what a filter selects before sending anything
@@ -641,15 +645,15 @@ You can pass one selector or combine several with commas (e.g. `--probes "1-3,cr
 
 | Selector | What it selects | Examples |
 |---|---|---|
-| `all` | Every probe in every suite (128) | `--probes all` |
-| `core` | Everything except the fixture-expanded templates of the bias suite (36) and the hallucination suite (15) | `--probes core` |
+| `all` | Every probe in every suite | `--probes all` |
+| `core` | Everything except the fixture-expanded templates of the bias suite and the hallucination suite | `--probes core` |
 | `general` | Only non-bias probes (`prompt_injection`, `sensitive_data_leakage`, `excessive_agency`, `hallucination`) | `--probes general` |
 | `bias` | All probes in `algorithmic_bias` (both inline and fixture-expanded) | `--probes bias` |
-| `bias-core` | Only the 5 inline matched pairs in `algorithmic_bias` (10 probes) | `--probes bias-core` |
-| `bias-templated` | Only the 18 fixture-expanded matched pairs from `scenarios.yaml` and `case_files.yaml` (36 probes) | `--probes bias-templated` |
+| `bias-core` | Only the inline matched pairs in `algorithmic_bias` | `--probes bias-core` |
+| `bias-templated` | Only the fixture-expanded matched pairs from `scenarios.yaml` and `case_files.yaml` | `--probes bias-templated` |
 | `hallucination` | All probes in `hallucination` (both written-out and fixture-expanded) | `--probes hallucination` |
-| `hallucination-core` | Only the 7 written-out hallucination probes | `--probes hallucination-core` |
-| `hallucination-templated` | Only the 15 probes expanded from `references.yaml` and `excerpts.yaml` | `--probes hallucination-templated` |
+| `hallucination-core` | Only the written-out hallucination probes | `--probes hallucination-core` |
+| `hallucination-templated` | Only the probes expanded from `references.yaml` and `excerpts.yaml` | `--probes hallucination-templated` |
 | `k` or `m-n` | 1-based probe number or inclusive range from `--list-probes` | `--probes 4` or `--probes 1-15` |
 | Probe name | A single probe by its `name` (quote `[...]` in PowerShell) | `--probes override_simple` or `--probes "scenario_spanish[hours]"` |
 | Pair ID | Both halves of a matched pair by its `pair_id` | `--probes dialect_01` |
@@ -1006,14 +1010,14 @@ known without your policy:
 
 | Probes | Built from | Needs your policy? |
 |---|---|---|
-| 7 written out: form number, deadline, contact details, exact wording, a statistic, a rumor, a draft of an unverified rule | the file itself | No: with no source, the safe reply says it does not know |
+| Written out: form number, deadline, contact details, exact wording, a statistic, a rumor, a draft of an unverified rule | the file itself | No: with no source, the safe reply says it does not know |
 | A false claim about a citation, asked three ways (stated, as a summary, insisting) | `fixtures/references.yaml` | Only for `status: real` entries |
 | A supplied handbook section: a summary wanting details it lacks, a question it does not answer, one it does | `fixtures/excerpts.yaml` | No: the excerpt is synthetic and is the only document |
 
 The judge is shown each templated probe's facts (`REFERENCE_FACTS`), so it judges against
-what is known to be true, not what it remembers. `default` and `public_conversational`
-send only the written-out probes; `--probes hallucination-templated` sends the 15
-templated ones.
+what is known to be true, not what it remembers. `default`, `internal_productivity`, and
+`public_conversational` send only the written-out probes; `--probes
+hallucination-templated` sends the templated ones.
 
 **To add a reference**, copy an entry in `fixtures/references.yaml`: a citation, a false
 claim about it, and the `facts` the judge is shown. A `status: real` entry is worth the
@@ -1073,7 +1077,7 @@ needed. Blank, the default, assumes the app may have documents, since a run cann
 | Single-turn scan across all of the above | `harnesses/pyrit_campaigns/single_turn_scan.py` | Working |
 | Data protection | `attack_suites/02_sensitive_data_exposure/sensitive_data_leakage.yaml`, `harnesses/pyrit_campaigns/judge.yaml` | Working |
 | Equity / disparate impact | `attack_suites/03_algorithmic_bias/algorithmic_bias.yaml` | Working |
-| Accuracy / grounding, adversarial: invented specifics, false premises, supplied documents | `attack_suites/04_hallucination_grounding/hallucination.yaml`, the `ungrounded_claim` rubric | Written-out probes in `default` and `public_conversational`, all of them in `constituent_decision`; real references are yours to add |
+| Accuracy / grounding, adversarial: invented specifics, false premises, supplied documents | `attack_suites/04_hallucination_grounding/hallucination.yaml`, the `ungrounded_claim` rubric | Written-out probes in `default`, `internal_productivity`, and `public_conversational`, all of them in `constituent_decision`; real references are yours to add |
 | Excessive agency: false action claims, commitments, exceptions | `attack_suites/05_excessive_agency/excessive_agency.yaml`, the `excessive_agency` rubric, one multi-turn objective per profile | Working in every profile |
 | Excessive agency, backend verification | `harnesses/pyrit_campaigns/agent_tool_exploitation.py` | Scaffold: needs `RT_PROVIDER=app` and a backend diff |
 | Accuracy / grounding, real traffic | `harnesses/pyrit_campaigns/rag_grounding_eval.py` | Scaffold: needs an eval set |
