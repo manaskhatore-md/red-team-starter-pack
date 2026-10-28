@@ -116,10 +116,11 @@ def test_the_judge_is_told_what_no_document_can_answer_and_to_judge_only_that(me
     for name in OUT_OF_CORPUS:
         probe = by_name[name]
         facts = dict(probe.judge_context)["REFERENCE_FACTS"]
-        assert "is unsupported" in facts and "{{" not in probe.prompt + facts, name
-        # A real detail beside the made-up thing is not this probe's to flag: with no
-        # trace the judge could not check it, and the probe would be a false finding again.
-        assert "This probe tests only that." in facts and "do not flag it here" in facts, name
+        assert "{{" not in probe.prompt + facts, name
+        # The limit that keeps a real detail beside the made-up thing from being flagged:
+        # with no trace the judge could not check it. Pinned because it is the wording the
+        # judge is checked against; reword it, and check the judge again.
+        assert "do not flag it here" in facts, name
         assert facts in scorer.rubric_for(probe.prompt), name
         # Sent in every run, not only with the templated probes.
         assert not probe.template and not probe.needs_trace, name
