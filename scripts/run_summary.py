@@ -51,6 +51,7 @@ from harnesses.pyrit_campaigns.code_checks import CODE_CHECKS
 from harnesses.pyrit_campaigns.planted_records import RECORD_CHECK
 from harnesses.pyrit_campaigns.rubrics import describe_version
 from harnesses.pyrit_campaigns.system_prompt import CANARY_CHECK
+from harnesses.pyrit_campaigns.target_factory import NEEDS_TRACE_LABEL, TRACE_METADATA_KEY, judging_mode
 from scripts.export_finding_report import (
     encoding_label,
     flagged_rubrics,
@@ -615,6 +616,23 @@ def build_summary(results, memory, run_id: str) -> str:
     started = min((r.timestamp for r in results if r.timestamp), default=None)
 
     lines = [f"# Run summary: {campaign}, run {run_id[:8]}", ""]
+    # First, as the scan printed it first: how the probes that ask for a specific were judged.
+    specifics = [e for e in entries if (e["result"].labels or {}).get(NEEDS_TRACE_LABEL) == "true"]
+    needs_trace = len({probe_name(e["result"]) for e in specifics})
+    # A trace is stored only when it is not empty, so none on any reply that got an answer means
+    # APP_TRACE_PATH matched nothing. With no answer at all there was nothing to match.
+    answered = [e for e in specifics if e["verdict"] not in (ERROR, NO_RESPONSE, FIXED_REPLY)]
+    trace_found = not answered or any(
+        (piece.prompt_metadata or {}).get(TRACE_METADATA_KEY)
+        for e in answered for message in e["messages"] for piece in message.message_pieces
+    )
+    if needs_trace and labels.get("rt_provider"):
+        mode = judging_mode(
+            labels["rt_provider"], labels.get("rt_trace_path", ""), labels.get("rt_app_retrieval") == "no",
+            needs_trace, trace_found,
+        )
+        lead, rest = mode.split(": ", 1)
+        lines += [f"**{lead}:** {rest}", ""]
     lines += [
         f"Generated {date.today().isoformat()} by `scripts/run_summary.py` from the PyRIT database. "
         "Every result of the run is below, in full.",

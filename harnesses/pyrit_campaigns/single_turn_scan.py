@@ -192,6 +192,7 @@ from harnesses.pyrit_campaigns.target_factory import (
     build_target,
     check_models,
     close_target,
+    judging_mode,
     model_name,
     resolve_provider,
     trace_unavailable,
@@ -1102,6 +1103,11 @@ def list_probes(
 
     sent = sum(len(group) for group in groups.values())
     print(f"\n{sent} of {len(probes)} probe(s) would be sent, each RT_REPEATS times.")
+    needs_trace = sum(probe.needs_trace for group in groups.values() for probe in group)
+    if needs_trace:
+        # As the scan would print it, so the mode can be fixed before a run costs anything.
+        provider, trace_path = resolve_provider("target"), os.getenv("APP_TRACE_PATH", "").strip()
+        print("\n" + judging_mode(provider, trace_path, app_has_no_retrieval(), needs_trace))
     return 0
 
 
@@ -1174,9 +1180,9 @@ async def main(
         print("\nSystem prompt: none. The model gets each probe with no instructions.")
     judge = build_scoring_target()
     judged_prompt = system_prompt.text if system_prompt else (app_prompt.text if app_prompt else "") or None
-    no_trace = trace_unavailable(
-        resolve_provider("target"), os.getenv("APP_TRACE_PATH", "").strip(), app_has_no_retrieval()
-    )
+    provider = resolve_provider("target")
+    trace_path, no_retrieval = os.getenv("APP_TRACE_PATH", "").strip(), app_has_no_retrieval()
+    no_trace = trace_unavailable(provider, trace_path, no_retrieval)
     scorers = build_rubric_scorers(rubrics, judge, probes, judged_prompt, no_trace)
 
     compare = "disparate_treatment" in rubrics and any(p.pair_id for p in probes)
@@ -1197,6 +1203,11 @@ async def main(
     converted = converted_probes(sent, conv_spec)
     if conv_spec:
         print(conversion_note(conv_spec, converted, len(sent), pass_names=pass_names, control=control))
+
+    needs_trace = sum(probe.needs_trace for probe in sent)
+    if needs_trace:
+        # Before any call, so whoever runs it can stop and set APP_TRACE_PATH first.
+        print("\n" + judging_mode(provider, trace_path, no_retrieval, needs_trace))
 
     pair_count = len({p.pair_id for p in sent if p.pair_id}) if compare else 0
     graded = [f"{len(group)} graded by {' + '.join(keys)}" for keys, group in groups.items() if keys]

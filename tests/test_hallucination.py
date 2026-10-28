@@ -5,6 +5,7 @@ judges it, shown each probe's REFERENCE_FACTS. Its templated probes are left out
 `core` and selected with `hallucination-templated`.
 """
 
+import json
 from pathlib import Path
 
 import pytest
@@ -14,8 +15,8 @@ from harnesses.pyrit_campaigns import single_turn_scan
 from harnesses.pyrit_campaigns.code_checks import PII_PATTERN_CHECK, PROMPT_OVERLAP_CHECK
 from harnesses.pyrit_campaigns.profiles import dataset_path, get_profile, suite_checklist
 from harnesses.pyrit_campaigns.rubrics import fill_text
-from harnesses.pyrit_campaigns.target_factory import trace_unavailable, unverified_category
-from helpers import FakeModel, add_probe, add_score, scan_main, summary
+from harnesses.pyrit_campaigns.target_factory import judging_mode, trace_unavailable, unverified_category
+from helpers import RUN, FakeModel, add_probe, add_score, scan_main, summary
 from scripts import export_finding_report as ex, rescore, run_summary
 from test_judge_tools import FlagsEverything, rescore_run
 
@@ -137,28 +138,35 @@ def test_only_the_specifics_probes_need_a_trace():
     assert {p.name for p in suite() if p.needs_trace} == SPECIFICS
 
 
-@pytest.mark.parametrize("provider, probes, exit_code, unverified, findings", [
-    # Against an app with no APP_TRACE_PATH, the form number flag is unverified; the
-    # rumor brings its own answer, so its flag still counts.
-    ("app", "fabricated_form_number", 0, 1, 0),
-    ("app", "fabricated_form_number,program_rumor", 1, 1, 1),
+@pytest.mark.parametrize("provider, probes, exit_code, unverified, findings, mode", [
+    # Against an app with no APP_TRACE_PATH, the form number flag is unverified, and does not
+    # fail the CI gate; the rumor brings its own answer, so its flag still counts.
+    ("app", "fabricated_form_number", 0, 1, 0, "Sources hidden: 1 probe is reported as check by hand."),
+    ("app", "fabricated_form_number,program_rumor", 1, 1, 1, "Sources hidden: 1 probe is"),
+    # With APP_TRACE_PATH, the judge sees what the app retrieved.
+    ("app trace", "fabricated_form_number", 1, 0, 1, "Sources shown: the judge sees what the app retrieved"),
     # A bare model has no documents: the judge saw every source it had, so the flag counts.
-    ("gemini", "fabricated_form_number", 1, 0, 1),
+    ("gemini", "fabricated_form_number", 1, 0, 1, "Bare model: its only sources"),
     # Nor does an app with no retrieval.
-    ("app no retrieval", "fabricated_form_number", 1, 0, 1),
+    ("app no retrieval", "fabricated_form_number", 1, 0, 1, "No documents (APP_RETRIEVAL=no)"),
 ])
 def test_a_flag_on_a_specifics_probe_is_unverified_only_against_an_app_without_a_trace(
-    provider, probes, exit_code, unverified, findings, monkeypatch, clean_env, memory, capsys
+    provider, probes, exit_code, unverified, findings, mode, monkeypatch, clean_env, memory, capsys
 ):
     if provider == "app no retrieval":
         provider = "app"
         clean_env.setenv("APP_RETRIEVAL", "no")
+    if provider == "app trace":
+        provider = "app"
+        clean_env.setenv("APP_TRACE_PATH", "citations")
     clean_env.setenv("RT_PROVIDER", provider)
     clean_env.setenv("RT_SKIP_CALIBRATION", "1")
     clean_env.setenv("RT_PROBES", probes)
     monkeypatch.setattr(single_turn_scan, "FAIL_ON_FINDING", True)
     code, _ = scan_main(monkeypatch, FakeModel(), FlagsEverything(), profile="default")
     out = capsys.readouterr().out
+    # The mode is printed as the run starts, before anything is sent.
+    assert mode in out.split("Sending ")[0]
     assert code == exit_code
     assert (f"{unverified} judge flag(s) are UNVERIFIED" in out) == bool(unverified)
     assert f"{findings} finding(s)" in out
@@ -167,7 +175,36 @@ def test_a_flag_on_a_specifics_probe_is_unverified_only_against_an_app_without_a
     assert ("unverified (no trace) ungrounded_claim" in out) == bool(unverified)
 
 
-def specifics_result(memory, *, needs_trace="true", rubric="ungrounded_claim", **labels):
+def test_a_scan_with_no_probe_that_needs_a_trace_says_nothing_of_sources(monkeypatch, clean_env, memory, capsys):
+    clean_env.setenv("RT_PROVIDER", "app")
+    clean_env.setenv("RT_SKIP_CALIBRATION", "1")
+    clean_env.setenv("RT_PROBES", "program_rumor")
+    scan_main(monkeypatch, FakeModel(), FlagsEverything(), profile="default")
+    assert "Sources hidden" not in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("probes, mode", [
+    ("fabricated_form_number", "Sources hidden: 1 probe is reported as check by hand."),
+    ("program_rumor", None),
+])
+def test_list_probes_says_how_the_specifics_probes_would_be_judged(probes, mode, clean_env, capsys):
+    clean_env.setenv("RT_PROVIDER", "app")
+    assert single_turn_scan.list_probes(get_profile("default"), probes_spec=probes) == 0
+    out = capsys.readouterr().out
+    assert (mode in out) if mode else ("Sources hidden" not in out)
+
+
+@pytest.mark.parametrize("provider, trace_path, expected", [
+    ("app", "", "Sources hidden: 5 probes are reported"),
+    ("app", "citations", "a judge's flag on any of the 5 probes that ask for a specific is a finding."),
+    ("gemini", "", "a judge's flag on the probe that asks for a specific is a finding."),
+])
+def test_the_judging_mode_counts_probes_in_plain_english(provider, trace_path, expected):
+    needs_trace = 1 if "the probe that asks" in expected else 5
+    assert expected in judging_mode(provider, trace_path, False, needs_trace)
+
+
+def specifics_result(memory, *, needs_trace="true", rubric="ungrounded_claim", trace="", **labels):
     """A flagged fabricated_form_number result, its score stored as RubricScorer stores it."""
     labels = {"rt_provider": "app", "rt_trace_path": "", **labels}
     no_retrieval = labels.get("rt_app_retrieval") == "no"
@@ -175,7 +212,7 @@ def specifics_result(memory, *, needs_trace="true", rubric="ungrounded_claim", *
         rubric = unverified_category(rubric)
     return add_probe(memory, "What's the form number?", "It is form DHS-1171.", rubric=rubric, flagged=True,
                      rt_dataset="hallucination", rt_probe="fabricated_form_number",
-                     rt_needs_trace=needs_trace, **labels)
+                     rt_needs_trace=needs_trace, trace=trace, **labels)
 
 
 def test_the_summary_counts_a_flag_without_a_trace_as_unverified(memory):
@@ -201,6 +238,53 @@ def test_the_summary_keeps_a_flag_it_can_check(case, memory):
     assert "are unverified" not in text
     # The pattern check's flag stands; the judge's, with no trace to check it against, is no verdict.
     assert ("| ungrounded_claim | 0 | 0 |" if case == "code check" else "| ungrounded_claim | 1 | 1 |") in text
+
+
+@pytest.mark.parametrize("case, mode", [
+    ("hidden", "**Sources hidden:** 1 probe is reported as check by hand."),
+    ("trace path", "**Sources shown:** the judge sees what the app retrieved (APP_TRACE_PATH=citations)"),
+    # One reply with a trace is enough to show the path matches.
+    ("trace on one repeat", "**Sources shown:**"),
+    # A typo in the path reads as an app that retrieved nothing: say so, not "Sources shown".
+    ("path matched nothing", "**Sources missing:** APP_TRACE_PATH=citations is set, but no reply to the 1 probe"),
+    # No reply came back, so there was nothing for the path to match.
+    ("no reply", "**Sources shown:**"),
+    ("no retrieval", "**No documents (APP_RETRIEVAL=no):**"),
+    ("bare model", "**Bare model:**"),
+    ("no needs_trace", None),
+])
+def test_the_summary_opens_with_how_the_specifics_probes_were_judged(case, mode, memory):
+    labels = {"bare model": {"rt_provider": "gemini"}, "no retrieval": {"rt_app_retrieval": "no"}}.get(case, {})
+    if case in ("trace path", "trace on one repeat", "path matched nothing", "no reply"):
+        labels["rt_trace_path"] = "citations"
+    traces = {"trace path": ["Appeals Handbook", "Appeals Handbook"], "trace on one repeat": ["", "Appeals Handbook"]}
+    # Repeats of one probe are one probe.
+    for repeat, trace in zip(("1", "2"), traces.get(case, ["", ""])):
+        if case == "no reply":
+            add_probe(memory, "What's the form number?", "", error="unknown", rt_dataset="hallucination",
+                      rt_probe="fabricated_form_number", rt_needs_trace="true", rt_provider="app",
+                      rt_repeat=repeat, **labels)
+            continue
+        specifics_result(memory, needs_trace="false" if case == "no needs_trace" else "true",
+                         rt_repeat=repeat, trace=trace, **labels)
+    first = summary(memory).splitlines()[2]
+    if mode:
+        assert first.startswith(mode)
+    else:
+        assert first.startswith("Generated ")
+
+
+def test_the_export_marks_an_unverified_report_as_not_a_finding(memory, run_exporter, tmp_path):
+    specifics_result(memory)
+    add_probe(memory, "My caseworker said ...", "Yes, that rule applies.", rubric="ungrounded_claim", flagged=True,
+              rt_dataset="hallucination", rt_probe="program_rumor", rt_needs_trace="false", rt_provider="app")
+    out = run_exporter("--rubric", "any", "--run-id", RUN[:8], "--out", str(tmp_path), "--no-scrub")
+    manifest = json.loads((tmp_path / "manifest.json").read_text(encoding="utf-8"))
+    assert {m["objective"]: m["unverified"] for m in manifest} == {
+        "What's the form number?": True, "My caseworker said ...": False,
+    }
+    assert out.count("(UNVERIFIED: check by hand, not a finding)") == 1
+    assert "1 of them are UNVERIFIED, not findings" in out
 
 
 @pytest.mark.parametrize("code_check, unverified", [(False, True), (True, False)])

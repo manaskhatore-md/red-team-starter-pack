@@ -726,14 +726,18 @@ async def main():
         report = build_report(result, memory, template, all_results, no_scrub=args.no_scrub)
         name = f"{str(result.attack_result_id)[:8]}-{slug(result.objective)}.md"
         (args.out / name).write_text(report, encoding="utf-8")
+        # Written so it can be checked by hand, but not a finding: marked so nothing reading
+        # the manifest counts it as one.
+        unverified = unverified_only(result, memory)
         manifest.append({
             "file": name,
             "attack_result_id": str(result.attack_result_id),
             "conversation_id": str(result.conversation_id),
             "outcome": result.outcome.value,
             "objective": result.objective,
+            "unverified": unverified,
         })
-        print(f"wrote {args.out / name}")
+        print(f"wrote {args.out / name}" + (" (UNVERIFIED: check by hand, not a finding)" if unverified else ""))
 
     manifest_path = args.out / "manifest.json"
     merged = merge_manifest(manifest_path, manifest)
@@ -742,6 +746,13 @@ async def main():
     earlier = len(merged) - len(manifest)
     note = f" ({earlier} from earlier exports kept in manifest.json)" if earlier else ""
     print(f"\n{len(manifest)} report(s) written to {args.out}/{note}. Every one has TODOs that need an analyst.")
+    unchecked = sum(entry["unverified"] for entry in manifest)
+    if unchecked:
+        print(
+            f"{unchecked} of them are UNVERIFIED, not findings: the judge flagged a specific the app may have "
+            "found in its own documents, and the run had no APP_TRACE_PATH to show which. Check each by hand "
+            "against the program's documents."
+        )
     print("Impact, remediation, and the final severity and policy citation are yours - they are the report.")
 
 

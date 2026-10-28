@@ -1,8 +1,6 @@
 """scripts/export_finding_report.py against a small in-memory database."""
 
-import asyncio
 import json
-import sys
 import uuid
 from datetime import datetime, timedelta, timezone
 
@@ -10,7 +8,6 @@ import pytest
 from pyrit.models import AttackOutcome, AttackResult
 
 from scripts import export_finding_report as ex
-from helpers import nothing
 
 T0 = datetime(2026, 9, 1, tzinfo=timezone.utc)
 
@@ -25,20 +22,6 @@ def add_result(memory, objective, outcome, minutes=0, **labels):
     )
     memory.add_attack_results_to_memory(attack_results=[result])
     return result
-
-
-@pytest.fixture
-def run_exporter(memory, monkeypatch, capsys):
-    """Run the exporter's main() with the given arguments; return what it printed."""
-
-    monkeypatch.setattr(ex, "initialize_pyrit_async", nothing)
-
-    def run(*argv):
-        monkeypatch.setattr(sys, "argv", ["export_finding_report", *argv])
-        asyncio.run(ex.main())
-        return capsys.readouterr().out
-
-    return run
 
 
 # --- --list and the outcome filter --------------------------------------------
