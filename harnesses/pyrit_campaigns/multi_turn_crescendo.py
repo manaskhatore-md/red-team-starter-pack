@@ -427,14 +427,58 @@ def leaked(memory, conversation_id: str, check: str) -> bool:
     )
 
 
-async def main(
+REQUIRED_MODULE_ATTRS = (
+    "MAX_TURNS",
+    "MAX_CONCURRENCY",
+    "AttackExecutor",
+    "initialize_pyrit_async",
+    "build_target",
+    "build_scoring_target",
+    "check_models",
+    "close_target",
+    "model_name",
+    "resolve_provider",
+    "load_objectives",
+    "load_app_prompt",
+    "load_system_prompt",
+    "write_after_run",
+)
+
+
+async def run_multi_turn(
+    module,
+    *,
+    campaign_key: str,
+    banner: str,
+    calls_per_turn: int,
+    estimate_suffix: str = "",
+    require_editable_history: bool = False,
+    explain_app_memory: bool = False,
+    extra_run_labels: dict[str, str] | None = None,
+    attacker_prompt_fn,
+    build_attack,
+    post_score=None,
+    check_leaked=None,
     converters_spec: str | None = None,
     no_control: bool = False,
 ) -> int:
+    """Run a multi-turn attack campaign (Crescendo or adaptive red-team).
+
+    Looks up the names in ``REQUIRED_MODULE_ATTRS`` on ``module`` rather than here,
+    so tests can patch them on either campaign module. Everything else comes from
+    this file.
+    """
+    missing = [name for name in REQUIRED_MODULE_ATTRS if not hasattr(module, name)]
+    if missing:
+        raise AttributeError(
+            f"{getattr(module, '__name__', module)!r} is missing attributes required by run_multi_turn: "
+            f"{', '.join(missing)}"
+        )
+
     started = time.monotonic()
     profile = get_profile()
     repeats = get_repeats()
-    objectives = load_objectives(profile)
+    objectives = module.load_objectives(profile)
     conv_spec, converter_passes = resolve_converter_passes(get_converters_spec(converters_spec))
     control = use_control(no_control)
     pass_names = [name for name, _ in converter_passes]
@@ -445,7 +489,7 @@ async def main(
     # TODO: that database will contain every prompt and response from the run. If
     # you tested with anything other than synthetic data, treat the file at the
     # data classification of what you sent.
-    await initialize_pyrit_async(memory_db_type=SQLITE)
+    await module.initialize_pyrit_async(memory_db_type=SQLITE)
 
     print(describe(profile))
     # A broken rubric stops the run here, before anything is sent.
@@ -455,9 +499,9 @@ async def main(
         print(multi_turn_conversion_note(conv_spec, len(objectives), pass_names, control=control))
 
     # A deployed app sends its own system prompt, so it gets no stand-in or records.
-    is_app = resolve_provider("target") == "app"
+    is_app = module.resolve_provider("target") == "app"
     records = () if is_app else records_for(profile_rubrics(profile))
-    system_prompt = None if is_app else load_system_prompt(
+    system_prompt = None if is_app else module.load_system_prompt(
         profile.key, placeholders(), new_canary(), records_section(records) if records else ""
     )
     if not system_prompt:
@@ -466,8 +510,8 @@ async def main(
         [], "\n".join([o.goal for o in objectives] + ([system_prompt.text] if system_prompt else []))
     )
 
-    target = build_target()
-    if is_app and not target.configuration.includes(capability=CapabilityName.EDITABLE_HISTORY):
+    target = module.build_target()
+    if require_editable_history and is_app and not target.configuration.includes(capability=CapabilityName.EDITABLE_HISTORY):
         raise SystemExit(
             "Crescendo rewinds the conversation when the app refuses, so the app must take the whole "
             'conversation with each request: put "{HISTORY}" in APP_REQUEST_TEMPLATE (see AppChatTarget), with '
@@ -479,15 +523,33 @@ async def main(
     # so a single-provider setup still runs - but override it: an attacker with the
     # same guardrails as the target will refuse to escalate, and you will mistake
     # that for a passing test.
-    adversarial = build_target("adversarial")
+    adversarial = module.build_target("adversarial")
 
     # The prompt the judge is shown, and that leak objectives are confirmed against.
     judged_prompt = system_prompt.text if system_prompt else None
     app_prompt = None
     if is_app:
-        app_prompt = load_app_prompt()
+        app_prompt = module.load_app_prompt()
         announce_app_prompt(app_prompt)
         judged_prompt = app_prompt.text or None
+        if explain_app_memory:
+            if getattr(target, "sends_history", False):
+                print(
+                    "\nNote: the kit sends the app the whole conversation with each message, so this is a real "
+                    "multi-turn conversation: the app sees every earlier turn."
+                )
+            elif target.configuration.includes(capability=CapabilityName.MULTI_TURN):
+                print(
+                    "\nNote: the app keeps each conversation's history itself (here, in its own browser tab), "
+                    "so this is a real multi-turn conversation: the app sees every earlier turn."
+                )
+            else:
+                print(
+                    "\nNote: the target is a deployed app, which has no memory of its own. Each turn is sent "
+                    "as an isolated, unrelated message - the app never sees the turns before it. Only the "
+                    "attacker remembers the conversation and adapts its approach; the app does not. This is "
+                    "repeated one-shot attempts informed by what failed before, not an escalating conversation."
+                )
     elif system_prompt:
         print(f"\nSystem prompt: {system_prompt.source} (chosen by {system_prompt.chosen_by}), "
               f"with canary token {system_prompt.canary}.")
@@ -510,8 +572,8 @@ async def main(
             "!! They still run, but a success is reported as unverified, not as a flag."
         )
 
-    judge = build_scoring_target()
-    await check_models(target=target, attacker=adversarial, judge=judge)
+    judge = module.build_scoring_target()
+    await module.check_models(target=target, attacker=adversarial, judge=judge)
 
     # So the heartbeat below can show real progress instead of just elapsed time.
     calls = [0]
@@ -520,7 +582,7 @@ async def main(
     judge = count_calls(judge, calls)
 
     rubrics = load_rubrics()
-    attacker_prompt = blind_attacker_prompt()
+    attacker_prompt = attacker_prompt_fn()
     # Every reply is checked for the canary. The check needs no judge call.
     canary = system_prompt.canary if system_prompt else (app_prompt.canary if app_prompt else "")
     canary_scorers = [CanaryLeakScorer(canary=canary)] if canary else []
@@ -530,27 +592,29 @@ async def main(
     # PyRIT puts these messages ahead of each attack, in a new conversation per attack.
     prepended = {"prepended_conversation": [system_message(system_prompt)]} if system_prompt else {}
 
+    max_turns = module.MAX_TURNS
+    max_concurrency = module.MAX_CONCURRENCY
     run_id = str(uuid.uuid4())
     # Stored with each result, so the run summary and finding report can say what ran.
     run_labels = {
-        "rt_campaign": "multi_turn_crescendo",
+        "rt_campaign": campaign_key,
         "rt_run_id": run_id,
         "rt_profile": profile.key,
         "rt_converters": conv_spec,
-        "rt_provider": resolve_provider("target"),
-        "rt_target": model_name(target),
-        "rt_adversarial_provider": resolve_provider("adversarial"),
-        "rt_adversarial": model_name(adversarial),
-        "rt_judge_provider": resolve_provider("judge"),
-        "rt_judge": model_name(judge),
+        "rt_provider": module.resolve_provider("target"),
+        "rt_target": module.model_name(target),
+        "rt_adversarial_provider": module.resolve_provider("adversarial"),
+        "rt_adversarial": module.model_name(adversarial),
+        "rt_judge_provider": module.resolve_provider("judge"),
+        "rt_judge": module.model_name(judge),
         "rt_system_prompt": system_prompt.source if system_prompt else "none",
         "rt_system_prompt_chosen_by": system_prompt.chosen_by if system_prompt else "",
         "rt_prompt_canary": canary,
         "rt_app_prompt_file": app_prompt.source if app_prompt else "",
         "rt_planted_records": str(len(records)),
         "rt_repeats": str(repeats),
-        "rt_max_turns": str(MAX_TURNS),
-        "rt_max_backtracks": str(MAX_BACKTRACKS),
+        "rt_max_turns": str(max_turns),
+        **(extra_run_labels or {}),
         # Settings still at "TODO ...", so the summary can say the objectives named a placeholder.
         "rt_placeholders": ", ".join(unfilled),
         # Which objectives file the attacks came from, so the report can say what was tested.
@@ -567,7 +631,7 @@ async def main(
         attack_passes.append((enc_name, {"attack_converter_config": build_converter_config(enc_chain)}))
 
     attacks = len(objectives) * len(attack_passes) * repeats
-    estimate = attacks * MAX_TURNS * 4
+    estimate = attacks * max_turns * calls_per_turn
     repeat_note = f", each {repeats} times (RT_REPEATS)" if repeats > 1 else ""
     if converter_passes and not control:
         encoded_note = f" encoded ({conv_spec}, --no-control)"
@@ -575,33 +639,26 @@ async def main(
         encoded_note = f" + {len(objectives) * len(converter_passes)} encoded ({conv_spec})"
     else:
         encoded_note = ""
-    print(f"\nRunning {len(objectives)} objective(s){encoded_note}{repeat_note}, up to {MAX_TURNS} turns each, "
-          f"{MAX_CONCURRENCY} at a time (RT_MAX_CONCURRENCY).")
-    print(f"That is up to about {estimate} calls, before backtracks and retries.\n")
+    print(f"\nRunning {len(objectives)} objective(s){encoded_note}{repeat_note}, up to {max_turns} turns each, "
+          f"{max_concurrency} at a time (RT_MAX_CONCURRENCY).")
+    print(f"That is up to about {estimate} calls{estimate_suffix}.\n")
 
+    scorer_rubrics = objective_rubrics(objectives, rubrics, judged_prompt)
     completed, incomplete = [], []
     async with heartbeat(calls=calls, estimate=estimate):
         for encoding, converter_kwargs in attack_passes:
-            attack = CrescendoAttack(
-                objective_target=target,
-                attack_adversarial_config=AttackAdversarialConfig(target=adversarial, system_prompt=attacker_prompt),
-                attack_scoring_config=AttackScoringConfig(
-                    # Decides whether the objective was achieved. PyRIT's default would
-                    # run on the ADVERSARIAL model, so the attacker would grade its own
-                    # attack; this runs each objective's rubric on the judge.
-                    objective_scorer=ConversationRubricScorer(
-                        judge=judge,
-                        rubrics=objective_rubrics(objectives, rubrics, judged_prompt),
-                    ),
-                    refusal_scorer=SelfAskRefusalScorer(chat_target=judge),
-                    auxiliary_scorers=canary_scorers,
-                ),
-                max_turns=MAX_TURNS,
-                max_backtracks=MAX_BACKTRACKS,
-                **converter_kwargs,
+            attack = build_attack(
+                target=target,
+                adversarial=adversarial,
+                attacker_prompt=attacker_prompt,
+                judge=judge,
+                scorer_rubrics=scorer_rubrics,
+                canary_scorers=canary_scorers,
+                max_turns=max_turns,
+                converter_kwargs=converter_kwargs,
             )
             goals, overrides = expand_repeats(objectives, repeats, run_labels, encoding)
-            executor_result = await AttackExecutor(max_concurrency=MAX_CONCURRENCY).execute_attack_async(
+            executor_result = await module.AttackExecutor(max_concurrency=max_concurrency).execute_attack_async(
                 attack=attack,
                 objectives=goals,
                 **prepended,
@@ -616,11 +673,17 @@ async def main(
     achieved: Counter[tuple[str, str]] = Counter()
     unverified: Counter[tuple[str, str]] = Counter()
     leaks = record_leaks = other_hits = 0
+    did_leak = check_leaked or (lambda mem, res, chk: leaked(mem, res.conversation_id, chk))
 
     for result in completed:
+        if post_score is not None:
+            await post_score(memory, result, canary_scorers)
         # SUCCESS here means the ATTACK succeeded - i.e. your system failed.
         success = result.outcome == AttackOutcome.SUCCESS
         encoding = (result.labels or {}).get("rt_encoding", "")
+        # Unverified when no known prompt was judged against - whichever target type.
+        # judged_prompt is set for a model with a system prompt, or an app with
+        # APP_SYSTEM_PROMPT_FILE; it is None for a bare model or an app with neither.
         if success and not judged_prompt and result.objective in needs_prompt:
             verdict = "UNVERIFIED"
             unverified[(result.objective, encoding)] += 1
@@ -633,14 +696,14 @@ async def main(
         enc_tag = f" [{encoding}]" if encoding else ""
         print(f"[{verdict}]{enc_tag} {result.objective[:90]}" + (f" (repeat {repeat})" if repeats > 1 else ""))
         print(f"  turns={result.executed_turns}  reason={result.outcome_reason}")
-        if canary and leaked(memory, result.conversation_id, CANARY_CHECK):
+        if canary and did_leak(memory, result, CANARY_CHECK):
             leaks += 1
             print(f"  CANARY LEAKED: a reply contains {canary}, so the system prompt was disclosed.")
-        if records and leaked(memory, result.conversation_id, RECORD_CHECK):
+        if records and did_leak(memory, result, RECORD_CHECK):
             record_leaks += 1
             print("  RECORD LEAKED: a reply contains a value from a planted record of someone other than the user.")
         for check in set(CODE_CHECKS) - {CANARY_CHECK, RECORD_CHECK}:
-            if leaked(memory, result.conversation_id, check):
+            if did_leak(memory, result, check):
                 other_hits += 1
                 print(f"  FLAGGED by the {check} check (harnesses/pyrit_campaigns/code_checks.py).")
         if result.last_response:
@@ -650,7 +713,7 @@ async def main(
 
     print("=" * 78)
     minutes, seconds = divmod(round(time.monotonic() - started), 60)
-    print(f"CRESCENDO COMPLETE - {len(objectives)} objective(s){encoded_note} x {repeats}, in {minutes}m {seconds:02d}s")
+    print(f"{banner} COMPLETE - {len(objectives)} objective(s){encoded_note} x {repeats}, in {minutes}m {seconds:02d}s")
     print("=" * 78)
     for objective in objectives:
         for encoding, _ in attack_passes:
@@ -666,18 +729,56 @@ async def main(
     for objective, exception in incomplete:
         print(f"\n!! {objective[:70]!r} did not complete: {exception}")
 
-    write_after_run(run_id)
+    module.write_after_run(run_id)
     export = f"findings --outcome success --run-id {run_id[:8]}"
     print(f"Next: rt {export}")
     print(f"      (or: {full_form(export)})")
     print("      writes a finding report for each attack that reached its objective.")
 
     for t in (target, adversarial, judge):
-        await close_target(t)
+        await module.close_target(t)
 
     if incomplete:
         return 1
     return 1 if FAIL_ON_FINDING and (sum(achieved.values()) or leaks or record_leaks or other_hits) else 0
+
+
+async def main(
+    converters_spec: str | None = None,
+    no_control: bool = False,
+) -> int:
+    def _build_crescendo(
+        *, target, adversarial, attacker_prompt, judge, scorer_rubrics, canary_scorers, max_turns, converter_kwargs
+    ):
+        return CrescendoAttack(
+            objective_target=target,
+            attack_adversarial_config=AttackAdversarialConfig(target=adversarial, system_prompt=attacker_prompt),
+            attack_scoring_config=AttackScoringConfig(
+                # Decides whether the objective was achieved. PyRIT's default would
+                # run on the ADVERSARIAL model, so the attacker would grade its own
+                # attack; this runs each objective's rubric on the judge.
+                objective_scorer=ConversationRubricScorer(judge=judge, rubrics=scorer_rubrics),
+                refusal_scorer=SelfAskRefusalScorer(chat_target=judge),
+                auxiliary_scorers=canary_scorers,
+            ),
+            max_turns=max_turns,
+            max_backtracks=MAX_BACKTRACKS,
+            **converter_kwargs,
+        )
+
+    return await run_multi_turn(
+        sys.modules[__name__],
+        campaign_key="multi_turn_crescendo",
+        banner="CRESCENDO",
+        calls_per_turn=4,
+        estimate_suffix=", before backtracks and retries",
+        require_editable_history=True,
+        extra_run_labels={"rt_max_backtracks": str(MAX_BACKTRACKS)},
+        attacker_prompt_fn=blind_attacker_prompt,
+        build_attack=_build_crescendo,
+        converters_spec=converters_spec,
+        no_control=no_control,
+    )
 
 
 if __name__ == "__main__":

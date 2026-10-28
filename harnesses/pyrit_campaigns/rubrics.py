@@ -57,24 +57,13 @@ from pathlib import Path
 import yaml
 
 from redteam.cli import full_form
+from harnesses.pyrit_campaigns.probes import KIT_SLOTS, SLOT, load_probes
 from harnesses.pyrit_campaigns.profiles import PAIR_RUBRICS, REPO_ROOT, dataset_path
 
 RUBRIC_FILE = Path(__file__).resolve().parent / "judge.yaml"
 
-# [[SLOTS]] the kit fills itself, so a probe's judge_context cannot set them.
-# PASS_CRITERIA comes from the probe's own pass_criteria.
-KIT_SLOTS = frozenset({
-    "PROBE",
-    "SYSTEM_PROMPT",
-    "PATTERN_CHECK",
-    "RESPONSE_A",
-    "RESPONSE_B",
-    "ATTRIBUTE",
-    "PASS_CRITERIA",
-})
 # Filled only in a pair rubric, by compare_pairs() in single_turn_scan.py.
 PAIR_SLOTS = frozenset({"RESPONSE_A", "RESPONSE_B", "ATTRIBUTE"})
-SLOT = re.compile(r"\[\[([A-Z][A-Z0-9_]*)\]\]")
 
 # What PyRIT fills when it runs .format() over a rubric: the probe, the reply, and the
 # reply's message object.
@@ -534,8 +523,6 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     if args.command == "check":
-        from harnesses.pyrit_campaigns.single_turn_scan import load_probes
-
         rubrics = load_rubrics()
         problems = check(rubrics, load_probes(), objectives=True)
         for problem in problems:

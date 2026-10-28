@@ -463,3 +463,137 @@ def test_the_judge_gets_only_the_judged_reply_trace_with_tags_escaped(memory):
     assert user_text == fill_text("response", RESPONSE="Desktop was 800 and mobile was 400.", TRACE_SECTION=trace)
 
 
+def test_both_campaign_modules_expose_all_required_runner_attributes():
+    import ast
+    import inspect
+
+    for campaign in (multi_turn_crescendo, multi_turn_red_team):
+        for attr in multi_turn_crescendo.REQUIRED_MODULE_ATTRS:
+            assert hasattr(campaign, attr), f"{campaign.__name__} missing {attr}"
+
+    tree = ast.parse(inspect.getsource(multi_turn_crescendo.run_multi_turn))
+    bare_names = {
+        node.id
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Name) and node.id in multi_turn_crescendo.REQUIRED_MODULE_ATTRS
+    }
+    module_attrs = {
+        node.attr
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name) and node.value.id == "module"
+    }
+    assert not bare_names
+    assert module_attrs == set(multi_turn_crescendo.REQUIRED_MODULE_ATTRS)
+
+
+def test_run_multi_turn_fails_fast_when_module_is_missing_required_attributes():
+    from types import SimpleNamespace
+
+    called_init = False
+
+    async def fake_init(**kwargs):
+        nonlocal called_init
+        called_init = True
+
+    incomplete = SimpleNamespace(
+        __name__="incomplete_campaign",
+        **{
+            attr: getattr(multi_turn_crescendo, attr)
+            for attr in multi_turn_crescendo.REQUIRED_MODULE_ATTRS
+            if attr not in ("write_after_run", "close_target")
+        },
+    )
+    incomplete.initialize_pyrit_async = fake_init
+
+    with pytest.raises(AttributeError, match="close_target, write_after_run"):
+        asyncio.run(
+            multi_turn_crescendo.run_multi_turn(
+                incomplete,
+                campaign_key="test",
+                banner="TEST",
+                calls_per_turn=3,
+                attacker_prompt_fn=lambda: None,
+                build_attack=lambda **kw: None,
+            )
+        )
+    assert called_init is False
+
+
+@pytest.mark.parametrize("campaign", [multi_turn_crescendo, multi_turn_red_team])
+def test_run_multi_turn_dispatches_provider_and_prompt_helpers_through_the_campaign_module(
+    campaign, monkeypatch, clean_env, memory
+):
+    from types import SimpleNamespace
+    from harnesses.pyrit_campaigns.system_prompt import AppPrompt, SystemPrompt
+    from helpers import FakeModel
+
+    calls = []
+    handed = {}
+
+    class Executor:
+        def __init__(self, **kwargs):
+            pass
+
+        async def execute_attack_async(self, **kwargs):
+            handed.update(kwargs)
+            return SimpleNamespace(completed_results=[], incomplete_objectives=[])
+
+    app = target_factory.AppChatTarget(
+        endpoint="https://example.test/chat", request_template='{"message": "{PROMPT}", "history": "{HISTORY}"}'
+    )
+    clean_env.setenv("RT_PROFILE", "public_conversational")
+    for name in ("initialize_pyrit_async", "check_models", "close_target"):
+        monkeypatch.setattr(campaign, name, nothing)
+    monkeypatch.setattr(campaign, "build_target", lambda role="target", **kw: app if role == "target" else FakeModel())
+    monkeypatch.setattr(campaign, "build_scoring_target", lambda: FakeModel())
+    monkeypatch.setattr(campaign, "model_name", lambda t: "fake")
+    monkeypatch.setattr(campaign, "write_after_run", lambda run_id: None)
+    monkeypatch.setattr(campaign, "AttackExecutor", Executor)
+    monkeypatch.setattr(
+        campaign,
+        "load_objectives",
+        lambda profile: (calls.append("load_objectives") or [Objective("injection_compliance", "custom goal")]),
+    )
+    monkeypatch.setattr(
+        campaign,
+        "resolve_provider",
+        lambda role="target": (
+            calls.append(f"resolve_provider:{role}") or ("app" if role == "target" else f"fake-{role}")
+        ),
+    )
+    monkeypatch.setattr(
+        campaign,
+        "load_app_prompt",
+        lambda: (calls.append("load_app_prompt") or AppPrompt(text="app rules", canary="", source="custom.txt")),
+    )
+    monkeypatch.setattr(
+        campaign,
+        "load_system_prompt",
+        lambda *args: (
+            calls.append("load_system_prompt")
+            or SystemPrompt(text="model rules", canary="RTC-0000-0000", source="custom_sys.txt", chosen_by="test")
+        ),
+    )
+
+    asyncio.run(campaign.main())
+    assert "load_objectives" in calls
+    assert "resolve_provider:target" in calls
+    assert "load_app_prompt" in calls
+    assert handed["objectives"] == ["custom goal"]
+    labels = handed["field_overrides"][0]["memory_labels"]
+    assert labels["rt_app_prompt_file"] == "custom.txt"
+    assert (labels["rt_provider"], labels["rt_adversarial_provider"], labels["rt_judge_provider"]) == (
+        "app",
+        "fake-adversarial",
+        "fake-judge",
+    )
+
+    # Non-app path: load_system_prompt is also resolved on the campaign module.
+    calls.clear()
+    monkeypatch.setattr(campaign, "resolve_provider", lambda role="target": f"fake-{role}")
+    monkeypatch.setattr(campaign, "build_target", lambda role="target", **kw: FakeModel())
+    asyncio.run(campaign.main())
+    assert "load_system_prompt" in calls
+    labels = handed["field_overrides"][0]["memory_labels"]
+    assert labels["rt_system_prompt"] == "custom_sys.txt"
+    assert labels["rt_provider"] == "fake-target"
