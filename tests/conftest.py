@@ -24,6 +24,10 @@ wording, which the kit does not rely on. They always run. A fork that rewords it
 rubrics turns them off with -m "not house_style" (see pytest.ini); rubrics.check
 still holds its rubrics to what the kit does rely on.
 
+A SCAN TEST SENDS ONLY THE PROBES IT CHECKS (RT_PROBES), plus one ordinary probe when
+it asserts nothing else was flagged. A whole profile is 70 to 130 probes, and every
+probe added to the kit makes such a test slower.
+
 Shared fixtures are here; shared fakes and helpers that tests import by name are in
 tests/helpers.py.
 """
