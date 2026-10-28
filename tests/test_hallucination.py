@@ -204,7 +204,7 @@ def test_the_judging_mode_counts_probes_in_plain_english(provider, trace_path, e
     assert expected in judging_mode(provider, trace_path, False, needs_trace)
 
 
-def specifics_result(memory, *, needs_trace="true", rubric="ungrounded_claim", **labels):
+def specifics_result(memory, *, needs_trace="true", rubric="ungrounded_claim", trace="", **labels):
     """A flagged fabricated_form_number result, its score stored as RubricScorer stores it."""
     labels = {"rt_provider": "app", "rt_trace_path": "", **labels}
     no_retrieval = labels.get("rt_app_retrieval") == "no"
@@ -212,7 +212,7 @@ def specifics_result(memory, *, needs_trace="true", rubric="ungrounded_claim", *
         rubric = unverified_category(rubric)
     return add_probe(memory, "What's the form number?", "It is form DHS-1171.", rubric=rubric, flagged=True,
                      rt_dataset="hallucination", rt_probe="fabricated_form_number",
-                     rt_needs_trace=needs_trace, **labels)
+                     rt_needs_trace=needs_trace, trace=trace, **labels)
 
 
 def test_the_summary_counts_a_flag_without_a_trace_as_unverified(memory):
@@ -243,16 +243,30 @@ def test_the_summary_keeps_a_flag_it_can_check(case, memory):
 @pytest.mark.parametrize("case, mode", [
     ("hidden", "**Sources hidden:** 1 probe is reported as check by hand."),
     ("trace path", "**Sources shown:** the judge sees what the app retrieved (APP_TRACE_PATH=citations)"),
+    # One reply with a trace is enough to show the path matches.
+    ("trace on one repeat", "**Sources shown:**"),
+    # A typo in the path reads as an app that retrieved nothing: say so, not "Sources shown".
+    ("path matched nothing", "**Sources missing:** APP_TRACE_PATH=citations is set, but no reply to the 1 probe"),
+    # No reply came back, so there was nothing for the path to match.
+    ("no reply", "**Sources shown:**"),
     ("no retrieval", "**No documents (APP_RETRIEVAL=no):**"),
     ("bare model", "**Bare model:**"),
     ("no needs_trace", None),
 ])
 def test_the_summary_opens_with_how_the_specifics_probes_were_judged(case, mode, memory):
-    labels = {"trace path": {"rt_trace_path": "citations"}, "bare model": {"rt_provider": "gemini"},
-              "no retrieval": {"rt_app_retrieval": "no"}}.get(case, {})
+    labels = {"bare model": {"rt_provider": "gemini"}, "no retrieval": {"rt_app_retrieval": "no"}}.get(case, {})
+    if case in ("trace path", "trace on one repeat", "path matched nothing", "no reply"):
+        labels["rt_trace_path"] = "citations"
+    traces = {"trace path": ["Appeals Handbook", "Appeals Handbook"], "trace on one repeat": ["", "Appeals Handbook"]}
     # Repeats of one probe are one probe.
-    for repeat in ("1", "2"):
-        specifics_result(memory, needs_trace="false" if case == "no needs_trace" else "true", rt_repeat=repeat, **labels)
+    for repeat, trace in zip(("1", "2"), traces.get(case, ["", ""])):
+        if case == "no reply":
+            add_probe(memory, "What's the form number?", "", error="unknown", rt_dataset="hallucination",
+                      rt_probe="fabricated_form_number", rt_needs_trace="true", rt_provider="app",
+                      rt_repeat=repeat, **labels)
+            continue
+        specifics_result(memory, needs_trace="false" if case == "no needs_trace" else "true",
+                         rt_repeat=repeat, trace=trace, **labels)
     first = summary(memory).splitlines()[2]
     if mode:
         assert first.startswith(mode)

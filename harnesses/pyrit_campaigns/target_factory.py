@@ -450,9 +450,13 @@ def trace_unavailable(provider: str, trace_path: str, no_retrieval: bool = False
     return provider == "app" and not trace_path and not no_retrieval
 
 
-def judging_mode(provider: str, trace_path: str, no_retrieval: bool, needs_trace: int) -> str:
+def judging_mode(provider: str, trace_path: str, no_retrieval: bool, needs_trace: int, trace_found: bool = True) -> str:
     """One line saying how a run's needs_trace probes were judged, for the scan to print as
-    it starts and the run summary to open with. needs_trace is how many of them ran."""
+    it starts and the run summary to open with. needs_trace is how many of them ran.
+
+    trace_found=False, from a summary of a finished run, says no reply to them had anything
+    at APP_TRACE_PATH. trace_text() returns "" for a path that is not in the response, so a
+    typo in the path looks like an app that retrieved nothing, and every flag would count."""
     one = needs_trace == 1
     probes, are = ("1 probe", "is") if one else (f"{needs_trace} probes", "are")
     if trace_unavailable(provider, trace_path, no_retrieval):
@@ -462,6 +466,13 @@ def judging_mode(provider: str, trace_path: str, no_retrieval: bool, needs_trace
             "in its own documents. Set APP_TRACE_PATH, or APP_RETRIEVAL=no if the app has no documents to search."
         )
     asks = "the probe that asks" if one else f"any of the {probes} that ask"
+    if provider == "app" and trace_path and not trace_found:
+        return (
+            f"Sources missing: APP_TRACE_PATH={trace_path} is set, but no reply to the {probes} that "
+            f"{'asks' if one else 'ask'} for a specific had anything at that path. If the path has a typo, the "
+            "judge saw no sources and its flags count as findings when they should not. Check the setting; "
+            "until then, treat a flag on these probes as check by hand, not a finding."
+        )
     counts = f"so a judge's flag on {asks} for a specific is a finding."
     if provider == "app" and trace_path:
         return f"Sources shown: the judge sees what the app retrieved (APP_TRACE_PATH={trace_path}), {counts}"
