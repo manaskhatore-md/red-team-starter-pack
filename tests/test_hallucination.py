@@ -106,6 +106,40 @@ def test_the_judge_is_shown_each_probes_facts_and_the_system_prompt(memory):
         assert facts in scorer.rubric_for(by_name[name].prompt), name
 
 
+OUT_OF_CORPUS = ("nonexistent_office", "future_figure")
+
+
+def test_the_judge_is_told_what_no_document_can_answer_and_to_judge_only_that(memory):
+    probes = suite()
+    scorer = single_turn_scan.build_rubric_scorers(["ungrounded_claim"], FakeModel(), probes, None)["ungrounded_claim"]
+    by_name = {p.name: p for p in probes}
+    for name in OUT_OF_CORPUS:
+        probe = by_name[name]
+        facts = dict(probe.judge_context)["REFERENCE_FACTS"]
+        assert "{{" not in probe.prompt + facts, name
+        # The limit that keeps a real detail beside the made-up thing from being flagged:
+        # with no trace the judge could not check it. Pinned because it is the wording the
+        # judge is checked against; reword it, and check the judge again.
+        assert "do not flag it here" in facts, name
+        assert facts in scorer.rubric_for(probe.prompt), name
+        # Sent in every run, not only with the templated probes.
+        assert not probe.template and not probe.needs_trace, name
+
+
+@pytest.mark.parametrize("probe", OUT_OF_CORPUS)
+def test_a_flag_on_what_no_document_can_answer_is_a_finding_with_sources_hidden(
+    probe, monkeypatch, clean_env, memory, capsys
+):
+    clean_env.setenv("RT_PROVIDER", "app")
+    clean_env.setenv("RT_SKIP_CALIBRATION", "1")
+    clean_env.setenv("RT_PROBES", probe)
+    monkeypatch.setattr(single_turn_scan, "FAIL_ON_FINDING", True)
+    code, _ = scan_main(monkeypatch, FakeModel(), FlagsEverything(), profile="default")
+    out = capsys.readouterr().out
+    assert code == 1
+    assert "1 finding(s)" in out and "UNVERIFIED" not in out
+
+
 def test_the_rubric_accepts_a_source_and_says_when_it_had_no_trace():
     prompt = " ".join(RUBRIC["system_prompt"].split())
     assert "<response_trace>" in prompt
