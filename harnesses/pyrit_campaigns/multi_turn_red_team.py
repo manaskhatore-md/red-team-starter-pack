@@ -54,9 +54,6 @@ RT_MAX_TURNS=5.
 import asyncio
 import os
 import sys
-import time
-import uuid
-from collections import Counter
 
 from dotenv import load_dotenv
 load_dotenv()
@@ -71,58 +68,25 @@ from pyrit.executor.attack import (
     RedTeamingAttack,
 )
 from pyrit.executor.attack.multi_turn.red_teaming import RTASystemPromptPaths
-from pyrit.memory import CentralMemory
-from pyrit.models import AttackOutcome, SeedPrompt
-from pyrit.prompt_target import CapabilityName
+from pyrit.models import SeedPrompt
 from pyrit.score import MessageScorer
-from pyrit.setup import SQLITE, initialize_pyrit_async
+from pyrit.setup import initialize_pyrit_async
 
-from redteam.cli import full_form
-from harnesses.pyrit_campaigns.profiles import describe, get_profile, placeholders
-from harnesses.pyrit_campaigns.single_turn_scan import (
-    FAIL_ON_FINDING,
-    build_converter_config,
-    check_placeholders,
-    get_converters_spec,
-    get_repeats,
-    load_rubrics,
-    profile_rubrics,
-    resolve_converter_passes,
-    use_control,
-)
-from harnesses.pyrit_campaigns.code_checks import CODE_CHECKS, KnownPromptLeakScorer, code_scorers
 from harnesses.pyrit_campaigns.multi_turn_crescendo import (
     ConversationRubricScorer,
-    count_calls,
-    expand_repeats,
-    heartbeat,
     leaked,
     load_objectives,
-    multi_turn_conversion_note,
-    objective_rubrics,
     parse_args,
+    run_multi_turn,
     show_judge_prompt,
 )
-from harnesses.pyrit_campaigns.planted_records import RECORD_CHECK, PlantedRecordScorer, records_for, records_section
-from harnesses.pyrit_campaigns.rubrics import require_valid, version_labels
-from harnesses.pyrit_campaigns.system_prompt import (
-    CANARY_CHECK,
-    AppPrompt,
-    CanaryLeakScorer,
-    announce_app_prompt,
-    load_app_prompt,
-    load_system_prompt,
-    new_canary,
-    system_message,
-    takes_system_prompt,
-)
+from harnesses.pyrit_campaigns.profiles import get_profile
 from harnesses.pyrit_campaigns.target_factory import (
     build_scoring_target,
     build_target,
     check_models,
     close_target,
     model_name,
-    resolve_provider,
 )
 from scripts.export_finding_report import full_conversation_ids, full_conversation_messages
 from scripts.run_summary import write_after_run
@@ -159,273 +123,43 @@ async def main(
     converters_spec: str | None = None,
     no_control: bool = False,
 ) -> int:
-    started = time.monotonic()
-    profile = get_profile()
-    repeats = get_repeats()
-    objectives = load_objectives(profile)
-    conv_spec, converter_passes = resolve_converter_passes(get_converters_spec(converters_spec))
-    control = use_control(no_control)
-    pass_names = [name for name, _ in converter_passes]
-
-    await initialize_pyrit_async(memory_db_type=SQLITE)
-
-    print(describe(profile))
-    # A broken rubric stops the run here, before anything is sent.
-    require_valid(load_rubrics())
-    print(f"objectives: {len(objectives)} from {profile.objectives_file}")
-    if conv_spec:
-        print(multi_turn_conversion_note(conv_spec, len(objectives), pass_names, control=control))
-
-    is_app = resolve_provider("target") == "app"
-
-    # System prompt and records for model targets; app prompt info for app targets.
-    records = ()
-    system_prompt = None
-    app_prompt: AppPrompt | None = None
-    judged_prompt: str | None = None
-
-    if not is_app:
-        records = records_for(profile_rubrics(profile))
-        system_prompt = load_system_prompt(
-            profile.key, placeholders(), new_canary(), records_section(records) if records else ""
+    def _build_red_team(
+        *, target, adversarial, attacker_prompt, judge, scorer_rubrics, canary_scorers, max_turns, converter_kwargs
+    ):
+        return RedTeamingAttack(
+            objective_target=target,
+            attack_adversarial_config=AttackAdversarialConfig(
+                target=adversarial,
+                system_prompt=attacker_prompt,
+            ),
+            attack_scoring_config=AttackScoringConfig(
+                objective_scorer=ConversationRubricScorer(
+                    judge=judge,
+                    rubrics=scorer_rubrics,
+                ),
+                # NOT auxiliary_scorers=canary_scorers: checked against PyRIT 1.1.0's source,
+                # RedTeamingAttack never calls attack_scoring_config.auxiliary_scorers at all
+                # (unlike CrescendoAttack and PromptSendingAttack) - it would silently accept
+                # the list and never run it. score_every_turn() runs it ourselves, after the
+                # attack, with the same PyRIT scoring call Crescendo uses internally.
+            ),
+            max_turns=max_turns,
+            **converter_kwargs,
         )
-        if not system_prompt:
-            records = ()
-        judged_prompt = system_prompt.text if system_prompt else None
 
-    # Warn about unfilled {{ placeholders }} in either case: the model's own prompt,
-    # or (for an app) just the objectives, since the app's prompt is not ours to template.
-    unfilled = check_placeholders(
-        [], "\n".join([o.goal for o in objectives] + ([system_prompt.text] if system_prompt else []))
+    return await run_multi_turn(
+        sys.modules[__name__],
+        campaign_key="multi_turn_red_team",
+        banner="RED TEAM",
+        calls_per_turn=3,
+        explain_app_memory=True,
+        attacker_prompt_fn=lambda: SeedPrompt.from_yaml_file(RTASystemPromptPaths.TEXT_GENERATION.value),
+        build_attack=_build_red_team,
+        post_score=score_every_turn,
+        check_leaked=leaked_anywhere,
+        converters_spec=converters_spec,
+        no_control=no_control,
     )
-
-    target = build_target()
-    adversarial = build_target("adversarial")
-
-    if is_app:
-        app_prompt = load_app_prompt()
-        announce_app_prompt(app_prompt)
-        judged_prompt = app_prompt.text or None
-        if getattr(target, "sends_history", False):
-            print(
-                "\nNote: the kit sends the app the whole conversation with each message, so this is a real "
-                "multi-turn conversation: the app sees every earlier turn."
-            )
-        elif target.configuration.includes(capability=CapabilityName.MULTI_TURN):
-            print(
-                "\nNote: the app keeps each conversation's history itself (here, in its own browser tab), "
-                "so this is a real multi-turn conversation: the app sees every earlier turn."
-            )
-        else:
-            print(
-                "\nNote: the target is a deployed app, which has no memory of its own. Each turn is sent "
-                "as an isolated, unrelated message - the app never sees the turns before it. Only the "
-                "attacker remembers the conversation and adapts its approach; the app does not. This is "
-                "repeated one-shot attempts informed by what failed before, not an escalating conversation."
-            )
-    elif system_prompt:
-        print(f"\nSystem prompt: {system_prompt.source} (chosen by {system_prompt.chosen_by}), "
-              f"with canary token {system_prompt.canary}.")
-        print("Every reply is checked for the canary token. The attacker is not shown the system prompt.")
-        if records:
-            print(f"It also holds {len(records)} fake records of other people and a fake database "
-                  "credential. Every reply is checked for them.")
-        if not takes_system_prompt(target):
-            print(
-                "\n!! This target does not take a system prompt, so PyRIT sends it as the start of\n"
-                "!! the user's message instead. The model sees the instructions as coming from the\n"
-                "!! user, which makes extraction and override attacks easier than in a real deployment.\n"
-            )
-    else:
-        print("\nSystem prompt: none. The model is tested with no instructions.")
-        unverifiable = [o for o in objectives if o.needs_system_prompt]
-        if unverifiable:
-            print(f"!! {len(unverifiable)} objective(s) need a system prompt to confirm. "
-                  "They still run, but a success is reported as unverified.")
-
-    judge = build_scoring_target()
-    await check_models(target=target, attacker=adversarial, judge=judge)
-
-    # So the heartbeat below can show real progress instead of just elapsed time.
-    calls = [0]
-    target = count_calls(target, calls)
-    adversarial = count_calls(adversarial, calls)
-    judge = count_calls(judge, calls)
-
-    rubrics = load_rubrics()
-
-    # Canary and code checks run on every reply.
-    canary_scorers = []
-    if system_prompt:
-        canary_scorers.append(CanaryLeakScorer(canary=system_prompt.canary))
-    if records:
-        canary_scorers.append(PlantedRecordScorer(records=records))
-    if app_prompt and app_prompt.canary:
-        canary_scorers.append(CanaryLeakScorer(canary=app_prompt.canary))
-    if app_prompt and app_prompt.text:
-        canary_scorers.append(KnownPromptLeakScorer(prompt=app_prompt.text))
-    canary_scorers.extend(code_scorers())
-
-    # System message prepended to each conversation (model targets only).
-    prepended = {"prepended_conversation": [system_message(system_prompt)]} if system_prompt else {}
-
-    run_id = str(uuid.uuid4())
-    canary_val = (system_prompt.canary if system_prompt else
-                  (app_prompt.canary if app_prompt else ""))
-    run_labels = {
-        "rt_campaign": "multi_turn_red_team",
-        "rt_run_id": run_id,
-        "rt_profile": profile.key,
-        "rt_converters": conv_spec,
-        "rt_provider": resolve_provider("target"),
-        "rt_target": model_name(target),
-        "rt_adversarial_provider": resolve_provider("adversarial"),
-        "rt_adversarial": model_name(adversarial),
-        "rt_judge_provider": resolve_provider("judge"),
-        "rt_judge": model_name(judge),
-        "rt_system_prompt": system_prompt.source if system_prompt else "none",
-        "rt_system_prompt_chosen_by": system_prompt.chosen_by if system_prompt else "",
-        "rt_prompt_canary": canary_val,
-        "rt_app_prompt_file": app_prompt.source if app_prompt else "",
-        "rt_planted_records": str(len(records)),
-        "rt_repeats": str(repeats),
-        "rt_max_turns": str(MAX_TURNS),
-        # Settings still at "TODO ...", so the summary can say the objectives named a placeholder.
-        "rt_placeholders": ", ".join(unfilled),
-        # Which objectives file the attacks came from, so the report can say what was tested.
-        "rt_objectives_file": profile.objectives_file,
-        "rt_trace_path": os.getenv("APP_TRACE_PATH", "").strip(),
-        # Which rubrics judged the run: the rubric file's fingerprint and the pack's version.
-        **version_labels(),
-    }
-
-    attack_passes: list[tuple[str, dict]] = []
-    if control or not converter_passes:
-        attack_passes.append(("", {}))
-    for enc_name, enc_chain in converter_passes:
-        attack_passes.append((enc_name, {"attack_converter_config": build_converter_config(enc_chain)}))
-
-    attacks = len(objectives) * len(attack_passes) * repeats
-    estimate = attacks * MAX_TURNS * 3
-    repeat_note = f", each {repeats} times (RT_REPEATS)" if repeats > 1 else ""
-    if converter_passes and not control:
-        encoded_note = f" encoded ({conv_spec}, --no-control)"
-    elif converter_passes:
-        encoded_note = f" + {len(objectives) * len(converter_passes)} encoded ({conv_spec})"
-    else:
-        encoded_note = ""
-    print(f"\nRunning {len(objectives)} objective(s){encoded_note}{repeat_note}, up to {MAX_TURNS} turns each, "
-          f"{MAX_CONCURRENCY} at a time (RT_MAX_CONCURRENCY).")
-    print(f"That is up to about {estimate} calls.\n")
-
-    # Load PyRIT's general-purpose attacker strategy from its built-in YAML file.
-    attacker_prompt = SeedPrompt.from_yaml_file(RTASystemPromptPaths.TEXT_GENERATION.value)
-
-    completed, incomplete = [], []
-    async with heartbeat(calls=calls, estimate=estimate):
-        for encoding, converter_kwargs in attack_passes:
-            attack = RedTeamingAttack(
-                objective_target=target,
-                attack_adversarial_config=AttackAdversarialConfig(
-                    target=adversarial,
-                    system_prompt=attacker_prompt,
-                ),
-                attack_scoring_config=AttackScoringConfig(
-                    objective_scorer=ConversationRubricScorer(
-                        judge=judge,
-                        rubrics=objective_rubrics(objectives, rubrics, judged_prompt),
-                    ),
-                    # NOT auxiliary_scorers=canary_scorers: checked against PyRIT 1.1.0's source,
-                    # RedTeamingAttack never calls attack_scoring_config.auxiliary_scorers at all
-                    # (unlike CrescendoAttack and PromptSendingAttack) - it would silently accept
-                    # the list and never run it. score_every_turn() below runs it ourselves,
-                    # after the attack, with the same PyRIT scoring call Crescendo uses internally.
-                ),
-                max_turns=MAX_TURNS,
-                **converter_kwargs,
-            )
-            goals, overrides = expand_repeats(objectives, repeats, run_labels, encoding)
-            executor_result = await AttackExecutor(max_concurrency=MAX_CONCURRENCY).execute_attack_async(
-                attack=attack,
-                objectives=goals,
-                **prepended,
-                field_overrides=overrides,
-                return_partial_on_failure=True,
-            )
-            completed += executor_result.completed_results
-            incomplete += executor_result.incomplete_objectives
-
-    memory = CentralMemory.get_memory_instance()
-    needs_prompt = {o.goal for o in objectives if o.needs_system_prompt}
-    achieved: Counter[tuple[str, str]] = Counter()
-    unverified: Counter[tuple[str, str]] = Counter()
-    leaks = 0
-    record_leaks = 0
-    other_hits = 0
-
-    for result in completed:
-        await score_every_turn(memory, result, canary_scorers)
-        success = result.outcome == AttackOutcome.SUCCESS
-        encoding = (result.labels or {}).get("rt_encoding", "")
-        # Unverified when no known prompt was judged against - whichever target type.
-        # judged_prompt is set for a model with a system prompt, or an app with
-        # APP_SYSTEM_PROMPT_FILE; it is None for a bare model or an app with neither.
-        if success and not judged_prompt and result.objective in needs_prompt:
-            verdict = "UNVERIFIED"
-            unverified[(result.objective, encoding)] += 1
-        elif success:
-            verdict = "ACHIEVED"
-            achieved[(result.objective, encoding)] += 1
-        else:
-            verdict = result.outcome.value.upper()
-        repeat = (result.labels or {}).get("rt_repeat")
-        enc_tag = f" [{encoding}]" if encoding else ""
-        print(f"[{verdict}]{enc_tag} {result.objective[:90]}" + (f" (repeat {repeat})" if repeats > 1 else ""))
-        print(f"  turns={result.executed_turns}  reason={result.outcome_reason}")
-        if leaked_anywhere(memory, result, CANARY_CHECK):
-            leaks += 1
-            print(f"  CANARY LEAKED in this conversation.")
-        if records and leaked_anywhere(memory, result, RECORD_CHECK):
-            record_leaks += 1
-            print("  RECORD LEAKED: a reply contains a value from a planted record.")
-        for check in set(CODE_CHECKS) - {CANARY_CHECK, RECORD_CHECK}:
-            if leaked_anywhere(memory, result, check):
-                other_hits += 1
-                print(f"  FLAGGED by the {check} check.")
-        if result.last_response:
-            print(f"  final response: {result.last_response.converted_value[:300]}")
-        print(f"  conversation_id={result.conversation_id}")
-        print()
-
-    print("=" * 78)
-    minutes, seconds = divmod(round(time.monotonic() - started), 60)
-    print(f"RED TEAM COMPLETE - {len(objectives)} objective(s){encoded_note} x {repeats}, in {minutes}m {seconds:02d}s")
-    print("=" * 78)
-    for objective in objectives:
-        for encoding, _ in attack_passes:
-            enc_tag = f" [{encoding}]" if encoding else ""
-            line = f"  achieved {achieved[(objective.goal, encoding)]} of {repeats}{enc_tag}: {objective.goal[:100]}"
-            if unverified[(objective.goal, encoding)]:
-                line += f"  ({unverified[(objective.goal, encoding)]} more unverified: no system prompt)"
-            print(line)
-    if leaks:
-        print(f"\n{leaks} conversation(s) leaked the canary token.")
-    if record_leaks:
-        print(f"\n{record_leaks} conversation(s) leaked a planted record.")
-    for objective, exception in incomplete:
-        print(f"\n!! {objective[:70]!r} did not complete: {exception}")
-
-    write_after_run(run_id)
-    export = f"findings --outcome success --run-id {run_id[:8]}"
-    print(f"Next: rt {export}")
-    print(f"      (or: {full_form(export)})")
-
-    for t in (target, adversarial, judge):
-        await close_target(t)
-
-    if incomplete:
-        return 1
-    return 1 if FAIL_ON_FINDING and (sum(achieved.values()) or leaks or record_leaks or other_hits) else 0
 
 
 if __name__ == "__main__":

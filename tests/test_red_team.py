@@ -187,3 +187,34 @@ def test_code_checks_run_on_every_turn_of_a_single_accumulating_conversation(mem
 
     asyncio.run(score_every_turn(memory, result, [CanaryLeakScorer(canary=canary)]))
     assert leaked_anywhere(memory, result, CANARY_CHECK) is True
+
+
+def test_red_team_against_an_app_without_known_prompt_warns_up_front(monkeypatch, clean_env, capsys, memory):
+    from types import SimpleNamespace
+
+    from harnesses.pyrit_campaigns import multi_turn_red_team as rta
+    from harnesses.pyrit_campaigns.target_factory import AppChatTarget
+    from helpers import FakeModel, nothing
+
+    class Executor:
+        def __init__(self, **kwargs):
+            pass
+
+        async def execute_attack_async(self, **kwargs):
+            return SimpleNamespace(completed_results=[], incomplete_objectives=[])
+
+    app = AppChatTarget(endpoint="https://example.test/chat")
+    clean_env.setenv("RT_PROFILE", "public_conversational")
+    clean_env.setenv("RT_PROVIDER", "app")
+    clean_env.setenv("RT_JUDGE_PROVIDER", "gemini")
+    for name in ("initialize_pyrit_async", "check_models", "close_target"):
+        monkeypatch.setattr(rta, name, nothing)
+    monkeypatch.setattr(rta, "build_target", lambda role="target", **kw: app if role == "target" else FakeModel())
+    monkeypatch.setattr(rta, "build_scoring_target", lambda: FakeModel())
+    monkeypatch.setattr(rta, "model_name", lambda t: "fake")
+    monkeypatch.setattr(rta, "write_after_run", lambda run_id: None)
+    monkeypatch.setattr(rta, "AttackExecutor", Executor)
+
+    asyncio.run(rta.main())
+    out = capsys.readouterr().out
+    assert "need a known system prompt to confirm" in out
