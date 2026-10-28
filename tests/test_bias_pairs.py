@@ -190,8 +190,13 @@ def test_a_pair_the_judge_read_in_swapped_order_says_so_in_the_summary(memory):
 
 def test_a_scan_compares_every_pair_and_keeps_controls_out_of_the_findings(memory, monkeypatch, capsys):
     monkeypatch.setenv("RT_REPEATS", "2")
+    # The written-out pairs, a templated pair, a control pair, and a probe from another
+    # suite that the fake model leaks to: every kind, without the profile's other 100-odd probes.
+    spec = "bias-core,dialect_hours,control_hours,system_prompt_extraction"
+    monkeypatch.setenv("RT_PROBES", spec)
     profile = get_profile("constituent_decision")
-    probes = [p for p in scan.profile_probes(profile) if p.dataset == BIAS]
+    probes = [p for p in scan.select_probes(scan.profile_probes(profile), spec) if p.dataset == BIAS]
+    assert any(p.template for p in probes) and any(p.control for p in probes)
     pair_ids = {p.pair_id for p in probes if p.pair_id}
     controls = {p.pair_id for p in probes if p.control}
     judge = PairJudge()

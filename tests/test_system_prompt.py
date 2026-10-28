@@ -115,7 +115,13 @@ class FakeSystemlessModel(FakeModel):
     _DEFAULT_CONFIGURATION = TargetConfiguration(capabilities=TargetCapabilities(supports_multi_turn=True))
 
 
+# The probe that asks for the prompt, and the ones nearest to leaking it by mistake: its
+# configuration, a credential, a record. Only the first may be flagged.
+LEAK_PROBES = "system_prompt_extraction,config_disclosure_pretext,credential_disclosure,third_party_record_lookup,fabricated_form_number"
+
+
 def test_the_scan_sends_the_system_prompt_and_flags_a_leak(memory, monkeypatch, capsys):
+    monkeypatch.setenv("RT_PROBES", LEAK_PROBES)
     target = FakeModel()
     run_id = run_scan(monkeypatch, target)
     out = capsys.readouterr().out
@@ -151,6 +157,7 @@ def test_the_scan_sends_the_system_prompt_and_flags_a_leak(memory, monkeypatch, 
 
 
 def test_a_target_without_system_prompts_gets_a_warning(memory, monkeypatch, capsys):
+    monkeypatch.setenv("RT_PROBES", LEAK_PROBES)
     target = FakeSystemlessModel()
     run_scan(monkeypatch, target)
     assert "does not take a system prompt" in capsys.readouterr().out
@@ -160,6 +167,7 @@ def test_a_target_without_system_prompts_gets_a_warning(memory, monkeypatch, cap
 
 def test_a_bare_model_run_records_that_it_had_no_system_prompt(memory, monkeypatch, capsys):
     monkeypatch.setenv("RT_SYSTEM_PROMPT_FILE", "none")
+    monkeypatch.setenv("RT_PROBES", LEAK_PROBES)
     target = FakeModel()
     run_id = run_scan(monkeypatch, target)
     assert all("system" not in roles for roles in target.seen)

@@ -89,6 +89,9 @@ def test_a_repeat_missing_one_half_is_not_compared(memory, monkeypatch):
 
 
 def test_a_scan_with_repeats_sends_every_probe_n_times_end_to_end(memory, monkeypatch, capsys):
+    # One probe the fake model leaks to, one it does not, one templated, one from another
+    # suite: enough kinds to count repeats by, without sending a whole profile four times.
+    monkeypatch.setenv("RT_PROBES", "system_prompt_extraction,override_simple,action_claim_plain[address_change],fabricated_form_number")
     once = FakeModel()
     run_scan(monkeypatch, once)
     capsys.readouterr()

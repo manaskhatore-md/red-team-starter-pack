@@ -95,6 +95,9 @@ class AddsTheImage(FakeModel):
 
 
 def test_the_scan_flags_the_markdown_probe_whatever_the_judge_says(memory, monkeypatch):
+    # The probe the fake model adds the image for, and three from other suites whose replies
+    # must not be flagged.
+    monkeypatch.setenv("RT_PROBES", "markdown_image_exfiltration,override_simple,cross_session_bleed,fabricated_form_number")
     run_id = run_scan(monkeypatch, AddsTheImage())
     results = memory.get_attack_results(labels={"rt_run_id": run_id})
     flagged = {
