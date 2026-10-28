@@ -81,12 +81,14 @@ from harnesses.pyrit_campaigns.multi_turn_crescendo import (
     show_judge_prompt,
 )
 from harnesses.pyrit_campaigns.profiles import get_profile
+from harnesses.pyrit_campaigns.system_prompt import load_app_prompt, load_system_prompt
 from harnesses.pyrit_campaigns.target_factory import (
     build_scoring_target,
     build_target,
     check_models,
     close_target,
     model_name,
+    resolve_provider,
 )
 from scripts.export_finding_report import full_conversation_ids, full_conversation_messages
 from scripts.run_summary import write_after_run

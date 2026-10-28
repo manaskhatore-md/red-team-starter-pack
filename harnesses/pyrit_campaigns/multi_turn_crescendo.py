@@ -427,6 +427,24 @@ def leaked(memory, conversation_id: str, check: str) -> bool:
     )
 
 
+REQUIRED_MODULE_ATTRS = (
+    "MAX_TURNS",
+    "MAX_CONCURRENCY",
+    "AttackExecutor",
+    "initialize_pyrit_async",
+    "build_target",
+    "build_scoring_target",
+    "check_models",
+    "close_target",
+    "model_name",
+    "resolve_provider",
+    "load_objectives",
+    "load_app_prompt",
+    "load_system_prompt",
+    "write_after_run",
+)
+
+
 async def run_multi_turn(
     module,
     *,
@@ -444,10 +462,23 @@ async def run_multi_turn(
     converters_spec: str | None = None,
     no_control: bool = False,
 ) -> int:
+    """Run a multi-turn attack campaign (Crescendo or adaptive red-team).
+
+    Looks up the names in ``REQUIRED_MODULE_ATTRS`` on ``module`` rather than here,
+    so tests can patch them on either campaign module. Everything else comes from
+    this file.
+    """
+    missing = [name for name in REQUIRED_MODULE_ATTRS if not hasattr(module, name)]
+    if missing:
+        raise AttributeError(
+            f"{getattr(module, '__name__', module)!r} is missing attributes required by run_multi_turn: "
+            f"{', '.join(missing)}"
+        )
+
     started = time.monotonic()
     profile = get_profile()
     repeats = get_repeats()
-    objectives = load_objectives(profile)
+    objectives = module.load_objectives(profile)
     conv_spec, converter_passes = resolve_converter_passes(get_converters_spec(converters_spec))
     control = use_control(no_control)
     pass_names = [name for name, _ in converter_passes]
@@ -468,9 +499,9 @@ async def run_multi_turn(
         print(multi_turn_conversion_note(conv_spec, len(objectives), pass_names, control=control))
 
     # A deployed app sends its own system prompt, so it gets no stand-in or records.
-    is_app = resolve_provider("target") == "app"
+    is_app = module.resolve_provider("target") == "app"
     records = () if is_app else records_for(profile_rubrics(profile))
-    system_prompt = None if is_app else load_system_prompt(
+    system_prompt = None if is_app else module.load_system_prompt(
         profile.key, placeholders(), new_canary(), records_section(records) if records else ""
     )
     if not system_prompt:
@@ -498,7 +529,7 @@ async def run_multi_turn(
     judged_prompt = system_prompt.text if system_prompt else None
     app_prompt = None
     if is_app:
-        app_prompt = load_app_prompt()
+        app_prompt = module.load_app_prompt()
         announce_app_prompt(app_prompt)
         judged_prompt = app_prompt.text or None
         if explain_app_memory:
@@ -570,11 +601,11 @@ async def run_multi_turn(
         "rt_run_id": run_id,
         "rt_profile": profile.key,
         "rt_converters": conv_spec,
-        "rt_provider": resolve_provider("target"),
+        "rt_provider": module.resolve_provider("target"),
         "rt_target": module.model_name(target),
-        "rt_adversarial_provider": resolve_provider("adversarial"),
+        "rt_adversarial_provider": module.resolve_provider("adversarial"),
         "rt_adversarial": module.model_name(adversarial),
-        "rt_judge_provider": resolve_provider("judge"),
+        "rt_judge_provider": module.resolve_provider("judge"),
         "rt_judge": module.model_name(judge),
         "rt_system_prompt": system_prompt.source if system_prompt else "none",
         "rt_system_prompt_chosen_by": system_prompt.chosen_by if system_prompt else "",
