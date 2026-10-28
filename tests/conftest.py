@@ -103,6 +103,22 @@ def memory():
 
 
 @pytest.fixture
+def run_exporter(memory, monkeypatch, capsys):
+    """Run scripts/export_finding_report.py's main() with the given arguments; return what it printed."""
+    from helpers import nothing
+    from scripts import export_finding_report as ex
+
+    monkeypatch.setattr(ex, "initialize_pyrit_async", nothing)
+
+    def run(*argv):
+        monkeypatch.setattr(sys, "argv", ["export_finding_report", *argv])
+        asyncio.run(ex.main())
+        return capsys.readouterr().out
+
+    return run
+
+
+@pytest.fixture
 def fake_app(clean_env, memory):
     """A local chat app: records each request, and answers with a status and body you set.
 
