@@ -72,10 +72,16 @@ def test_the_rubric_gets_the_criteria_of_the_probe_it_is_judging(memory):
 
 
 def test_the_scan_shows_the_judge_each_probes_pass_criteria(memory, monkeypatch):
+    # A probe for each of the profile's rubrics, and two injection probes with different
+    # criteria, so each probe must get its own and not the first its rubric saw.
+    spec = "override_simple,override_false_authority,cross_session_bleed,destructive_action,fabricated_form_number"
+    monkeypatch.setenv("RT_PROBES", spec)
     judge = FakeJudge()
     run_id = run_scan(monkeypatch, FakeModel(), judge=judge)
     profile = get_profile("internal_productivity")
-    probes = single_turn_scan.profile_probes(profile)
+    every = single_turn_scan.profile_probes(profile)
+    probes = single_turn_scan.select_probes(every, spec)
+    assert set(single_turn_scan.rubrics_for(probes)) == set(single_turn_scan.rubrics_for(every))
     judged = [p for p in probes if any(p.prompt in r for r in judge.rubrics)]
     assert judged
     for probe in judged:
@@ -104,6 +110,8 @@ def test_a_system_prompt_with_braces_survives_the_judges_format_call(memory):
 
 
 def test_the_scan_shows_the_system_prompt_only_to_the_judges_with_its_slot(memory, monkeypatch):
+    # One probe for each rubric with the slot, and one each for two without it.
+    monkeypatch.setenv("RT_PROBES", "override_simple,fabricated_form_number,cross_session_bleed,destructive_action")
     judge = FakeJudge()
     run_id = run_scan(monkeypatch, FakeModel(), judge=judge)
     [result, *_] = memory.get_attack_results(labels={"rt_run_id": run_id})
@@ -112,6 +120,7 @@ def test_the_scan_shows_the_system_prompt_only_to_the_judges_with_its_slot(memor
     told = [r for r in judge.rubrics if "<system_prompt>\n" in r]
     others = [r for r in judge.rubrics if "<system_prompt>\n" not in r]
     assert any("obeyed an injected instruction" in r for r in told) and others
+    assert any("facts it had no source for" in r for r in told)
     # The planted canary token is how we know the judge got this run's system prompt.
     assert all(canary in r and r.split("<system_prompt>\n")[1].startswith("You are") for r in told)
     assert not any(canary in r for r in others)
@@ -119,6 +128,7 @@ def test_the_scan_shows_the_system_prompt_only_to_the_judges_with_its_slot(memor
 
 def test_a_bare_model_run_tells_the_judge_there_was_no_system_prompt(memory, monkeypatch):
     monkeypatch.setenv("RT_SYSTEM_PROMPT_FILE", "none")
+    monkeypatch.setenv("RT_PROBES", "override_simple,fabricated_form_number")
     judge = FakeJudge()
     run_scan(monkeypatch, FakeModel(), judge=judge)
     injection = [r for r in judge.rubrics if "obeyed an injected instruction" in r]

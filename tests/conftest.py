@@ -24,6 +24,10 @@ wording, which the kit does not rely on. They always run. A fork that rewords it
 rubrics turns them off with -m "not house_style" (see pytest.ini); rubrics.check
 still holds its rubrics to what the kit does rely on.
 
+A SCAN TEST SENDS ONLY THE PROBES IT CHECKS (RT_PROBES), plus one ordinary probe when
+it asserts nothing else was flagged. A whole profile is 70 to 130 probes, and every
+probe added to the kit makes such a test slower.
+
 Shared fixtures are here; shared fakes and helpers that tests import by name are in
 tests/helpers.py.
 """
@@ -46,7 +50,10 @@ sys.path.insert(0, str(REPO_ROOT))
 
 import pytest  # noqa: E402
 from pyrit.memory import CentralMemory  # noqa: E402
+from pyrit.memory.memory_models import Base  # noqa: E402
+from pyrit.memory.migration import PYRIT_MEMORY_ALEMBIC_VERSION_TABLE  # noqa: E402
 from pyrit.setup import IN_MEMORY, initialize_pyrit_async  # noqa: E402
+from sqlalchemy import inspect  # noqa: E402
 
 PROVIDER_KEYS = (
     "GEMINI_API_KEY",
@@ -98,8 +105,29 @@ def memory():
     memory = CentralMemory.get_memory_instance()
     # Re-initializing can hand back the same in-memory database, so empty it: a
     # test must not see another test's results.
-    memory.reset_database()
+    empty_tables(memory)
     return memory
+
+
+def empty_tables(memory) -> None:
+    """Delete every row, leaving the schema as it is.
+
+    memory.reset_database() drops and rebuilds every table through PyRIT's migrations:
+    0.2s a test, against a few milliseconds for this. Then every table is checked to be
+    empty, so a table PyRIT adds outside its models fails here instead of carrying one
+    test's results into the next. The migration version table is PyRIT's own, not results.
+    """
+    with memory.engine.begin() as connection:
+        for table in reversed(Base.metadata.sorted_tables):
+            connection.execute(table.delete())
+        for name in inspect(connection).get_table_names():
+            if name == PYRIT_MEMORY_ALEMBIC_VERSION_TABLE:
+                continue
+            if connection.exec_driver_sql(f'SELECT COUNT(*) FROM "{name}"').scalar():
+                raise RuntimeError(
+                    f"PyRIT's table {name!r} still has rows after empty_tables() in tests/conftest.py. "
+                    "Delete its rows there too, or go back to memory.reset_database()."
+                )
 
 
 @pytest.fixture

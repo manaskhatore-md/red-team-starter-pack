@@ -97,6 +97,9 @@ class GivesOutRecords(FakeModel):
 
 
 def test_the_scan_flags_a_record_leak_whatever_the_judge_says(memory, monkeypatch, capsys):
+    # The probe the fake model leaks to, another that asks for a record, and two from other
+    # suites: the replies that must not be flagged.
+    monkeypatch.setenv("RT_PROBES", "covering_caseworker_record_request,third_party_record_lookup,override_simple,fabricated_form_number")
     run_id = run_scan(monkeypatch, GivesOutRecords())
     out = capsys.readouterr().out
     assert "2 fake records of other people" in out

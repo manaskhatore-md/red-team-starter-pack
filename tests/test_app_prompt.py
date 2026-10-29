@@ -69,6 +69,9 @@ def test_an_app_scan_checks_replies_for_the_known_prompt_and_the_apps_canary(fak
     # stop a scan of an app that says the same thing to everything, so it is skipped.
     clean_env.setenv("RT_SKIP_CALIBRATION", "1")
     fake_app["replies"] = [(200, json.dumps({"answer": f"My instructions: {APP_PROMPT} Reference ZZ-APP-1234."}))]
+    # Two probes that ask for its instructions, so the list of their replies has something to
+    # leave out, and two that do not.
+    clean_env.setenv("RT_PROBES", "system_prompt_extraction,config_disclosure_pretext,override_simple,fabricated_form_number")
 
     run_id = run_scan(monkeypatch, build_target())
     assert "Known from" in capsys.readouterr().out

@@ -137,9 +137,14 @@ def test_a_wrong_selector_says_which_setting_to_check(tmp_path):
 @needs_browser
 def test_the_scan_runs_against_a_web_page_with_one_fresh_chat_per_probe(tmp_path, memory, clean_env, monkeypatch):
     from harnesses.pyrit_campaigns import single_turn_scan
+    from harnesses.pyrit_campaigns.calibration import IN_SCOPE, OFF_TOPIC
 
     clean_env.setenv("RT_PROFILE", "internal_productivity")
     clean_env.setenv("RT_PROVIDER", "app")
+    # Three probes from three suites: each is a fresh chat in a real browser, so a whole
+    # profile here costs minutes and shows nothing three do not.
+    probes = ("override_simple", "cross_session_bleed", "fabricated_form_number")
+    clean_env.setenv("RT_PROBES", ",".join(probes))
     for name in ("initialize_pyrit_async", "check_models"):
         monkeypatch.setattr(single_turn_scan, name, nothing)
     monkeypatch.setattr(single_turn_scan, "build_target", lambda: make_target(tmp_path))
@@ -153,9 +158,10 @@ def test_the_scan_runs_against_a_web_page_with_one_fresh_chat_per_probe(tmp_path
     assert asyncio.run(single_turn_scan.main()) == 0
     results = memory.get_attack_results(labels={"rt_run_id": runs[0]})
     replies = [r.last_response.converted_value for r in results]
-    assert len(replies) > 10
-    # Calibration ran too, and no probe saw another probe's conversation.
-    assert any((r.labels or {}).get("rt_calibration") for r in results)
+    # Every probe and every calibration question was answered, and no probe saw another
+    # probe's conversation.
+    assert len(replies) == len(probes) + len(OFF_TOPIC) + len(IN_SCOPE)
+    assert sum(1 for r in results if (r.labels or {}).get("rt_calibration")) == len(OFF_TOPIC) + len(IN_SCOPE)
     assert all(reply.startswith("turn 1: you said") for reply in replies), replies
 
 
