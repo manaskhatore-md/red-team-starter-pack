@@ -39,8 +39,20 @@ const TEST_CARDS = new Set([
   "6011111111111117",
 ]);
 
-// Matches US phone numbers (same pattern as harnesses/pyrit_campaigns/code_checks.py).
-const PHONE_RE = /(?<!\d)(?:\+?1[-. ]?)?\(?(\d{3})\)?[-. ](\d{3})[-. ](\d{4})(?!\d)/g;
+// Matches US phone numbers, including inter-digit spaced forms (matches harnesses/pyrit_campaigns/code_checks.py).
+const PHONE_RE =
+  /(?<!\d)(?:(?:\+?1[-. ]?)?\(?(\d{3})\)?[-. ](\d{3})[-. ](\d{4})|(?<!\d )(?:\+?1 ?[-.]? +)?(?:\( ?)?(\d \d \d)(?: ?\))?(?: ?[-.] ?| +)(\d \d \d)(?: ?[-.] ?| +)(\d \d \d \d)(?! \d))(?!\d)/g;
+
+// Matches inter-digit spaced SSNs (e.g. "4 1 2 - 5 8 - 9 0 3 4" or "4 1 2 5 8 9 0 3 4").
+const SPACED_SSN_RE =
+  /(?<![\d.-])(?<!\d )(\d \d \d)(?: ?- ?| +)(\d \d)(?: ?- ?| +)(\d \d \d \d)(?! \d)(?![\d-])(?!\.\d)/g;
+
+function ssnIsIssuable(area, group, serial) {
+  if (area === "000" || area === "666" || area.startsWith("9") || group === "00" || serial === "0000") {
+    return false;
+  }
+  return !(area === "987" && group === "65" && serial >= "4320" && serial <= "4329");
+}
 
 // Kit-planted markers, URL origins (scheme + host only, so query strings and
 // paths are still scrubbed for exfiltrated PII), and RFC 2606 / SSA / fictional
@@ -55,10 +67,15 @@ const EXEMPT_PATTERNS = [
   /\bHTTP(?:\/\d(?:\.\d)?)? [1-5]\d\d\b/gi,
   /\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi,
   /\bRTC-[0-9A-F]{4}-[0-9A-F]{4}\b/gi,
+  /\bR T C - (?:[0-9A-F] ){3}[0-9A-F] - (?:[0-9A-F] ){3}[0-9A-F]\b/gi,
   /\bTC-\d{7}\b/g,
+  /\bT C - (?:\d ){6}\d\b/g,
   /\b666[- ]?\d{2}[- ]?\d{4}\b/g,
+  /\b6 6 6(?: ?- ?| +)\d \d(?: ?- ?| +)\d \d \d \d\b/g,
   /\b987[- ]?65[- ]?432\d\b/g,
-  /\b(?:\+?1[-. ]?)?\(?\d{3}\)?[-. ]555[-. ]01\d{2}\b/g,
+  /\b9 8 7(?: ?- ?| +)6 5(?: ?- ?| +)4 3 2 \d\b/g,
+  /\b(?:\+?1[-. ]?)?\(?\d{3}\)?[-. ]?555[-. ]?01\d{2}\b/g,
+  /(?:\+?1 ?[-.]? ?)?\(? ?\d \d \d ?\)?(?: ?[-.] ?| +)5 5 5(?: ?[-.] ?| +)0 1 \d \d\b/g,
   /\b[\w.+-]+@(?:[\w-]+\.)*(?:example\.(?:com|org|net)|example|invalid|test|localhost)\b/gi,
   /\[(?:user(?: original)?|assistant(?: trace)?)\]/g,
   /\[[A-Z_]+_(?:\d+|REDACTED)\]/g,
@@ -126,9 +143,26 @@ function detectAllHeuristics(text) {
   // Drop Rampart's full-URL heuristic span so URL query strings and paths are
   // still inspected for PII (URL origins are protected by EXEMPT_PATTERNS).
   const spans = detectHeuristics(text).filter((s) => s.label !== "URL");
+  SPACED_SSN_RE.lastIndex = 0;
+  for (let m = SPACED_SSN_RE.exec(text); m !== null; m = SPACED_SSN_RE.exec(text)) {
+    const area = m[1].replace(/\s+/g, "");
+    const group = m[2].replace(/\s+/g, "");
+    const serial = m[3].replace(/\s+/g, "");
+    if (!ssnIsIssuable(area, group, serial)) continue;
+    spans.push({
+      start: m.index,
+      end: m.index + m[0].length,
+      label: "SSN",
+      score: 1,
+      source: "heuristic",
+      text: m[0],
+    });
+  }
   PHONE_RE.lastIndex = 0;
   for (let m = PHONE_RE.exec(text); m !== null; m = PHONE_RE.exec(text)) {
-    if (m[2] === "555" && m[3].startsWith("01")) continue;
+    const exchange = (m[2] ?? m[5]).replace(/\s+/g, "");
+    const subscriber = (m[3] ?? m[6]).replace(/\s+/g, "");
+    if (exchange === "555" && subscriber.startsWith("01")) continue;
     spans.push({
       start: m.index,
       end: m.index + m[0].length,
@@ -481,7 +515,12 @@ class RecordingTable extends SessionEntityTable {
   }
 
   placeholderFor(label, value) {
-    const token = super.placeholderFor(label, value);
+    let key = value;
+    if (label === "SSN") {
+      const d = value.replace(/\D/g, "");
+      if (d.length === 9) key = `${d.slice(0, 3)}-${d.slice(3, 5)}-${d.slice(5)}`;
+    }
+    const token = super.placeholderFor(label, key);
     if (label === "GIVEN_NAME" || label === "SURNAME") {
       for (const word of sameLengthLower(value).split(/[^\p{L}\p{M}']+/u)) {
         if (word.length >= MIN_PROPAGATED_NAME && !this.nameWords.has(word)) this.nameWords.set(word, token);

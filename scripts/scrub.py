@@ -69,6 +69,7 @@ from harnesses.pyrit_campaigns.code_checks import pii_matches
 from harnesses.pyrit_campaigns.decoding import (
     BASE64_RUN,
     DIGIT_LOOK_ALIKES,
+    SPACED_RUN,
     UNLEET,
     ZERO_WIDTH,
     _look_alikes,
@@ -332,7 +333,7 @@ def _pattern_spans(text: str, exempt: Iterable[str] = ()) -> list[tuple[int, int
 
     # Same length, so positions stay right.
     checked = UUID.sub(lambda m: "x" * len(m.group(0)), text)
-    found = [(m.start(), m.end(), kind) for kind, m in pii_matches(checked)]
+    found = [(m.start(), m.end(), kind) for kind, m in pii_matches(checked, any_bare_ssn=True)]
     found += [
         (m.start(), m.end(), "street address")
         for m in STREET_ADDRESS.finditer(checked)
@@ -522,6 +523,66 @@ DIGIT_CONTEXT_LOOK_ALIKE = re.compile(
     r"(?<![A-HJ-NP-Za-km-np-z])[lIOo](?=\d(?![A-HJ-NP-Za-km-np-z]))"
     r"|(?<=(?<![A-HJ-NP-Za-km-np-z])\d)[lIOo](?![A-HJ-NP-Za-km-np-z])"
 )
+SPACED_WORD_SPLIT = re.compile(r" {2,3}")
+
+
+def _collapse_spaced_in_view(
+    norm: str,
+    raw_start: list[int],
+    raw_end: list[int],
+) -> tuple[str, list[int], list[int]]:
+    """Collapse character-spaced runs in `norm` while keeping `raw_start`/`raw_end` aligned to `text`."""
+    if " " not in norm:
+        return norm, raw_start, raw_end
+
+    out_chars: list[str] = []
+    out_start: list[int] = []
+    out_end: list[int] = []
+
+    def append_range(s: int, e: int) -> None:
+        out_chars.append(norm[s:e])
+        out_start.extend(raw_start[s:e])
+        out_end.extend(raw_end[s:e])
+
+    last = 0
+    for m in SPACED_RUN.finditer(norm):
+        s, e = m.start(), m.end()
+        span = m.group(0)
+        words = SPACED_WORD_SPLIT.split(span)
+        collapsed = " ".join(w[::2] for w in words)
+        if (
+            sum(1 for c in collapsed if not c.isspace()) < 3
+            or sum(1 for c in collapsed if c.isalnum()) < 2
+            or (len(words) == 1 and collapsed.isdigit() and len(collapsed) in (9, 10))
+        ):
+            continue
+        append_range(last, s)
+        pos = s
+        for w_idx, w in enumerate(words):
+            if w_idx > 0:
+                sep_m = SPACED_WORD_SPLIT.match(norm, pos)
+                assert sep_m is not None
+                sep_s, sep_e = sep_m.start(), sep_m.end()
+                out_chars.append(" ")
+                out_start.append(raw_start[sep_s])
+                out_end.append(raw_end[sep_e - 1])
+                pos = sep_e
+            w_end = pos + len(w)
+            w_collapsed = w[::2]
+            if w_collapsed.isdigit() and len(w_collapsed) in (9, 10):
+                append_range(pos, w_end)
+            else:
+                for idx in range(pos, w_end, 2):
+                    out_chars.append(norm[idx])
+                    out_start.append(raw_start[idx])
+                    out_end.append(raw_end[idx])
+            pos = w_end
+        last = e
+
+    if last == 0:
+        return norm, raw_start, raw_end
+    append_range(last, len(norm))
+    return "".join(out_chars), out_start, out_end
 
 
 def _try_decode_base64(token: str) -> str | None:
@@ -692,6 +753,7 @@ def _build_normalized_view(text: str, encodings: set[str] | None = None) -> dict
             break
         norm = fixed
 
+    norm, raw_start, raw_end = _collapse_spaced_in_view(norm, raw_start, raw_end)
     decoded_spans = _build_decoded_candidates(text, norm, raw_start, raw_end, encodings or set())
     item: dict[str, object] = {"text": text}
     if norm != text:
@@ -750,7 +812,7 @@ def _allowed_as_written(items: list[dict[str, object]], exempt: list[str]) -> li
     for item in items:
         texts = [item["text"], item.get("norm", "")] + [c["decoded"] for c in item.get("decodedSpans", [])]
         for text in texts:
-            for kind, m in pii_matches(str(text)):
+            for kind, m in pii_matches(str(text), any_bare_ssn=True):
                 if kind != "email" and _digit_key(m.group(0)) in keys:
                     found.add(m.group(0))
     return sorted(found)
@@ -759,6 +821,10 @@ def _allowed_as_written(items: list[dict[str, object]], exempt: list[str]) -> li
 def _kit_exempt(items: list[dict[str, object]]) -> list[str]:
     """The kit's own fake names, streets, and probe addresses as written in `items`."""
     found = set(KIT_NAMES) | set(STREETS)
+    for name in (*KIT_NAMES, *STREETS):
+        spaced = " ".join(name)
+        if any(spaced in str(item.get("text", "")) for item in items):
+            found.add(spaced)
     for item in items:
         texts = [item["text"], item.get("norm", "")] + [c["decoded"] for c in item.get("decodedSpans", [])]
         for text in texts:

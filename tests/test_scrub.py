@@ -1189,6 +1189,7 @@ _B64_NAME = base64.b64encode(b"Maria Gonzalez, 410-729-8834").decode("ascii")
 # Encodings mixed in one line, in either order, and a name right after a token.
 MIXED_LINES = [
     "Please call Maria Gonzalez at 410-729-8834 today.",
+    "Applicant M a r i a   G o n z a l e z has SSN 4 1 2 - 5 8 - 9 0 3 4 and phone ( 4 1 0 )   7 2 9 - 8 8 3 4.",
     f"{_B64_SSN} Maria Gonzalez called.",
     f"{_B64_SSN}\nMaria Gonzalez called.",
     f"Maria Gonzalez called. {_B64_SSN}",
@@ -1197,7 +1198,19 @@ MIXED_LINES = [
     f"Jordan Testcase Maria Gonzalez, then {_B64_NAME}",
     "Your caseworker Robert Smith (SSN 213-44-8821) will follow up.",
 ]
-_PII = ["maria", "gonzalez", "robert", "smith", "410-729-8834", "213-44-8821", "412-58-9034"]
+_PII = [
+    "maria",
+    "gonzalez",
+    "m a r i a",
+    "g o n z a l e z",
+    "robert",
+    "smith",
+    "410-729-8834",
+    "7 2 9 - 8 8 3 4",
+    "213-44-8821",
+    "412-58-9034",
+    "4 1 2 - 5 8 - 9 0 3 4",
+]
 
 
 @requires_rampart
@@ -1402,3 +1415,89 @@ def test_every_report_of_a_scan_is_scrubbed_end_to_end(monkeypatch, clean_env, m
         leaked = [line for line in text.splitlines() if any(n in line for n in _E2E_NAMES)]
         assert not leaked, f"{name}:\n" + "\n".join(leaked[:10])
 
+
+def test_patterns_without_rampart_scrub_bare_nine_digit_numbers_unless_allowed(monkeypatch):
+    monkeypatch.setattr(scrub, "_get_worker", _no_node)
+    texts = ["Reference 412589034 was logged.", "Her SSN is 412589034.", "Fake 666074821 and 3015550188."]
+    assert scrub.scrub_texts(texts, exempt=[]) == [
+        "Reference [SSN_REDACTED] was logged.", "Her SSN is [SSN_REDACTED].", "Fake 666074821 and 3015550188.",
+    ]
+    # An app's own nine-digit ID stays when it is allowed (RT_SCRUB_ALLOW).
+    assert scrub.scrub_texts(["Property 494502531."], exempt=["494502531"]) == ["Property 494502531."]
+
+
+def test_patterns_without_rampart_scrub_spaced_pii_and_keep_spaced_test_values(monkeypatch):
+    monkeypatch.setattr(scrub, "_get_worker", _no_node)
+    outs = scrub.scrub_texts(
+        [
+            "SSN 4 1 2 - 5 8 - 9 0 3 4 and bare 4 1 2 5 8 9 0 3 4, phone ( 4 1 0 )   7 2 9 - 8 8 3 4 and 4 1 0 7 2 9 8 8 3 4.",
+            "Card 4 5 3 2 0 1 5 1 1 2 8 3 0 3 6 6, email m a r i a . g o n z a l e z 8 4 @ g m a i l . c o m, address 4 1 8   E a s t   P r a t t   S t r e e t.",
+            "Fake SSN 6 6 6 - 1 2 - 3 4 5 6, fake phone 4 1 0 - 5 5 5 - 0 1 4 2, fake card 4 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1, address 7 4 2   S a m p l e   C o u r t.",
+        ],
+        exempt=["Jordan Testcase"],
+    )
+    assert outs[0] == "SSN [SSN_REDACTED] and bare [SSN_REDACTED], phone [PHONE_REDACTED] and [PHONE_REDACTED]."
+    assert outs[1] == "Card [CARD_NUMBER_REDACTED], email [EMAIL_REDACTED], address [STREET_ADDRESS_REDACTED]."
+    assert outs[2] == (
+        "Fake SSN 6 6 6 - 1 2 - 3 4 5 6, fake phone 4 1 0 - 5 5 5 - 0 1 4 2, "
+        "fake card 4 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1, address 7 4 2   S a m p l e   C o u r t."
+    )
+
+
+@requires_rampart
+def test_rampart_scrubs_inline_and_full_line_spaced_pii_and_keeps_spaced_test_values():
+    outs = scrub.scrub_texts(
+        [
+            "Applicant M a r i a   G o n z a l e z lives at 4 1 8   E a s t   P r a t t   S t r e e t.",
+            "Her SSN is 4 1 2 - 5 8 - 9 0 3 4 (or 4 1 2 5 8 9 0 3 4) and phone is ( 4 1 0 )   7 2 9 - 8 8 3 4 (or 4 1 0 7 2 9 8 8 3 4).",
+            "Card 4 5 3 2 0 1 5 1 1 2 8 3 0 3 6 6 and email m a r i a . g o n z a l e z 8 4 @ g m a i l . c o m.",
+            "C a s e w o r k e r   R o b e r t   S m i t h   c a l l e d   M a r i a   G o n z a l e z .",
+            (
+                "Synthetic J o r d a n   T e s t c a s e at 7 4 2   S a m p l e   C o u r t has "
+                "SSN 6 6 6 - 1 2 - 3 4 5 6, phone 4 1 0 - 5 5 5 - 0 1 4 2, "
+                "canary R T C - 3 F 9 A - 1 C 7 B, and test card 4 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1."
+            ),
+        ],
+        exempt=["Jordan Testcase"],
+    )
+    assert outs[0] == "Applicant [GIVEN_NAME_1]   [SURNAME_1] lives at [BUILDING_NUMBER_1]   [STREET_NAME_1]."
+    assert outs[1] == "Her SSN is [SSN_1] (or [SSN_1]) and phone is [PHONE_1] (or [PHONE_2])."
+    assert outs[2] == "Card [CREDIT_CARD_1] and email [EMAIL_1]."
+    assert outs[3] == "C a s e w o r k e r   [GIVEN_NAME_2]   [SURNAME_2]   c a l l e d   [GIVEN_NAME_1]   [SURNAME_1] ."
+    assert outs[4] == (
+        "Synthetic J o r d a n   T e s t c a s e at 7 4 2   S a m p l e   C o u r t has "
+        "SSN 6 6 6 - 1 2 - 3 4 5 6, phone 4 1 0 - 5 5 5 - 0 1 4 2, "
+        "canary R T C - 3 F 9 A - 1 C 7 B, and test card 4 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1."
+    )
+
+
+
+
+# The worker (rampart_scrub.mjs) has its own copies of the spaced-SSN and phone patterns in
+# code_checks.py, since JavaScript cannot import them. This keeps the copies in step.
+def _worker_pattern(name: str):
+    import re
+
+    source = scrub.RUNNER.read_text(encoding="utf-8")
+    found = re.search(rf"const {name} =\s*/(.+)/g;", source)
+    assert found, f"{name} not found in {scrub.RUNNER.name}"
+    return re.compile(found.group(1))
+
+
+_SPACED_EXAMPLES = [
+    "SSN 4 1 2 - 5 8 - 9 0 3 4 today", "bare 4 1 2 5 8 9 0 3 4.", "wide 4 1 2  5 8  9 0 3 4", "fake 6 6 6 - 1 2 - 3 4 5 6",
+    "too long 4 1 2 5 8 9 0 3 4 5", "v1.4 1 2 5 8 9 0 3 4", "list 1 2 3 4 5 6 7 8 9",
+    "phone ( 4 1 0 ) 7 2 9 - 8 8 3 4", "phone 4 1 0 7 2 9 8 8 3 4", "phone 410-729-8834 or (410) 729-8834",
+    "fake 4 1 0 - 5 5 5 - 0 1 4 2", "+1 410.729.8834", "4 1 0 7 2 9 8 8 3 4 5 6",
+]
+
+
+def test_the_worker_finds_the_same_spaced_ssns_and_phones_as_the_python_checks():
+    from harnesses.pyrit_campaigns import code_checks as cc
+
+    worker_ssn, worker_phone = _worker_pattern("SPACED_SSN_RE"), _worker_pattern("PHONE_RE")
+    for text in _SPACED_EXAMPLES:
+        # The worker's SSN pattern is only the spaced-digit form (group 4 in code_checks.SSN).
+        python_ssn = [m.span() for m in cc.SSN.finditer(text) if m.group(4)]
+        assert [m.span() for m in worker_ssn.finditer(text)] == python_ssn, text
+        assert [m.span() for m in worker_phone.finditer(text)] == [m.span() for m in cc.PHONE.finditer(text)], text
