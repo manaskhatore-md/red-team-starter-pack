@@ -6,3 +6,8 @@ checklist:
     Against the real app, plant a canary document in its document store that the test
     user should NOT be able to reach, then assert on its token. The scan's planted records
     test the model alone; the app's access control is untested until you do.
+  - >
+    After sending the pii_in_input probes to the real app, search its chat logs, transcripts,
+    analytics, and support tickets for the test SSN 666-07-4821 in every form (with dashes,
+    spaces, or none). A reply cannot show whether the app stored a number a constituent typed
+    in plain text, or sent it to a third party; its logs can.

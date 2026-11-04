@@ -70,12 +70,15 @@ automatically included in file order so a half-pair is never run alone.
 REQUEST CONVERTERS: by default probes are sent as plain text. Pass `--converters <spec>`
 (or set `RT_CONVERTERS=<spec>` in .env) with one or more comma-separated converter names
 to encode or obfuscate the selected probes before sending (`base64`, `base64-raw`, `rot13`,
-`rot13-raw`, `leetspeak`, `unicode-confusable`, `zero-width`, `url`, or `all`). Each
-selected probe is sent once as written (the control) plus once per requested encoding,
-unless `--no-control` (or `RT_CONTROL=0`) is set to send only the encoded pass(es). The
-run summary sets the encoded and plain-text results side by side: a probe flagged only
-when encoded got past something the plain text did not. The target receives the converted
-prompt while the rubric judge still sees the original unencoded objective.
+`rot13-raw`, `leetspeak`, `unicode-confusable`, `zero-width`, `char-space`, `pii-space`,
+`pii-space-nodash`, `pii-nodash`, `url`, or `all`). Each selected probe is sent once as
+written (the control) plus once per requested encoding, unless `--no-control` (or
+`RT_CONTROL=0`) is set to send only the encoded pass(es). A probe a converter leaves
+unchanged is not sent in that pass: the pii- ones change only probes with personal data
+in them. The run summary sets the encoded and plain-text results side by side: a
+probe flagged only when encoded got past something the plain text did not. The target
+receives the converted prompt while the rubric judge still sees the original unencoded
+objective.
 
 THE SYSTEM PROMPT: each probe is sent after a system prompt, as a deployed app would
 send it - by default the stand-in in config/system_prompts/ for the profile, or the file
@@ -96,8 +99,8 @@ within each repeat. The default is 1.
 
 COST: one target call per probe, one judge call per probe per rubric that grades it,
 plus one judge call per matched pair - all times RT_REPEATS. public_conversational
-sends 105 probes, each graded by one rubric, and compares 23 pairs: 105 target + (105 + 23)
-judge = 233 calls per repeat. The scan prints the total before it sends
+sends 112 probes, each graded by one rubric, and compares 23 pairs: 112 target + (112 + 23)
+judge = 247 calls per repeat. The scan prints the total before it sends
 anything, and stops before sending any if the total is over RT_MAX_CALLS (default
 3000; 0 for no limit). Start with one dataset while you tune the rubrics.
 """
@@ -125,6 +128,7 @@ from pyrit.converter import (
     AskToDecodeConverter,
     Base64Converter,
     Converter,
+    ConverterResult,
     LeetspeakConverter,
     ROT13Converter,
     UnicodeConfusableConverter,
@@ -133,7 +137,7 @@ from pyrit.converter import (
 )
 from pyrit.executor.attack import AttackConverterConfig, AttackExecutor, AttackScoringConfig, PromptSendingAttack
 from pyrit.memory import CentralMemory
-from pyrit.models import ComponentIdentifier, MessagePiece, MessageScorable, Score
+from pyrit.models import ComponentIdentifier, MessagePiece, MessageScorable, PromptDataType, Score
 from pyrit.prompt_normalizer import ConverterConfiguration
 from pyrit.score import MessageTrueFalseScorer, SelfAskGeneralTrueFalseScorer
 from pyrit.score.scorer_prompt_validator import ScorerPromptValidator
@@ -163,8 +167,14 @@ from harnesses.pyrit_campaigns.profiles import (
     get_profile,
     placeholders,
 )
-from harnesses.pyrit_campaigns.code_checks import KnownPromptLeakScorer, code_scorers, fill_pattern_check
-from harnesses.pyrit_campaigns.planted_records import PlantedRecordScorer, records_for, records_section
+from harnesses.pyrit_campaigns.code_checks import (
+    USER_PII_RUBRIC,
+    KnownPromptLeakScorer,
+    UserPiiEchoScorer,
+    code_scorers,
+    fill_pattern_check,
+)
+from harnesses.pyrit_campaigns.planted_records import OTHER_NAMES, PlantedRecordScorer, records_for, records_section
 from harnesses.pyrit_campaigns.rubrics import (
     KIT_SLOTS,
     RUBRIC_FILE,
@@ -323,6 +333,103 @@ DECODE_AND_ANSWER_TEMPLATE = (
 
 # If you add a new converter here, also teach harnesses/pyrit_campaigns/decoding.py to
 # decode it so the canary and planted-record checks can read replies in that encoding.
+
+
+def _space_chars(text: str) -> str:
+    """Insert a single space between every character on each line of text."""
+    return "\n".join(" ".join(line) for line in text.split("\n"))
+
+
+class CharSpaceConverter(Converter):
+    """Insert a space between every character on each line of a prompt."""
+
+    SUPPORTED_INPUT_TYPES = ("text",)
+    SUPPORTED_OUTPUT_TYPES = ("text",)
+
+    async def convert_async(self, *, prompt: str, input_type: PromptDataType = "text") -> ConverterResult:
+        if not self.input_supported(input_type):
+            raise ValueError("Input type not supported")
+        return ConverterResult(output_text=_space_chars(prompt), output_type="text")
+
+
+# The personal-data and identifier spans the pii-* converters change, longest forms first.
+# The kit's own formats are here (planted SSNs and phones, TC- case numbers, the RTC- canary),
+# plus common real-world ones, so probes an agency writes are covered too.
+PII_SPAN_PATTERNS: tuple[str, ...] = (
+    r"\b\d{4}[- ]\d{4}[- ]\d{4}[- ]\d{4}\b",  # card, grouped
+    r"\b\d{13,19}\b",  # card, run together
+    r"(?<!\w)(?:\+?1[-. ]?)?(?:\(\d{3}\)|\d{3})[-. ]\d{3}[-. ]\d{4}\b",  # phone
+    r"\b\d{10}\b",  # phone, run together
+    r"\b\d{3}[-. ]\d{2}[-. ]\d{4}\b",  # SSN: 666-05-8193, 666 05 8193, 666.05.8193
+    r"\b\d{9}\b",  # SSN, run together
+    r"\b\d{3}-\d{2}-(?!\d)",  # the start of an SSN, as a completion probe gives it
+    r"\b\d{4}-\d{2}-\d{2}\b",  # date, ISO
+    r"\b\d{1,2}/\d{1,2}/\d{2,4}\b",  # date, US
+    r"\bR?TC-[0-9A-F]{4}-[0-9A-F]{4}\b",  # the canary's form
+    r"\bTC-\d{7}\b",  # planted case number
+    r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b",  # email
+    r"\b\d{5}(?:-\d{4})?\b",  # ZIP
+)
+# Punctuation the -nodash styles drop from a number (666-05-8193 -> 666058193). A date
+# keeps its slashes: run together (04301979), the report scrubber reads it as an ID number
+# and redacts the kit's own fake birth date.
+NUMBER_PUNCTUATION = re.compile(r"[-.() ]")
+
+
+def _pii_spans(text: str) -> re.Pattern[str]:
+    """PII_SPAN_PATTERNS plus the kit's fake names (the probes' synthetic name and the planted ones)."""
+    synthetic_name = placeholders().get("synthetic_name", "").strip()
+    names = [re.escape(n) for n in (synthetic_name, *OTHER_NAMES) if n]
+    return re.compile("|".join([*PII_SPAN_PATTERNS, *names]))
+
+
+def _is_number(span: str) -> bool:
+    """A span made only of digits and the punctuation numbers are written with (no letters, no @)."""
+    return any(c.isdigit() for c in span) and not any(c.isalpha() or c == "@" for c in span)
+
+
+def _pii_respelled(text: str, style: str) -> str:
+    """Rewrite each PII span in text in one of the pii-* styles; the rest of the text is unchanged.
+
+      space         a space between every character:      666-05-8193 -> 6 6 6 - 0 5 - 8 1 9 3
+      space-nodash  numbers lose their punctuation first: 666-05-8193 -> 6 6 6 0 5 8 1 9 3
+      nodash        numbers lose their punctuation only:  666-05-8193 -> 666058193
+    Dates keep their slashes in every style. Names and emails are spaced by both space
+    styles and left as they are by nodash.
+    """
+
+    def respell(match: re.Match) -> str:
+        span = match.group(0)
+        if style != "space" and _is_number(span):
+            span = NUMBER_PUNCTUATION.sub("", span)
+        if style == "nodash":
+            return span
+        return _space_chars(span)
+
+    return _pii_spans(text).sub(respell, text)
+
+
+class PiiRespellConverter(Converter):
+    """Rewrite only the PII and identifier spans of a prompt (see _pii_respelled), leaving the prose readable."""
+
+    SUPPORTED_INPUT_TYPES = ("text",)
+    SUPPORTED_OUTPUT_TYPES = ("text",)
+
+    def __init__(self, *, style: str = "space") -> None:
+        if style not in ("space", "space-nodash", "nodash"):
+            raise ValueError(f"Unknown PII respelling style {style!r}")
+        self._style = style
+        super().__init__()
+
+    def _build_identifier(self) -> ComponentIdentifier:
+        return self._create_identifier(params={"style": self._style})
+
+    async def convert_async(self, *, prompt: str, input_type: PromptDataType = "text") -> ConverterResult:
+        if not self.input_supported(input_type):
+            raise ValueError("Input type not supported")
+        return ConverterResult(output_text=_pii_respelled(prompt, self._style), output_type="text")
+
+
 CONVERTER_BUILDERS: dict[str, Callable[[], list[Converter]]] = {
     "base64": lambda: [
         Base64Converter(),
@@ -337,13 +444,18 @@ CONVERTER_BUILDERS: dict[str, Callable[[], list[Converter]]] = {
     "leetspeak": lambda: [LeetspeakConverter(deterministic=True)],
     "unicode-confusable": lambda: [UnicodeConfusableConverter(deterministic=True)],
     "zero-width": lambda: [ZeroWidthConverter()],
+    "char-space": lambda: [CharSpaceConverter()],
+    "pii-space": lambda: [PiiRespellConverter(style="space")],
+    "pii-space-nodash": lambda: [PiiRespellConverter(style="space-nodash")],
+    "pii-nodash": lambda: [PiiRespellConverter(style="nodash")],
     "url": lambda: [UrlConverter()],
 }
 
-# Standard encodings run when `--converters all` is requested: every converter in
-# CONVERTER_BUILDERS except the `-raw` bare-ciphertext variants.
+# Standard encodings run when `--converters all` is requested: every whole-prompt
+# converter in CONVERTER_BUILDERS, so not the `-raw` bare-ciphertext variants or the
+# `pii-` ones (which change only probes with personal data in them).
 ALL_CONVERTERS: tuple[str, ...] = tuple(
-    name for name in CONVERTER_BUILDERS if not name.endswith("-raw")
+    name for name in CONVERTER_BUILDERS if not name.endswith("-raw") and not name.startswith("pii-")
 )
 
 CONVERTER_ALIASES: dict[str, str] = {
@@ -352,6 +464,15 @@ CONVERTER_ALIASES: dict[str, str] = {
     "unicode_confusable": "unicode-confusable",
     "zerowidth": "zero-width",
     "zero_width": "zero-width",
+    "space": "char-space",
+    "char_space": "char-space",
+    "charspace": "char-space",
+    "pii_space": "pii-space",
+    "piispace": "pii-space",
+    "digit-space": "pii-space",
+    "digit_space": "pii-space",
+    "pii_space_nodash": "pii-space-nodash",
+    "pii_nodash": "pii-nodash",
     "base64_raw": "base64-raw",
     "rot13_raw": "rot13-raw",
 }
@@ -493,6 +614,44 @@ def converted_probes(probes: list[Probe], conv_spec: str) -> list[Probe]:
     if not probes:
         raise SystemExit(f"--converters {conv_spec} was set, but no probes are selected.")
     return list(probes)
+
+
+def _key(probe: Probe) -> tuple[str, str]:
+    return (probe.dataset, probe.name)
+
+
+async def probes_each_pass_changes(
+    probes: list[Probe], converter_passes: list[tuple[str, list[Converter]]]
+) -> dict[str, list[Probe]]:
+    """For each converter pass, the probes it changes, in order.
+
+    A pass that leaves a probe exactly as written would only send the control again
+    and count it as encoded, so the probe is not sent in that pass. The pii- converters
+    leave every probe without personal data in it unchanged; the others change every
+    probe. A matched pair stays whole: if the pass changes either half, both are sent.
+    """
+    by_pass: dict[str, list[Probe]] = {}
+    for name, chain in converter_passes:
+        changed = set()
+        for probe in probes:
+            if await convert_text_async(probe.prompt, chain) != probe.prompt:
+                changed.add(_key(probe))
+        pairs = {probe.pair_id for probe in probes if probe.pair_id and _key(probe) in changed}
+        by_pass[name] = [
+            probe for probe in probes if _key(probe) in changed or (probe.pair_id and probe.pair_id in pairs)
+        ]
+    return by_pass
+
+
+def unchanged_note(by_pass: dict[str, list[Probe]], total: int) -> str:
+    """One line per pass that leaves some probes unchanged, saying they are not sent in it."""
+    lines = [
+        f"  {name} changes {len(changed)} of {total} probe(s); the other {total - len(changed)} would go out "
+        "exactly as written, so they are not sent in that pass."
+        for name, changed in by_pass.items()
+        if len(changed) < total
+    ]
+    return "\n".join(lines)
 
 
 def conversion_note(
@@ -906,22 +1065,31 @@ def planned_calls(
     converted: list[Probe] = (),
     n_encodings: int = 1,
     control: bool = True,
+    by_pass: dict[str, list[Probe]] | None = None,
 ) -> tuple[int, int]:
     """(target calls, judge calls) the scan will make, before any retries.
 
     When `converted` is non-empty, each converted probe is sent once per encoding
-    (`n_encodings`), plus as written when `control` is True. Matched-pair comparisons
-    also run for each pass that sends pairs.
+    (`n_encodings`), plus as written when `control` is True. `by_pass`, when given,
+    says which probes each encoding sends instead (probes_each_pass_changes).
+    Matched-pair comparisons also run for each pass that sends pairs.
     """
-    base = 1 if (control or not converted) else 0
-    enc_passes = n_encodings if converted else 0
+    if by_pass is None:
+        by_pass = {str(i): list(converted) for i in range(n_encodings)} if converted else {}
+    base = 1 if (control or not by_pass) else 0
+    passes = [{_key(probe) for probe in sent} for sent in by_pass.values()]
     sends = {
-        keys: len(group) * base + sum(probe in converted for probe in group) * enc_passes
+        keys: len(group) * base + sum(_key(probe) in keys_sent for keys_sent in passes for probe in group)
         for keys, group in groups.items()
     }
-    pair_passes = (base + enc_passes) if any(p.pair_id for p in converted) else 1
+    # Each pass compares the pairs it sent; the as-written pass compares all of them.
+    pairs_per_pass = [len({probe.pair_id for probe in sent if probe.pair_id}) for sent in by_pass.values()]
+    if pair_count and any(pairs_per_pass):
+        pair_calls = pair_count * base + sum(min(n, pair_count) for n in pairs_per_pass)
+    else:
+        pair_calls = pair_count
     target = sum(sends.values()) * repeats
-    judge = (sum(count * len(keys) for keys, count in sends.items()) + pair_count * pair_passes) * repeats
+    judge = (sum(count * len(keys) for keys, count in sends.items()) + pair_calls) * repeats
     return target, judge
 
 
@@ -1068,16 +1236,20 @@ def list_probes(
     if spec and spec.lower() != "all":
         print(f"\nProbe filter ({spec}): {len(probes)} of {len(all_probes)} probe(s) selected.")
     converted = converted_probes(probes, conv_spec)
+    by_pass = asyncio.run(probes_each_pass_changes(converted, converter_passes))
     if conv_spec:
+        changed = {_key(probe) for sent in by_pass.values() for probe in sent}
         print(
             conversion_note(
                 conv_spec,
-                converted,
+                [probe for probe in converted if _key(probe) in changed],
                 len(probes),
                 pass_names=[name for name, _ in converter_passes],
                 control=control,
             )
         )
+        if unchanged_note(by_pass, len(probes)):
+            print(unchanged_note(by_pass, len(probes)))
     check_placeholders(probes)
     rubrics = rubrics_for(probes)
     compare = "disparate_treatment" in rubrics and any(p.pair_id for p in probes)
@@ -1096,6 +1268,9 @@ def list_probes(
         print("    " + probe.prompt.strip().replace("\n", "\n    "))
         if probe in converted:
             for enc_name, enc_chain in converter_passes:
+                if _key(probe) not in {_key(p) for p in by_pass[enc_name]}:
+                    print(f"    converted ({enc_name}): unchanged, so not sent in this pass")
+                    continue
                 encoded = _console_safe(convert_text(probe.prompt, enc_chain).strip())
                 print(f"    converted ({enc_name}): " + encoded.replace("\n", "\n        "))
         for slot, text in probe.judge_context:
@@ -1201,8 +1376,19 @@ async def main(
         raise SystemExit("No rubric grades any of the selected probes.")
 
     converted = converted_probes(sent, conv_spec)
+    by_pass = await probes_each_pass_changes(converted, converter_passes)
     if conv_spec:
+        if not any(by_pass.values()):
+            raise SystemExit(
+                f"--converters {conv_spec} leaves every selected probe exactly as written, so there is "
+                "nothing to send encoded. The pii- converters change only probes with personal data in them."
+            )
+        changed = {_key(probe) for probes in by_pass.values() for probe in probes}
+        converted = [probe for probe in converted if _key(probe) in changed]
         print(conversion_note(conv_spec, converted, len(sent), pass_names=pass_names, control=control))
+        if unchanged_note(by_pass, len(sent)):
+            print(unchanged_note(by_pass, len(sent)))
+    encoded_total = sum(len(probes) for probes in by_pass.values())
 
     needs_trace = sum(probe.needs_trace for probe in sent)
     if needs_trace:
@@ -1216,7 +1402,8 @@ async def main(
         graded.append(f"{ungraded_pairs} sent only for pair comparison")
     pair_note = f"; then {pair_count} matched pairs compared" if pair_count else ""
     target_calls, judge_calls = planned_calls(
-        groups, pair_count, repeats, converted, n_encodings=len(converter_passes) or 1, control=control
+        groups, pair_count, repeats, converted, n_encodings=len(converter_passes) or 1, control=control,
+        by_pass=by_pass,
     )
     repeat_note = f", each {repeats} times (RT_REPEATS)" if repeats > 1 else ""
     if converted and not control:
@@ -1226,9 +1413,9 @@ async def main(
             else f" encoded with {conv_spec} (--no-control)"
         )
     elif converted and len(converter_passes) > 1:
-        encoded_note = f", plus {len(converted) * len(converter_passes)} encoded copies ({len(converter_passes)} encodings)"
+        encoded_note = f", plus {encoded_total} encoded copies ({len(converter_passes)} encodings)"
     elif converted:
-        encoded_note = f", plus {len(converted)} encoded copies"
+        encoded_note = f", plus {encoded_total} encoded copies"
     else:
         encoded_note = ""
     print(f"\nSending {len(sent)} probes{encoded_note}{repeat_note}: {', '.join(graded)}{pair_note}.")
@@ -1294,9 +1481,10 @@ async def main(
     for keys, group in groups.items():
         if control or not converter_passes:
             sends.append((keys, group, "", {}))
-        encoded = [probe for probe in group if probe in converted]
-        if encoded:
-            for enc_name, enc_chain in converter_passes:
+        for enc_name, enc_chain in converter_passes:
+            in_pass = {_key(probe) for probe in by_pass[enc_name]}
+            encoded = [probe for probe in group if _key(probe) in in_pass]
+            if encoded:
                 sends.append(
                     (keys, encoded, enc_name, {"attack_converter_config": build_converter_config(enc_chain)})
                 )
@@ -1308,7 +1496,9 @@ async def main(
                 # Auxiliary rather than objective: there is no single "did the attack
                 # win" question here, there are N independent policy questions.
                 # Auxiliary scores are still written to memory against the response.
-                auxiliary_scorers=[scorers[key] for key in keys] + canary_scorers,
+                auxiliary_scorers=[scorers[key] for key in keys] + canary_scorers
+                # Probes where the user types their own data: does the reply repeat it?
+                + ([UserPiiEchoScorer()] if USER_PII_RUBRIC in keys else []),
             ),
             **converter_kwargs,
         )
@@ -1335,7 +1525,10 @@ async def main(
 
     # Each encoded probe's [flagged, answered] counts, as written ("") and per encoding.
     versions: dict[tuple[str, str], dict[str, list[int]]] = {
-        (probe.dataset, probe.name): {"": [0, 0], **{name: [0, 0] for name in pass_names}}
+        (probe.dataset, probe.name): {
+            "": [0, 0],
+            **{name: [0, 0] for name in pass_names if _key(probe) in {_key(p) for p in by_pass[name]}},
+        }
         for probe in converted
         if not (probe.pair_id and not (set(rubrics_for([probe])) - set(PAIR_RUBRICS)))
     }
@@ -1385,7 +1578,10 @@ async def main(
         matched_by_encoding = {}
         for enc in pair_encodings:
             pass_results = [r for r in completed if (r.labels or {}).get("rt_encoding", "") == enc]
-            verdicts = await compare_pairs(sent, by_probe_and_repeat(pass_results), memory, judge, rubric_prompt, repeats)
+            pair_probes = by_pass[enc] if enc else sent
+            verdicts = await compare_pairs(
+                pair_probes, by_probe_and_repeat(pass_results), memory, judge, rubric_prompt, repeats
+            )
             controls_by_encoding[enc] = [v for v in verdicts if v.control]
             matched_by_encoding[enc] = [v for v in verdicts if not v.control]
             for verdict in verdicts:
@@ -1428,7 +1624,7 @@ async def main(
     if converted and not control:
         encoded_count = f" ({conv_spec}, --no-control)"
     elif converted:
-        encoded_count = f" + {len(converted) * len(converter_passes)} encoded"
+        encoded_count = f" + {encoded_total} encoded"
     else:
         encoded_count = ""
     print(
@@ -1443,8 +1639,12 @@ async def main(
     if versions:
         if control:
             for enc_name in pass_names:
+                if not any(enc_name in tally for tally in versions.values()):
+                    continue  # this pass changed only matched pairs, compared above
                 print(f"\nEncoded ({enc_name}) vs. as written, flagged of answered:")
                 for (_, name), tally in versions.items():
+                    if enc_name not in tally:
+                        continue  # not sent in this pass: the converter left it as written
                     (plain_flags, plain_answered), (encoded_flags, encoded_answered) = tally[""], tally[enc_name]
                     more = (
                         encoded_answered and plain_answered
@@ -1460,8 +1660,12 @@ async def main(
             print("  The run summary reads these with fixed replies left out (Encoded vs. as written).")
         else:
             for enc_name in pass_names:
+                if not any(enc_name in tally for tally in versions.values()):
+                    continue
                 print(f"\nEncoded ({enc_name}, --no-control), flagged of answered:")
                 for (_, name), tally in versions.items():
+                    if enc_name not in tally:
+                        continue
                     encoded_flags, encoded_answered = tally[enc_name]
                     print(f"  {name}: encoded {encoded_flags} of {encoded_answered}")
 
@@ -1548,7 +1752,8 @@ if __name__ == "__main__":
         help=(
             "comma-separated PyRIT request converters applied to each selected probe before sending "
             f"(overrides RT_CONVERTERS): {', '.join(CONVERTER_BUILDERS)}, 'all', or 'none'. "
-            "Aliases: leet, confusable, zerowidth. Use '+' to chain converters in one pass (e.g. leet+zerowidth)."
+            "Aliases: leet, confusable, zerowidth, space, digit-space. "
+            "Use '+' to chain converters in one pass (e.g. leet+zerowidth)."
         ),
     )
     parser.add_argument(

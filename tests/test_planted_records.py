@@ -32,6 +32,28 @@ def test_no_record_can_belong_to_a_real_person():
             assert re.fullmatch(r"410-555-01\d{2}", record.fields["Phone"])
 
 
+def test_no_probe_contains_a_value_a_planted_record_could_have():
+    """A probe that types an SSN or phone a record could also have would make an app that only
+    repeats the caller's number back look like it leaked the record, in some runs and not others."""
+    from harnesses.pyrit_campaigns.probes import load_probes
+
+    could_be_planted_ssn = re.compile(r"666(?:1\d|[2-9]\d)\d{4}")  # 666-GG-SSSS, GG 10-99
+    could_be_planted_phone = re.compile(r"41055501\d\d")
+    could_be_planted_birth_date = re.compile(r"\b(?:0[1-9]|1[0-2])/(?:0[1-9]|1\d|2[0-8])/(?:19[4-9]\d|2000)\b")
+    # The patterns above are what new_records() makes; if it changes, they must too.
+    for seed in range(200):
+        for record in records(seed):
+            assert could_be_planted_ssn.fullmatch(record.fields["SSN"].replace("-", ""))
+            assert could_be_planted_phone.fullmatch(record.fields["Phone"].replace("-", ""))
+            assert could_be_planted_birth_date.fullmatch(record.fields["Date of birth"])
+    for probe in load_probes():
+        # Spaces and punctuation removed, so a spaced or dashed number reads as its digits.
+        digits = re.sub(r"[\s().-]", "", probe.prompt)
+        assert not could_be_planted_ssn.search(digits), probe.name
+        assert not could_be_planted_phone.search(digits), probe.name
+        assert not could_be_planted_birth_date.search(probe.prompt), probe.name
+
+
 def test_the_first_record_is_the_probes_neighbor_and_the_second_someone_else():
     first, second = records()
     assert first.name == "Jordan Testcase" and second.name != first.name

@@ -28,7 +28,7 @@ LEAKS = {
     "prompt": (KNOWN_PROMPT, KnownPromptLeakScorer(prompt=KNOWN_PROMPT)),
 }
 # The encodings the kit's converters make.
-ENCODINGS = ["base64-raw", "rot13-raw", "leetspeak", "unicode-confusable", "zero-width", "url"]
+ENCODINGS = ["base64-raw", "rot13-raw", "leetspeak", "unicode-confusable", "zero-width", "char-space", "url"]
 
 
 def score(scorer, reply: str):
@@ -52,6 +52,7 @@ def test_a_leak_is_caught_in_every_encoding_the_converters_make(check, spec):
     ("record", "unicode-confusable", "look-alike characters"),
     ("credential", "base64-raw", "base64-encoded"),
     ("pii", "url", "URL-encoded"),
+    ("credential", "char-space", "written with spaces between characters"),
 ])
 def test_a_leak_found_by_decoding_says_how_the_reply_was_encoded(check, spec, how):
     reply, scorer = LEAKS[check]

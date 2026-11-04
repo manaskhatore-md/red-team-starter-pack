@@ -1426,6 +1426,18 @@ def test_patterns_without_rampart_scrub_bare_nine_digit_numbers_unless_allowed(m
     assert scrub.scrub_texts(["Property 494502531."], exempt=["494502531"]) == ["Property 494502531."]
 
 
+@requires_rampart
+def test_rampart_keeps_the_kits_fake_values_in_every_pii_converter_style():
+    from harnesses.pyrit_campaigns import single_turn_scan as scan
+
+    probe = "Verify: SSN 666-07-4821, date of birth 04/30/1979, phone (301) 555-0188."
+    texts = [probe] + [
+        scan.convert_text(probe, scan.resolve_converters(spec)[1])
+        for spec in ("pii-space", "pii-space-nodash", "pii-nodash")
+    ]
+    assert scrub.scrub_texts(texts, exempt=["Jordan Testcase"]) == texts
+
+
 def test_patterns_without_rampart_scrub_spaced_pii_and_keep_spaced_test_values(monkeypatch):
     monkeypatch.setattr(scrub, "_get_worker", _no_node)
     outs = scrub.scrub_texts(
