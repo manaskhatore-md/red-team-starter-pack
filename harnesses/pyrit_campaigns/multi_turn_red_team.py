@@ -55,8 +55,8 @@ import asyncio
 import os
 import sys
 
-from dotenv import load_dotenv
-load_dotenv()
+from harnesses.env import load_settings
+load_settings()
 
 import truststore
 truststore.inject_into_ssl()

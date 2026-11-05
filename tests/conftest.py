@@ -8,7 +8,7 @@ the suite is safe to run anywhere - including CI with no secrets configured.
 
 Three things keep it offline:
   - load_dotenv() is stubbed out BEFORE any repo module is imported. Every entry
-    point calls it at import time, and it would otherwise pull your real .env (API
+    point calls it at import time (through harnesses.env.load_settings), and it would otherwise pull your real .env (API
     keys included) into the test process.
   - Every RT_* setting and provider key is removed from the environment for each
     test, so a test sees only what it sets. Keys it does set are fake.
@@ -43,6 +43,9 @@ from pathlib import Path
 import dotenv
 
 dotenv.load_dotenv = lambda *args, **kwargs: False
+# harnesses.env reads RT_ENV_FILE at import time, before clean_env runs: a path in your
+# shell that is missing here would stop the whole collection.
+os.environ.pop("RT_ENV_FILE", None)
 
 # Run from anywhere: make the repo root importable.
 REPO_ROOT = Path(__file__).resolve().parents[1]

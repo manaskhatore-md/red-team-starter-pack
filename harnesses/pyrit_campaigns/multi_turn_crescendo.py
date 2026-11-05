@@ -73,8 +73,8 @@ from collections import Counter
 from dataclasses import replace
 
 # Load .env file
-from dotenv import load_dotenv
-load_dotenv()
+from harnesses.env import load_settings
+load_settings()
 
 # Fix for corporate TLS-inspecting proxies
 import truststore
