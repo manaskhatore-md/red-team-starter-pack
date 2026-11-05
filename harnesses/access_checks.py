@@ -53,9 +53,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urljoin, urlparse
 
-from dotenv import load_dotenv
+from harnesses.env import load_settings
 
-load_dotenv()
+load_settings()
 
 import truststore
 

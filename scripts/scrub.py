@@ -61,9 +61,9 @@ from collections.abc import Iterable
 from pathlib import Path
 from urllib.parse import unquote
 
-from dotenv import load_dotenv
+from harnesses.env import load_settings
 
-load_dotenv()
+load_settings()
 
 from harnesses.pyrit_campaigns.code_checks import pii_matches
 from harnesses.pyrit_campaigns.decoding import (

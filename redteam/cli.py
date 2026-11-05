@@ -12,7 +12,7 @@ a shorter way to type them.
 
 Four options are rt's own. --profile, --provider, --judge, and --repeats set
 RT_PROFILE, RT_PROVIDER, RT_JUDGE_PROVIDER, and RT_REPEATS for that one command. They
-beat .env, because load_dotenv() never replaces a setting already in the environment,
+beat .env, because load_settings() (harnesses/env.py) never replaces a setting already set,
 and unlike PowerShell's $env: they are gone when the command ends. Every other option
 goes to the module unchanged and in order, so the module's own parser, not this one,
 decides what `--probes 1-15` means. tests/test_rt_cli.py fails if a module ever gets an

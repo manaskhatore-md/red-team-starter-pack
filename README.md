@@ -85,6 +85,13 @@ Add **one** provider's API key to `.env`. This model is the **judge** — it gra
 app's replies, since the app can't grade itself. Gemini, OpenAI, and Anthropic each need
 only a key; set `RT_JUDGE_PROVIDER` to whichever you added.
 
+**No `.env`?** Every setting can be an environment variable instead, which is how CI,
+containers, and Cloud Run usually set them. With no `.env` the kit reads them from the
+environment and prints a note. A variable already set always beats the same line in `.env`.
+`RT_ENV_FILE` (set in the environment, not in a file) picks the file: a path loads that file
+and stops if it's missing, and `RT_ENV_FILE=none` ignores `.env` and uses environment
+variables only.
+
 The probes also use blanks like `{{ program_name }}`, filled from the **YOUR AGENCY**
 section of `.env`. Until you set them, the scan runs on placeholder text and prints the
 exact lines to add — fine for a first run.
