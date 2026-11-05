@@ -850,7 +850,7 @@ rt adaptive --converters rot13 --no-control
 | `unicode-confusable` (or `confusable`) | Replaces Latin letters with visually similar Cyrillic/Greek homoglyphs |
 | `zero-width` (or `zerowidth`) | Injects invisible zero-width space characters (`U+200B`) between every character |
 | `char-space` (or `space`) | Inserts a space between every character on each line of the prompt |
-| `pii-space` (or `digit-space`) | Spaces out only the personal data and identifiers (SSNs, phones, cards, dates, ZIPs, emails, `TC-` case numbers, the kit's fake names), leaving the rest readable: `666-05-8193` -> `6 6 6 - 0 5 - 8 1 9 3` |
+| `pii-space` | Spaces out only the personal data and identifiers (SSNs, phones, cards, dates, ZIPs, emails, `TC-` case numbers, the kit's fake names), leaving the rest readable: `666-05-8193` -> `6 6 6 - 0 5 - 8 1 9 3` |
 | `pii-space-nodash` | Like `pii-space`, but numbers lose their dashes, dots, and parentheses first: `6 6 6 0 5 8 1 9 3`. Dates keep their slashes |
 | `pii-nodash` | Numbers lose their dashes, dots, and parentheses and are not spaced: `666058193`. Dates keep their slashes; names and emails are left as written |
 | `url` | Percent-encodes characters (`%20`, `%3A`, ...) |

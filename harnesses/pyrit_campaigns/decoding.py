@@ -98,18 +98,24 @@ SPACED_RUN = re.compile(
 )
 
 
-def _collapse_spaced_span(span: str) -> str:
-    """Collapse a character-spaced span back to normal text."""
-    collapsed = " ".join(w[::2] for w in re.split(r" {2,3}", span))
+# The 2-3 spaces between two spaced-out words.
+SPACED_WORD_SPLIT = re.compile(r" {2,3}")
+
+
+def collapse_spaced(span: str) -> str | None:
+    """A SPACED_RUN match with its spacing undone ("H i   t h e r e" -> "Hi there"), or None
+    when it is too short to be spacing: fewer than 3 characters, or fewer than 2 letters or
+    digits. The report scrubber (scripts/scrub.py) collapses by the same rule."""
+    collapsed = " ".join(w[::2] for w in SPACED_WORD_SPLIT.split(span))
     if sum(1 for c in collapsed if not c.isspace()) < 3 or sum(1 for c in collapsed if c.isalnum()) < 2:
-        return span
+        return None
     return collapsed
 
 
 def _unspaced_line(line: str) -> str:
     if len(line) >= 5 and set(line[1::2]) == {" "} and sum(c.isalnum() for c in line[::2]) >= 3:
         return line[::2]
-    return SPACED_RUN.sub(lambda m: _collapse_spaced_span(m.group(0)), line)
+    return SPACED_RUN.sub(lambda m: collapse_spaced(m.group(0)) or m.group(0), line)
 
 
 def _unspaced(text: str) -> str:

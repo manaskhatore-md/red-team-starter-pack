@@ -70,9 +70,11 @@ from harnesses.pyrit_campaigns.decoding import (
     BASE64_RUN,
     DIGIT_LOOK_ALIKES,
     SPACED_RUN,
+    SPACED_WORD_SPLIT,
     UNLEET,
     ZERO_WIDTH,
     _look_alikes,
+    collapse_spaced,
 )
 from harnesses.pyrit_campaigns.planted_records import OTHER_NAMES, STREETS
 from harnesses.pyrit_campaigns.profiles import PLACEHOLDERS, placeholders
@@ -523,7 +525,6 @@ DIGIT_CONTEXT_LOOK_ALIKE = re.compile(
     r"(?<![A-HJ-NP-Za-km-np-z])[lIOo](?=\d(?![A-HJ-NP-Za-km-np-z]))"
     r"|(?<=(?<![A-HJ-NP-Za-km-np-z])\d)[lIOo](?![A-HJ-NP-Za-km-np-z])"
 )
-SPACED_WORD_SPLIT = re.compile(r" {2,3}")
 
 
 def _collapse_spaced_in_view(
@@ -549,12 +550,11 @@ def _collapse_spaced_in_view(
         s, e = m.start(), m.end()
         span = m.group(0)
         words = SPACED_WORD_SPLIT.split(span)
-        collapsed = " ".join(w[::2] for w in words)
-        if (
-            sum(1 for c in collapsed if not c.isspace()) < 3
-            or sum(1 for c in collapsed if c.isalnum()) < 2
-            or (len(words) == 1 and collapsed.isdigit() and len(collapsed) in (9, 10))
-        ):
+        collapsed = collapse_spaced(span)
+        # Unlike the reply checks, a spaced 9- or 10-digit run stays spaced (here and per
+        # word below): the spaced SSN and phone patterns match it, while collapsed, ten
+        # digits run together are no phone pattern's and would go unredacted.
+        if collapsed is None or (len(words) == 1 and collapsed.isdigit() and len(collapsed) in (9, 10)):
             continue
         append_range(last, s)
         pos = s
