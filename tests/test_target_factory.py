@@ -87,6 +87,117 @@ def test_rt_adversarial_model_picks_the_attacker_model(fake_keys, clean_env):
     assert model_name(build_target("adversarial")) == "openai/gpt-5-mini"
 
 
+# --- Gemini on Vertex -----------------------------------------------------------
+
+# Gemini models only on Vertex: LiteLLM knows them as vertex_ai/, not as gemini/.
+VERTEX_ONLY_GEMINI = ("gemini-4-argon-cyber-permissive", "gemini-3.8-flash-cyber")
+
+
+@pytest.fixture
+def adc_regions(monkeypatch):
+    """Stands in for check_adc, which would look for real Google credentials; records each region."""
+    regions = []
+    monkeypatch.setattr(target_factory, "check_adc", lambda region=None: regions.append(region))
+    return regions
+
+
+@pytest.mark.parametrize("model", VERTEX_ONLY_GEMINI)
+@pytest.mark.parametrize(
+    "role, model_var",
+    [("target", "RT_MODEL"), ("judge", "RT_JUDGE_MODEL"), ("adversarial", "RT_ADVERSARIAL_MODEL")],
+)
+def test_vertex_gemini_model_works_in_every_role(clean_env, memory, adc_regions, role, model_var, model):
+    clean_env.setenv("RT_PROVIDER", "vertex")
+    clean_env.setenv("PROJECT_ID", "fake-project")
+    clean_env.setenv(model_var, f"vertex_ai/{model}")
+    target = build_target(role)
+    assert isinstance(target, target_factory.RetryingLiteLLMChatTarget)
+    assert model_name(target) == f"vertex_ai/{model}"
+    assert target._extra_body_parameters == {"vertex_project": "fake-project", "vertex_location": "global"}
+    assert adc_regions == ["global"]
+    # The judge's self-ask scorers and Crescendo's attacker ask for JSON replies, and
+    # PyRIT decides whether a model can give them from LiteLLM's metadata.
+    assert target.is_json_response_supported()
+
+
+@pytest.mark.parametrize("model", VERTEX_ONLY_GEMINI)
+def test_a_bare_gemini_id_on_vertex_gets_the_vertex_prefix(clean_env, memory, adc_regions, model):
+    clean_env.setenv("RT_PROVIDER", "vertex")
+    clean_env.setenv("RT_MODEL", model)
+    assert model_name(build_target()) == f"vertex_ai/{model}"
+
+
+def test_vertex_gemini_region_is_its_own_setting(clean_env, memory, adc_regions):
+    # Claude as judge on us-east5 and Gemini as attacker in us-central1, both on Vertex.
+    clean_env.setenv("RT_PROVIDER", "vertex")
+    clean_env.setenv("GOOGLE_VERTEX_REGION", "us-east5")
+    clean_env.setenv("GOOGLE_VERTEX_GEMINI_REGION", "us-central1")
+    clean_env.setenv("RT_ADVERSARIAL_MODEL", "vertex_ai/gemini-4-argon-cyber-permissive")
+    target = build_target("adversarial")
+    assert target._extra_body_parameters == {"vertex_location": "us-central1"}
+    assert adc_regions == ["us-central1"]
+
+
+def test_vertex_gemini_attacker_beside_a_claude_judge(clean_env, memory, adc_regions, monkeypatch):
+    # The README's example. The attacker's model setting stays with the attacker, and the
+    # judge on the same provider still gets Claude.
+    import anthropic
+
+    monkeypatch.setattr(anthropic, "AsyncAnthropicVertex", _FakeVertexClient)
+    clean_env.setenv("RT_PROVIDER", "app")
+    clean_env.setenv("APP_ENDPOINT", "https://example.test/chat")
+    clean_env.setenv("RT_JUDGE_PROVIDER", "vertex")
+    clean_env.setenv("RT_ADVERSARIAL_MODEL", "vertex_ai/gemini-4-argon-cyber-permissive")
+    assert target_factory.resolve_provider("adversarial") == "vertex"
+    assert model_name(build_target("adversarial")) == "vertex_ai/gemini-4-argon-cyber-permissive"
+    judge = build_scoring_target()
+    assert isinstance(judge, target_factory.AnthropicVertexChatTarget)
+    assert model_name(judge) == target_factory.DEFAULT_VERTEX_MODEL
+
+
+def test_claude_on_vertex_still_uses_the_anthropic_sdk(clean_env, memory, adc_regions, monkeypatch):
+    import anthropic
+
+    monkeypatch.setattr(anthropic, "AsyncAnthropicVertex", _FakeVertexClient)
+    assert isinstance(build_target(provider="vertex"), target_factory.AnthropicVertexChatTarget)
+    assert adc_regions == [None]
+
+
+def test_a_gemini_api_id_on_vertex_says_which_id_to_use(clean_env):
+    clean_env.setenv("RT_PROVIDER", "vertex")
+    clean_env.setenv("RT_MODEL", "gemini/gemini-3.8-flash-cyber")
+    with pytest.raises(SystemExit, match="use RT_MODEL=vertex_ai/gemini-3.8-flash-cyber"):
+        build_target()
+
+
+def test_a_vertex_id_on_another_provider_stops(fake_keys, clean_env):
+    # LiteLLM would route on the vertex_ai/ prefix and ignore the Gemini key.
+    clean_env.setenv("RT_PROVIDER", "gemini")
+    clean_env.setenv("RT_MODEL", "vertex_ai/gemini-4-argon-cyber-permissive")
+    with pytest.raises(SystemExit, match="Set RT_PROVIDER=vertex"):
+        build_target()
+
+
+@pytest.mark.parametrize(
+    "model, expected",
+    [
+        ("vertex_ai/gemini-3.8-flash-cyber", "vertex_ai/gemini-3.8-flash-cyber"),
+        ("gemini-3.8-flash-cyber", "vertex_ai/gemini-3.8-flash-cyber"),
+        ("claude-haiku-4-5", None),
+        (None, None),
+    ],
+)
+def test_vertex_gemini_model(model, expected):
+    assert target_factory.vertex_gemini_model(model) == expected
+
+
+@pytest.mark.parametrize("model", VERTEX_ONLY_GEMINI)
+def test_vertex_only_gemini_models_are_not_defaults(model):
+    # Most accounts cannot call them, so a default would fail every run for them.
+    defaults = {target_factory.default_model(p) for p in (*target_factory.PROVIDER_DEFAULTS, "bedrock", "vertex")}
+    assert not {model, f"vertex_ai/{model}", f"gemini/{model}"} & defaults
+
+
 def test_unknown_judge_provider_names_the_judge_setting(fake_keys, clean_env):
     clean_env.setenv("RT_JUDGE_PROVIDER", "nope")
     with pytest.raises(SystemExit, match="Unknown RT_JUDGE_PROVIDER"):

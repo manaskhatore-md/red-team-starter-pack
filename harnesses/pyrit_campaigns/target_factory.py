@@ -22,6 +22,9 @@ Most providers route through LiteLLM, so the model string is a LiteLLM model id
 assessments - it points at the agency's own deployed application rather than at a
 raw model endpoint.
 
+On vertex, a Gemini model id ("vertex_ai/gemini-..." or "gemini-...") routes through
+LiteLLM; any other is a Claude model, called through Anthropic's Vertex SDK.
+
 Providers come in two flavors, which is why they are not all one dict:
   - Key-based (gemini, openai, anthropic): one API key in an env var.
   - Credential-based (bedrock, vertex): ambient cloud credentials resolved by the
@@ -74,6 +77,16 @@ DEFAULT_BEDROCK_MODEL = "bedrock/converse/us.anthropic.claude-sonnet-4-5-2025092
 DEFAULT_MAX_TOKENS = 8192
 
 DEFAULT_VERTEX_MODEL = "claude-haiku-4-5"
+
+# Gemini on Vertex goes through LiteLLM, whose model ids for it start "vertex_ai/". A bare
+# "gemini-..." id on vertex means the same model, so it gets the prefix. Some Gemini models
+# are only on Vertex (gemini-4-argon-cyber-permissive, gemini-3.8-flash-cyber, for example):
+# LiteLLM knows them as vertex_ai/ and not as gemini/, and a Gemini API key cannot call them.
+VERTEX_GEMINI_PREFIX = "vertex_ai/"
+# Gemini's own region setting, apart from GOOGLE_VERTEX_REGION (Claude's), because the two
+# are usually served from different places: Claude from us-east5, Gemini from the global
+# endpoint, which LiteLLM prices below a regional one (regional_endpoint_uplift_multiplier).
+DEFAULT_VERTEX_GEMINI_REGION = "global"
 
 
 class RetryingLiteLLMChatTarget(LiteLLMChatTarget):
@@ -200,8 +213,23 @@ def build_target(role: str = "target", *, provider: str | None = None, model: st
         )
 
     if provider == "vertex":
-        # Claude on Google Vertex. Auth is GCP ADC, not an API key, and the project
-        # needs billing plus Anthropic models enabled in Vertex Model Garden.
+        # Claude or Gemini on Google Vertex. Auth is GCP ADC, not an API key, and the
+        # project needs billing plus the model enabled in Vertex Model Garden.
+        gemini_model = vertex_gemini_model(model)
+        if gemini_model:
+            # Same GOTCHA as Bedrock: a leftover LITELLM_API_KEY gets sent on these calls.
+            region = os.getenv("GOOGLE_VERTEX_GEMINI_REGION") or DEFAULT_VERTEX_GEMINI_REGION
+            check_adc(region)
+            _require_litellm()
+            location = {"vertex_location": region}
+            if os.getenv("PROJECT_ID"):
+                location["vertex_project"] = os.getenv("PROJECT_ID")
+            print(f"{label}: {gemini_model} (vertex, {region})")
+            return RetryingLiteLLMChatTarget(
+                model_name=gemini_model,
+                max_tokens=DEFAULT_MAX_TOKENS,
+                extra_body_parameters=location,
+            )
         check_adc()
         return AnthropicVertexChatTarget(model_name=model)
 
@@ -240,7 +268,22 @@ def build_target(role: str = "target", *, provider: str | None = None, model: st
 
 
 # The model-id prefix LiteLLM routes on, for each provider that has one.
-MODEL_PREFIXES = {"gemini": "gemini/", "openai": "openai/", "anthropic": "anthropic/", "bedrock": "bedrock/"}
+MODEL_PREFIXES = {
+    "gemini": "gemini/",
+    "openai": "openai/",
+    "anthropic": "anthropic/",
+    "bedrock": "bedrock/",
+    "vertex": VERTEX_GEMINI_PREFIX,
+}
+
+
+def vertex_gemini_model(model: str | None) -> str | None:
+    """The LiteLLM id of a Gemini model on Vertex, or None for any other model (Claude)."""
+    if not model:
+        return None
+    if model.startswith(VERTEX_GEMINI_PREFIX):
+        return model
+    return VERTEX_GEMINI_PREFIX + model if model.startswith("gemini-") else None
 
 
 def _check_model_matches_provider(role: str, provider: str, model: str | None) -> None:
@@ -260,9 +303,13 @@ def _check_model_matches_provider(role: str, provider: str, model: str | None) -
         why = f"{provider_var} is unset, so it follows {ROLES[fallback][0]}"
     else:
         why = f"{provider_var} is unset, so it defaults to {provider}"
+    hint = ""
+    if owner == "gemini" and provider == "vertex":
+        # Gemini through Vertex rather than through a Gemini API key: same model, other prefix.
+        hint = f" For Gemini on Vertex, use {model_var}={VERTEX_GEMINI_PREFIX}{model.removeprefix('gemini/')}."
     raise SystemExit(
         f"{model_var}={model} is a {owner} model, but the {role} runs on {provider} ({why}). "
-        f"Set {provider_var}={owner}, or change {model_var}."
+        f"Set {provider_var}={owner}, or change {model_var}.{hint}"
     )
 
 
@@ -921,8 +968,11 @@ def _rejected_credentials_message(code: str, method: str, profile: str) -> str:
     )
 
 
-def check_adc() -> None:
-    """Fail fast with an actionable message if Google credentials are missing."""
+def check_adc(region: str | None = None) -> None:
+    """Fail fast with an actionable message if Google credentials are missing.
+
+    region is the one the call goes to, for the message; Claude's GOOGLE_VERTEX_REGION if None.
+    """
     import google.auth
     from google.auth.exceptions import DefaultCredentialsError
 
@@ -944,7 +994,8 @@ def check_adc() -> None:
         print(f"Note: ADC default project is {detected_project}, calling {project}")
 
     identity = getattr(credentials, "service_account_email", None) or "user credentials (gcloud ADC)"
-    print(f"Authenticating to {project} ({os.getenv('GOOGLE_VERTEX_REGION', 'us-east5')}) as {identity}")
+    region = region or os.getenv("GOOGLE_VERTEX_REGION", "us-east5")
+    print(f"Authenticating to {project or detected_project} ({region}) as {identity}")
 
 
 def model_name(target: PromptTarget) -> str:
