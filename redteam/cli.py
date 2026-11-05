@@ -95,6 +95,10 @@ COMMANDS = {
         "multi-turn: gradual escalation that rewinds refusals; an app must take {HISTORY}",
     ),
     "access": Command("harnesses.access_checks", ATTACK, "login gates, OAuth/API access controls, outsider accounts"),
+    "benchmark": Command(
+        "scripts.benchmark", ATTACK,
+        "one campaign per model (config/benchmarks/attackers.yaml), then a report comparing them",
+    ),
     "all": Command(
         "", ATTACK,
         f"scan, adaptive, then crescendo, carrying on past one that fails; {WITH_ACCESS} runs access first",

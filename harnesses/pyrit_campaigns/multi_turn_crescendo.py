@@ -153,6 +153,18 @@ MAX_CONCURRENCY = int(os.getenv("RT_MAX_CONCURRENCY", "3"))
 # tags, so the section is matched by its heading, through the variable it shows.
 CONTEXT_SECTION = re.compile(r"###Prior Conversation Context###.*?\{\{\s*conversation_context\s*\}\}\n?", re.DOTALL)
 
+def benchmark_labels() -> dict[str, str]:
+    """The labels that tie a run to a benchmark, when scripts/benchmark.py started it."""
+    benchmark = os.getenv("RT_BENCHMARK_ID", "").strip()
+    if not benchmark:
+        return {}
+    return {
+        "rt_benchmark": benchmark,
+        "rt_benchmark_entry": os.getenv("RT_BENCHMARK_ENTRY", "").strip(),
+        "rt_benchmark_role": os.getenv("RT_BENCHMARK_ROLE", "").strip(),
+    }
+
+
 def load_objectives(profile: Profile) -> list[Objective]:
     """The profile's objectives with their placeholders filled, each checked against the rubrics of its probes."""
     if not profile.objectives:
@@ -622,6 +634,8 @@ async def run_multi_turn(
         "rt_trace_path": os.getenv("APP_TRACE_PATH", "").strip(),
         # Which rubrics judged the run: the rubric file's fingerprint and the pack's version.
         **version_labels(),
+        # Set by scripts/benchmark.py: the benchmark this run is one entry of, and which entry.
+        **benchmark_labels(),
     }
 
     attack_passes: list[tuple[str, dict]] = []
