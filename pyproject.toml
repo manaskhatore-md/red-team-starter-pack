@@ -1,10 +1,11 @@
-# Optional. `pip install -e .`, once from the repo root, adds the rt command
-# (redteam/cli.py), so `rt scan` works from any folder. Without it, run .\rt (Windows)
-# or ./rt from the repo root instead.
+# Optional. `uv pip install -e .` (or `pip install -e .`), once from the repo root,
+# adds the rt command (redteam/cli.py), so `rt scan` works from any folder. Without
+# it, run .\rt (Windows) or ./rt from the repo root instead.
 #
 # This installs the command only. The kit's dependencies stay in requirements.txt
-# (pip install -r requirements.txt), and the kit runs from this clone: -e (editable)
-# points rt at these files, so a git pull needs no reinstall.
+# (uv pip install -r requirements.txt, or the same with plain pip), so uv and pip
+# users install from one list. The kit runs from this clone: -e (editable) points rt
+# at these files, so a git pull needs no reinstall.
 
 [build-system]
 requires = ["setuptools>=64"]

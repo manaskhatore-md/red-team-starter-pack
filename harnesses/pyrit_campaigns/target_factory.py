@@ -329,7 +329,7 @@ def _require_litellm() -> None:
     try:
         import litellm  # noqa: F401  (LiteLLMChatTarget imports it lazily)
     except ImportError as e:
-        raise SystemExit("LiteLLM providers need: pip install litellm") from e
+        raise SystemExit("LiteLLM providers need: uv pip install litellm (or pip install litellm)") from e
 
 
 def build_scoring_target() -> PromptTarget:
@@ -868,7 +868,7 @@ def check_aws_creds() -> None:
             TokenRetrievalError,
         )
     except ImportError as e:
-        raise SystemExit("Bedrock needs the AWS SDK: pip install boto3") from e
+        raise SystemExit("Bedrock needs the AWS SDK: uv pip install boto3 (or pip install boto3)") from e
 
     # Resolve credentials exactly as LiteLLM will sign with them, or this preflight
     # checks one identity while the calls use another - the one failure mode a

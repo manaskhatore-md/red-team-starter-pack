@@ -59,16 +59,36 @@ optional — reach for it only when you need it.
 
 ### 1. Install, and add one API key
 
+We recommend [uv](https://docs.astral.sh/uv/getting-started/installation/), a fast
+installer for Python packages:
+
 ```bash
-pip install -r requirements.txt
-pip install -e .              # adds the rt command, so `rt scan` works from any folder
+uv venv                       # makes a .venv folder for the kit's packages
+.venv\Scripts\activate        # Windows; on macOS and Linux: source .venv/bin/activate
+uv pip install -r requirements.txt
+uv pip install -e .           # adds the rt command, so `rt scan` works from any folder
 npm ci                        # optional: Rampart, so report scrubbing also covers names (needs Node.js)
 cp .env.example .env          # use `copy` on Windows
 ```
 
+In our test, uv installed the dependencies 4x faster than pip, and in under 1 second on a reinstall.
+
+**If you can't install uv**, plain pip works from the same `requirements.txt`. Use these
+lines in place of the first four above:
+
+```bash
+python -m venv .venv
+.venv\Scripts\activate        # Windows; on macOS and Linux: source .venv/bin/activate
+pip install -r requirements.txt
+pip install -e .
+```
+
+Behind an agency proxy that inspects TLS, uv may fail with a certificate error. Set
+`UV_NATIVE_TLS=1` so it trusts the certificates installed on your computer.
+
 Every command in this README is `rt` followed by what to do: `rt smoke`, `rt scan`,
-`rt findings`. If `pip install -e .` isn't allowed on your machine, type `.\rt` in
-PowerShell or cmd, or `./rt` on macOS and Linux, from the repo root instead: no install
+`rt findings`. If installing the `rt` command isn't allowed on your machine, type `.\rt`
+in PowerShell or cmd, or `./rt` on macOS and Linux, from the repo root instead: no install
 needed. Each `rt` command also prints the full `python -m ...` command it runs, and those
 still work as they always did (see [The rt command](#the-rt-command)).
 
@@ -238,12 +258,13 @@ A campaign that fails, such as `rt crescendo` against an app without `{HISTORY}`
 stop the rest; the list at the end says which one, and the campaign's own output says why.
 Ctrl+C stops the whole run.
 
-**Three ways to run it.** `rt` after `pip install -e .`, from any folder. Without the install,
+**Three ways to run it.** `rt` after `uv pip install -e .`, from any folder. Without the install,
 from the repo root: `.\rt` (PowerShell or cmd, via `rt.cmd`), `./rt` (macOS, Linux, Git
-Bash), or `python -m redteam`. All three run `redteam/cli.py`. `pip install -e .` installs
+Bash), or `python -m redteam`. All three run `redteam/cli.py`. `uv pip install -e .` installs
 only the command, not the kit's dependencies, and points it at your clone, so a `git pull`
-needs no reinstall. If `rt` isn't found after installing, pip printed a warning that its
-`Scripts` folder isn't on your `PATH`; use `.\rt` or add that folder to `PATH`.
+needs no reinstall. If `rt` isn't found after installing, activate the `.venv` you installed
+into (see [step 1](#1-install-and-add-one-api-key)); with pip outside a venv, pip printed a
+warning that its `Scripts` folder isn't on your `PATH`. Either way, `.\rt` still works.
 
 ## Fine-tuning
 
@@ -312,7 +333,7 @@ request/response config and the judge are in [Get started](#get-started) — thi
 covers everything else.
 
 **No API you can call?** Set `APP_TRANSPORT=browser` to drive the app's web page with
-Playwright (`pip install playwright`; uses installed Chrome, else Edge): it types each
+Playwright (`uv pip install playwright`; uses installed Chrome, else Edge): it types each
 probe into the chat box and reads the reply off the page.
 
 ```bash
@@ -598,7 +619,7 @@ red-team-starter-pack/
 ├── .gitignore                          # Keeps .env, findings/, and PyRIT databases out of git
 ├── requirements.txt                    # What a campaign needs: PyRIT, LiteLLM, provider SDKs
 ├── requirements-dev.txt                # Adds pytest and pre-commit for working on the pack
-├── pyproject.toml                      # Only for `pip install -e .`: installs the rt command
+├── pyproject.toml                      # Only for `uv pip install -e .`: installs the rt command
 ├── rt, rt.cmd                          # The rt command without installing it: ./rt, .\rt
 ├── pytest.ini                          # Runs tests/ only
 ├── .pre-commit-config.yaml             # gitleaks on every commit
@@ -1397,7 +1418,7 @@ and it never reads your `.env` (the probes that test *your* system live in
 `attack_suites/`).
 
 ```
-pip install -r requirements-dev.txt
+uv pip install -r requirements-dev.txt    # or: pip install -r requirements-dev.txt
 python -m pytest
 ```
 

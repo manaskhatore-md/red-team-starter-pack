@@ -20,7 +20,7 @@ option with one of rt's names.
 
 Three ways to run it, all this file:
 
-    rt scan                  # after `pip install -e .` once, from anywhere (see pyproject.toml)
+    rt scan                  # after `uv pip install -e .` once, from anywhere (see pyproject.toml)
     .\\rt scan               # no install, from the repo root: rt.cmd on Windows, ./rt elsewhere
     python -m redteam scan   # no install, from the repo root
 
@@ -349,7 +349,8 @@ def main(argv: list[str] | None = None) -> int:
     if not (REPO_ROOT / "harnesses").is_dir():
         raise SystemExit(
             f"rt cannot find the kit next to {Path(__file__).parent}. Install it with "
-            "`pip install -e .` from the repo, not `pip install .`, so rt runs the clone itself."
+            "`uv pip install -e .` (or `pip install -e .`) from the repo, not `pip install .`, so rt "
+            "runs the clone itself."
         )
     if HELP & set(argv) and "--" not in argv:
         _, rest = split_settings([arg for arg in argv if arg not in HELP])

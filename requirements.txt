@@ -1,4 +1,4 @@
-# pip install -r requirements.txt
+# uv pip install -r requirements.txt     (or, without uv: pip install -r requirements.txt)
 #
 # Provider selection is by env var (RT_PROVIDER), not by dependency - see
 # .env.example. Install litellm and you can target Gemini, OpenAI, or Anthropic

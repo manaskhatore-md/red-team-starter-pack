@@ -52,12 +52,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-python@v5
+      # uv installs the dependencies much faster than pip (see the README). It caches
+      # downloads between runs, keyed on requirements*.txt. activate-environment puts
+      # the .venv it makes on PATH, so the `python` in later steps is that venv's.
+      - uses: astral-sh/setup-uv@v6
         with:
           python-version: "3.12"
-          cache: pip
+          activate-environment: true
+          enable-cache: true
+          cache-dependency-glob: "requirements*.txt"
 
-      - run: pip install -r requirements.txt
+      - run: uv pip install -r requirements.txt
 
       # Free and offline: a rubric edit that would break the scan fails here, before
       # any API credits are spent. The scan checks again itself before it sends anything.
@@ -146,9 +151,9 @@ jobs:
   #   if: false
   #   steps:
   #     - uses: actions/checkout@v4
-  #     - uses: actions/setup-python@v5
-  #       with: { python-version: "3.12" }
-  #     - run: pip install -r requirements.txt
+  #     - uses: astral-sh/setup-uv@v6
+  #       with: { python-version: "3.12", activate-environment: true }
+  #     - run: uv pip install -r requirements.txt
   #     - run: python -m harnesses.pyrit_campaigns.rag_grounding_eval
   #       env:
   #         GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
@@ -174,5 +179,7 @@ jobs:
 #
 # NOTE ON GITHUB ENTERPRISE: if this repo lives on a GHE instance, confirm your
 # runners can reach PyPI and your model provider's API. Self-hosted runners behind a
-# TLS-inspecting proxy may need pip index configuration and truststore (see
-# requirements.txt), and third-party actions may need org allow-listing.
+# TLS-inspecting proxy may need index configuration (UV_DEFAULT_INDEX, and
+# UV_NATIVE_TLS=1 to trust the OS certificate store) and truststore (see
+# requirements.txt), and third-party actions such as astral-sh/setup-uv may need
+# org allow-listing.
