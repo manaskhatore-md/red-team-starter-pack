@@ -112,14 +112,14 @@ def test_every_builtin_converter_and_alias_transforms_probe_text():
     assert "%" in url_out
     assert " " not in url_out
 
-    # char-space (and space / char_space / charspace aliases) spaces every character on each line
-    for alias in ("char-space", "space", "char_space", "charspace"):
+    # char-space (or char_space) spaces every character on each line
+    for alias in ("char-space", "char_space"):
         name, chain = scan.resolve_converters(alias)
         assert name == "char-space"
     assert scan.convert_text("Hi there\nSSN 123-45-6789", chain) == "H i   t h e r e\nS S N   1 2 3 - 4 5 - 6 7 8 9"
 
-    # pii-space (and digit-space / pii_space / piispace aliases) spaces only PII/identifier spans
-    for alias in ("pii-space", "digit-space", "digit_space", "pii_space", "piispace"):
+    # pii-space (or pii_space) spaces only PII/identifier spans
+    for alias in ("pii-space", "pii_space"):
         name, chain = scan.resolve_converters(alias)
         assert name == "pii-space"
     for alias in ("pii-space-nodash", "pii_space_nodash"):

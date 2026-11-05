@@ -1513,3 +1513,28 @@ def test_the_worker_finds_the_same_spaced_ssns_and_phones_as_the_python_checks()
         python_ssn = [m.span() for m in cc.SSN.finditer(text) if m.group(4)]
         assert [m.span() for m in worker_ssn.finditer(text)] == python_ssn, text
         assert [m.span() for m in worker_phone.finditer(text)] == [m.span() for m in cc.PHONE.finditer(text)], text
+
+
+_SSN_GROUPS = [
+    ("412", "58", "9034"), ("000", "58", "9034"), ("666", "58", "9034"), ("900", "58", "9034"),
+    ("999", "58", "9034"), ("899", "58", "9034"), ("412", "00", "9034"), ("412", "58", "0000"),
+    ("987", "65", "4319"), ("987", "65", "4320"), ("987", "65", "4329"), ("987", "65", "4330"),
+    ("987", "66", "4325"),
+]
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="Node.js (`node`) is not on PATH")
+def test_the_worker_skips_the_same_never_issued_ssns_as_the_python_checks():
+    # The worker has its own copy of code_checks.ssn_is_issuable(); run it in Node on the
+    # same SSNs and compare.
+    import json
+    import re
+
+    from harnesses.pyrit_campaigns.code_checks import ssn_is_issuable
+
+    source = scrub.RUNNER.read_text(encoding="utf-8")
+    found = re.search(r"^function ssnIsIssuable\(.*?^}", source, re.MULTILINE | re.DOTALL)
+    assert found, f"ssnIsIssuable not found in {scrub.RUNNER.name}"
+    script = f"{found.group(0)}\nconsole.log(JSON.stringify({json.dumps(_SSN_GROUPS)}.map((g) => ssnIsIssuable(...g))));"
+    ran = subprocess.run(["node", "-e", script], capture_output=True, text=True, timeout=30, check=True)
+    assert json.loads(ran.stdout) == [ssn_is_issuable(*groups) for groups in _SSN_GROUPS]

@@ -464,13 +464,8 @@ CONVERTER_ALIASES: dict[str, str] = {
     "unicode_confusable": "unicode-confusable",
     "zerowidth": "zero-width",
     "zero_width": "zero-width",
-    "space": "char-space",
     "char_space": "char-space",
-    "charspace": "char-space",
     "pii_space": "pii-space",
-    "piispace": "pii-space",
-    "digit-space": "pii-space",
-    "digit_space": "pii-space",
     "pii_space_nodash": "pii-space-nodash",
     "pii_nodash": "pii-nodash",
     "base64_raw": "base64-raw",
@@ -1752,7 +1747,7 @@ if __name__ == "__main__":
         help=(
             "comma-separated PyRIT request converters applied to each selected probe before sending "
             f"(overrides RT_CONVERTERS): {', '.join(CONVERTER_BUILDERS)}, 'all', or 'none'. "
-            "Aliases: leet, confusable, zerowidth, space, digit-space. "
+            "Aliases: leet, confusable, zerowidth, and any name written with _ in place of -. "
             "Use '+' to chain converters in one pass (e.g. leet+zerowidth)."
         ),
     )
