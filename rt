@@ -1,6 +1,6 @@
 #!/bin/sh
 # The rt command without installing it: ./rt scan from the repo root (macOS, Linux, Git Bash).
-# `pip install -e .` once makes plain `rt` work from any folder. See redteam/cli.py.
+# `uv pip install -e .` (or `pip install -e .`) once makes plain `rt` work from any folder. See redteam/cli.py.
 here=$(cd "$(dirname "$0")" && pwd)
 case "$(uname -s)" in
     # Windows: python3 is often only the Microsoft Store placeholder.

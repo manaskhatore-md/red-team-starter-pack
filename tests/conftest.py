@@ -3,7 +3,7 @@
 Everything here runs without network access, API keys, or cloud credentials, so
 the suite is safe to run anywhere - including CI with no secrets configured.
 
-    pip install -r requirements-dev.txt
+    uv pip install -r requirements-dev.txt    # or: pip install -r requirements-dev.txt
     python -m pytest
 
 Three things keep it offline:

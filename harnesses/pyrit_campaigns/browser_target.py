@@ -58,7 +58,7 @@ async def launch_browser(channel: str, profile: Path | None, headless: bool) -> 
     try:
         from playwright.async_api import async_playwright
     except ImportError as e:
-        raise SystemExit("APP_TRANSPORT=browser and browser-api need Playwright: pip install playwright") from e
+        raise SystemExit("APP_TRANSPORT=browser and browser-api need Playwright: uv pip install playwright (or pip install playwright)") from e
     playwright = await async_playwright().start()
     # Unset means Chrome, or Edge where Chrome is not installed (Edge ships with Windows).
     channels = [channel] if channel else ["chrome", "msedge"]

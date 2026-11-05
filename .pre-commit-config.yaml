@@ -2,7 +2,7 @@
 # public: a key committed once is exposed even after the commit is removed, and
 # must be rotated.
 #
-#   pip install pre-commit
+#   uv pip install pre-commit       # or pip; both come with requirements-dev.txt
 #   pre-commit install              # once per clone
 #   pre-commit run --all-files      # check everything now
 #
