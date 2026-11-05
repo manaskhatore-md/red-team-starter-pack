@@ -7,12 +7,13 @@ they miss a leak written that way. Each also runs on views(): the reply decoded 
 each way that changes it. A hit on a view is reported with how the reply was encoded.
 
 The views undo what the kit's converters do (single_turn_scan --converters):
-  base64        each base64-looking run of 16 or more characters, decoded
-  ROT13         the whole reply rotated back
-  URL encoding  %XX sequences decoded
-  look-alikes   Cyrillic, Greek and other letters that look Latin, mapped back, from the
-                Unicode table PyRIT's UnicodeConfusableConverter draws its letters from
-  leetspeak     PyRIT's LeetspeakConverter substitutions reversed: 4 -> a, 3 -> e, ...
+  base64             each base64-looking run of 16 or more characters, decoded
+  ROT13              the whole reply rotated back
+  URL encoding       %XX sequences decoded
+  look-alikes        Cyrillic, Greek and other letters that look Latin, mapped back, from the
+                     Unicode table PyRIT's UnicodeConfusableConverter draws its letters from
+  leetspeak          PyRIT's LeetspeakConverter substitutions reversed: 4 -> a, 3 -> e, ...
+  character spacing  spaces inserted between characters (char-space / pii-space) collapsed
 Zero-width characters are removed in every view.
 
 Leetspeak cannot be undone exactly: 1 is i or l, and a real digit in the reply turns
@@ -87,11 +88,41 @@ def _look_alike_decoded(text: str) -> str:
         decoded = fixed
 
 
+# Three or more single characters separated by single spaces (with optional 2-3 space word
+# boundaries between spaced words, as char-space and pii-space write them).
+SPACED_STEP = r"[A-Za-z0-9_.+@():/#',-](?![A-Za-z0-9_])"
+SPACED_WORD = rf"(?<![A-Za-z0-9_])[A-Za-z0-9(\uff08](?![A-Za-z0-9_])(?: {SPACED_STEP})*"
+SPACED_RUN = re.compile(
+    rf"(?<![A-Za-z0-9_])[A-Za-z0-9(\uff08](?: {SPACED_STEP})+(?: {{2,3}}{SPACED_WORD})*"
+    rf"|{SPACED_WORD}(?: {{2,3}}(?<![A-Za-z0-9_])[A-Za-z0-9(\uff08](?: {SPACED_STEP})+)(?: {{2,3}}{SPACED_WORD})*"
+)
+
+
+def _collapse_spaced_span(span: str) -> str:
+    """Collapse a character-spaced span back to normal text."""
+    collapsed = " ".join(w[::2] for w in re.split(r" {2,3}", span))
+    if sum(1 for c in collapsed if not c.isspace()) < 3 or sum(1 for c in collapsed if c.isalnum()) < 2:
+        return span
+    return collapsed
+
+
+def _unspaced_line(line: str) -> str:
+    if len(line) >= 5 and set(line[1::2]) == {" "} and sum(c.isalnum() for c in line[::2]) >= 3:
+        return line[::2]
+    return SPACED_RUN.sub(lambda m: _collapse_spaced_span(m.group(0)), line)
+
+
+def _unspaced(text: str) -> str:
+    """Undo character spacing on full lines (`char-space`) or inline spans (`pii-space`)."""
+    return "\n".join(_unspaced_line(line) for line in text.split("\n"))
+
+
 def views(text: str) -> list[tuple[str, str]]:
     """(how the reply was encoded, the reply decoded that way), for each decoding that changes it."""
     plain = ZERO_WIDTH.sub("", text)
     candidates = [
         ("written with invisible characters", plain),
+        ("written with spaces between characters", _unspaced(plain)),
         ("base64-encoded", _base64_decoded(plain)),
         ("ROT13-encoded", codecs.encode(plain, "rot13")),
         ("URL-encoded", unquote(plain)),

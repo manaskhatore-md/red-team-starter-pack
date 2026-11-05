@@ -120,14 +120,14 @@ def test_a_suites_checklist_prints_when_its_probes_run_and_only_then(memory, mon
     _, run_id = scan_main(monkeypatch, FakeModel(), profile="internal_productivity")
     out = capsys.readouterr().out
     injection, = profiles.suite_checklist("prompt_injection")
-    leakage, = profiles.suite_checklist("sensitive_data_leakage")
-    assert injection in out and leakage not in out
+    leakage = profiles.suite_checklist("sensitive_data_leakage")
+    assert injection in out and not any(item in out for item in leakage)
     # The profile's own items print whatever ran, ahead of the suites'.
     assert out.index(PROFILES["internal_productivity"].checklist[0]) < out.index(injection)
 
     results = memory.get_attack_results(labels={"rt_run_id": run_id})
     text = run_summary.build_summary(results, memory, run_id)
-    assert f"- [ ] {injection}" in text and leakage not in text
+    assert f"- [ ] {injection}" in text and not any(item in text for item in leakage)
 
 
 def test_a_malformed_suite_checklist_stops_the_run(tmp_path, monkeypatch):
@@ -229,3 +229,11 @@ def test_an_objective_judged_by_a_rubric_the_profile_lacks_names_the_file(tmp_pa
         load_objectives(get_profile("public_conversational"))
     assert str(own) in str(stopped.value) and "pii_disclosure" in str(stopped.value)
     assert "injection_compliance" in str(stopped.value)    # the rubrics it could use
+
+
+def test_suites_in_one_folder_list_their_shared_checklist_once():
+    # sensitive_data_leakage and pii_in_input share attack_suites/02_sensitive_data_exposure/checklist.yaml.
+    shared = profiles.suite_checklist("sensitive_data_leakage")
+    assert shared == profiles.suite_checklist("pii_in_input")
+    items = profiles.checklist_for(PROFILES["internal_productivity"], ["sensitive_data_leakage", "pii_in_input"])
+    assert all(items.count(item) == 1 for item in shared)
