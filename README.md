@@ -272,12 +272,29 @@ Before the first probe, every run sends one test prompt to each model it will us
 wrong model id or missing access fails in seconds instead of once per probe
 (`RT_SKIP_MODEL_CHECK=1` turns it off).
 
+**Gemini on Vertex.** With `RT_PROVIDER=vertex`, a model id starting `vertex_ai/gemini-` (or
+just `gemini-`) is Gemini on Vertex; any other is Claude. Some Gemini models are only on Vertex,
+such as `gemini-4-argon-cyber-permissive` and `gemini-3.8-flash-cyber`, models that answer the
+security requests other models refuse. They suit the attacker role best: an attacker
+that refuses to escalate tests nothing.
+
+```bash
+RT_ADVERSARIAL_PROVIDER=vertex
+RT_ADVERSARIAL_MODEL=vertex_ai/gemini-4-argon-cyber-permissive   # or vertex_ai/gemini-3.8-flash-cyber
+PROJECT_ID=your-gcp-project
+GOOGLE_VERTEX_GEMINI_REGION=global   # optional; the default. Claude's region is GOOGLE_VERTEX_REGION
+```
+
+They can also be the model under test (`RT_MODEL`) or the judge (`RT_JUDGE_MODEL`). Neither one is a
+default, because most accounts can't call them. Your project needs them enabled in Model Garden.
+
 `gemini`, `openai`, and `anthropic` need one API key. `bedrock` and `vertex` use ambient
 cloud credentials and print the resolved identity before the first call — see
-[Running on Bedrock](#running-on-bedrock). For `vertex` (Claude on Google Cloud Vertex AI),
+[Running on Bedrock](#running-on-bedrock). For `vertex` (Claude or Gemini on Google Cloud Vertex AI),
 authenticate with `gcloud auth application-default login` (or set
 `GOOGLE_APPLICATION_CREDENTIALS`) and set `PROJECT_ID` to your Google Cloud project
-(optional `GOOGLE_VERTEX_REGION`, default `us-east5`).
+(optional `GOOGLE_VERTEX_REGION` for Claude, default `us-east5`, and `GOOGLE_VERTEX_GEMINI_REGION` for
+Gemini, default `global`).
 
 ## Testing your app in depth
 
