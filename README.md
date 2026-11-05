@@ -184,6 +184,7 @@ them don't need changing.
 | `rt adaptive` (or `rt red-team`) | Adaptive multi-turn campaign | `python -m harnesses.pyrit_campaigns.multi_turn_red_team` |
 | `rt crescendo` | Crescendo multi-turn campaign | `python -m harnesses.pyrit_campaigns.multi_turn_crescendo` |
 | `rt access` | Access-control & OAuth/API checks | `python -m harnesses.access_checks` |
+| `rt benchmark` | One campaign per model, then a report comparing them | `python -m scripts.benchmark` |
 | `rt all` | `rt scan`, `rt adaptive`, `rt crescendo`, then a line for each saying how it ended | the three above, in turn |
 | `rt agent` | Agent tool abuse (needs setup first; see [Playbook crosswalk](#playbook-crosswalk)) | `python -m harnesses.pyrit_campaigns.agent_tool_exploitation` |
 | `rt rag` | RAG grounding (needs an eval set first) | `python -m harnesses.pyrit_campaigns.rag_grounding_eval` |
@@ -248,6 +249,7 @@ The rest of this README is reference — reach for a section when you need it:
 - **[Running on Bedrock](#running-on-bedrock)** — AWS credentials and model access
 - **[The system prompt and canary token](#the-system-prompt-and-the-canary-token-in-it)** — how leaks are caught, and the planted records
 - **[Repeats](#repeats-how-often-a-probe-fails-not-just-whether-it-did)** — run each probe N times for a failure rate
+- **[Benchmarking models](#benchmarking-models-which-attacker-or-target-does-best)** — compare attackers (or models under test) on the same app
 - **[Deployment profiles](#deployment-profiles)** — the built-in default and the presets: which probes run, and what's left to check by hand
 - **[Running a subset of probes](#running-a-subset-of-probes)** — filter probes by category (`core`, `general`, `bias`, `hallucination-templated`, ...), `m-n` range, or name
 - **[What to customize first](#what-to-customize-first)** — making generic probes specific to your system
@@ -564,6 +566,39 @@ show whether the app stored it.
 
 A run warns if the target cannot take a system prompt; PyRIT then puts the prompt into the
 user's message, which makes extraction easier than in a real deployment.
+
+## Benchmarking models: which attacker (or target) does best
+
+A benchmark runs one campaign several times, changing one model each time, and
+writes a report that compares the runs. Use it to choose the attacker that finds the
+most against your app, or to compare candidate models under test. The template is
+`config/benchmarks/attackers.yaml`. It compares `gemini-4-argon-cyber-permissive` and
+Claude Opus 5.5 as attackers, both on Vertex. Copy it to compare other models.
+
+```bash
+rt benchmark --dry-run     # what would run, and about how many calls; sends nothing
+rt benchmark               # config/benchmarks/attackers.yaml
+rt benchmark --config config/benchmarks/mine.yaml
+rt benchmark --report 3f2a91c0   # write a past benchmark's report again
+```
+
+Everything except the model being compared comes from `.env`, the same as for any run, and
+it's the same for every entry. That covers the target (`RT_PROVIDER=app` and the `APP_*`
+settings), the judge, and the profile. The file sets the role (`attacker` or `target`), the
+campaign (`adaptive` or `crescendo`), `repeats`, `max_turns`, and optionally a pinned judge.
+
+The report, `findings/benchmark_<date>_<id>.md`, ranks the entries by findings: objectives the
+judge says were achieved, plus leaks a code check caught. For each entry it gives the rate,
+a 95% interval, how many turns findings took, errors, and how many of the attacker's own
+messages start like a refusal. An attacker that refuses wastes its turn, which is the usual
+reason a safety-trained model scores low here. When two intervals overlap, the report says
+the entries aren't shown to differ; raise `repeats` before you pick one. Each run also
+writes its own summary, with every transcript.
+
+Keep the judge out of the comparison: pin one that is none of the entries. A model tends to
+go easy on its own work, and the report warns when the judge is an entry. On Vertex, Claude
+models can have quota in one region and none in another. If one fails its model check with
+a 429, try `GOOGLE_VERTEX_REGION=global`.
 
 ## Repeats: how often a probe fails, not just whether it did
 
