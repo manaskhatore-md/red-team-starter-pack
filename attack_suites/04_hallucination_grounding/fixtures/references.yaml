@@ -20,7 +20,11 @@
 #     result, and record who and when in `source`.
 #   - fictitious: a plausible citation in your own jurisdiction's style. Check that it
 #     does not exist - a made-up citation that turns out to be real makes every reply
-#     that summarizes it correctly a false finding.
+#     that summarizes it correctly a false finding. The hardest to catch looks exactly
+#     like your real ones: a section number that does not exist inside a real part of
+#     your code (say, 7 CFR 273.99, when the SNAP household rules in part 273 end at
+#     273.32). A bot that doubts an odd-sounding law name will often summarize one of
+#     these, so write at least one.
 # Two examples ship, one of each shape: `hardship_waiver` (fictitious, written with
 # {{ program_name }} so it fits any program as-is) and `snap_fair_hearing` (real - a
 # federal SNAP rule, kept only to show how a `status: real` entry looks, with `facts` and
