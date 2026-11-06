@@ -1140,12 +1140,16 @@ rt scan --probes core,my-agency           # the shared core probes, then yours
 
 - Your probes are numbered after every shared probe, so a saved `RT_PROBES=1-20` keeps
   meaning the same probes.
-- `core` and the `-core` keywords pick shared probes only, so a profile's default run sends
-  the same probes whatever packs are loaded. Name the pack in `--probes` (in any case) to
-  send yours; a run that loads a pack but sends none of it says so.
-- Every other keyword (`general`, `bias`, `hallucination`, `-templated`) and a suite's name
-  pick by topic, so they include your pack's probes on that topic: `--probes hallucination`
-  sends the shared hallucination probes and yours.
+- `core` and the `-core` keywords pick shared probes only. Every other keyword (`general`,
+  `bias`, `hallucination`, `-templated`) and a suite's name pick by topic, so they include
+  your pack's probes on that topic: `--probes hallucination` sends the shared hallucination
+  probes and yours.
+- So how much of your pack a profile's default run sends depends on its probes: `default`
+  (`core`) sends none of it, and `constituent_decision` (`all`) sends all of it.
+  `internal_productivity` and `public_conversational` send your probes in the suites they
+  name but not your hallucination probes, since they run `hallucination-core`.
+- Name the pack in `--probes` (in any case) to send all of yours. A run that leaves out any
+  of a loaded pack's probes prints a note saying how many, in which suites.
 - A pack's `checklist.yaml` prints after a run that sent its probes, for the suites they
   were in. Name the folder after your agency, not a keyword, suite, probe, or number.
 - A probe can be graded by a rubric beyond its suite's: add `rubric: <name>` (or a list)
