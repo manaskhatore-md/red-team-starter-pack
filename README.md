@@ -44,6 +44,7 @@ schedule. Multi-turn campaigns catch the ones that need patience. You want both.
 - [What to customize first](#what-to-customize-first)
   - [Changing how the judge grades](#changing-how-the-judge-grades)
   - [Your own multi-turn objectives](#your-own-multi-turn-objectives)
+  - [Adding your own probes](#adding-your-own-probes)
   - [Writing probes from templates](#writing-probes-from-templates)
   - [Bias pairs: controls, reading order, and adding your own](#bias-pairs-controls-reading-order-and-adding-your-own)
 - [Playbook crosswalk](#playbook-crosswalk)
@@ -930,8 +931,11 @@ priority order:
 4. **`harnesses/pyrit_campaigns/profiles.py`** — add a profile for your own system rather than
    stretching one of the generic ones to fit: a `--probes` spec, a checklist, and where
    useful a goal file and a stand-in prompt.
-5. **`attack_suites/*/*.yaml`** — add probes in your system's own language and policy terms.
-   For the same question asked about many things, write it once as a template (below).
+5. **Your own probes, in a folder of their own** — probes in your system's own language and
+   policy terms find what generic ones miss. Put them in `overlays/<your-agency>/` and set
+   `RT_EXTRA_SUITES` rather than editing `attack_suites/`, so pulling the pack's updates
+   never conflicts with them. See [Adding your own probes](#adding-your-own-probes). For the
+   same question asked about many things, write it once as a template (below).
 6. **`RT_PROVIDER=app`**, pointed at a test instance of your deployment, so you test it rather than a bare model.
 
 ### Changing how the judge grades
@@ -1108,6 +1112,40 @@ RT_OBJECTIVES_FILE=C:\redteam\my-app\objectives.yaml   # replaces the profile's 
 `{{ placeholders }}` are filled as in the probes. The run prints which file it used, and
 the run summary records it. A mistake in the file — an unknown field, a missing goal, a
 rubric that grades none of the profile's probes — stops the run with where it is.
+
+### Adding your own probes
+
+A **probe pack** is a folder of probe files, each named after the suite it adds to.
+`attack_suites/` is the default pack and always loads; `RT_EXTRA_SUITES` names more,
+comma-separated, relative to the repo or absolute (it can live outside the repo):
+
+```
+overlays/my-agency/
+  prompt_injection.yaml     # adds to prompt_injection; graded by its rubrics
+  hallucination.yaml        # adds to hallucination
+  fixtures/references.yaml  # fixtures for any templates, as in attack_suites/
+  checklist.yaml            # optional: printed after a run that sent this pack's probes
+```
+
+Each file is an ordinary dataset (same form as `attack_suites/*/*.yaml`, templates
+included). Files may also sit one folder down, laid out like `attack_suites/`.
+
+```bash
+RT_EXTRA_SUITES=overlays/my-agency        # in .env, or on the command line
+rt probes --probes my-agency              # preview only your pack's probes
+rt scan --probes core,my-agency           # the shared core probes, then yours
+```
+
+- Your probes are numbered after every shared probe, so a saved `RT_PROBES=1-20` keeps
+  meaning the same probes.
+- `core` and the `-core` keywords pick shared probes only. Name the pack in `--probes` to
+  send yours; a run that loads a pack but sends none of it says so.
+- A probe can be graded by a rubric beyond its suite's: add `rubric: <name>` (or a list)
+  to its `metadata:`, e.g. `rubric: excessive_agency` on a hallucination probe that asks for
+  an eligibility decision. No edit to `judge.yaml` is needed. (PyRIT allows this per probe,
+  not per file.)
+- The run stops, saying why, on a file named for no suite, a probe named like another
+  probe, or a folder named like a suite or a `--probes` keyword.
 
 ### Writing probes from templates
 

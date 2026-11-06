@@ -76,19 +76,138 @@ SUITES = (
 )
 # Beside a suite's dataset: what its probes leave to check by hand, printed whenever they run.
 CHECKLIST_FILE = "checklist.yaml"
+# Fixture files for templates sit in a folder of this name beside a dataset (probe_templates.py).
+FIXTURES_FOLDER = "fixtures"
 
 
-def suite_checklist(dataset: str) -> tuple[str, ...]:
-    """The checklist.yaml items beside a suite, or none. A malformed file stops the run."""
-    path = dataset_path(dataset).parent / CHECKLIST_FILE
+def shown_path(path: Path) -> str:
+    """A path as a message shows it: from the repo root when it is inside the repo."""
+    try:
+        return path.resolve().relative_to(REPO_ROOT).as_posix()
+    except ValueError:
+        return path.as_posix()
+
+
+def read_checklist(path: Path) -> tuple[str, ...]:
+    """The items of a checklist.yaml, or none if there is no such file. A malformed file stops the run."""
     if not path.is_file():
         return ()
     data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
     items = data.get("checklist") if isinstance(data, dict) else None
     if not isinstance(items, list) or not all(isinstance(item, str) and item.strip() for item in items):
-        raise SystemExit(f"{path.relative_to(REPO_ROOT).as_posix()} needs a `checklist:` list of text items.")
+        raise SystemExit(f"{shown_path(path)} needs a `checklist:` list of text items.")
     # An item folded over several lines (- >) reads as one sentence.
     return tuple(" ".join(item.split()) for item in items)
+
+
+def suite_checklist(dataset: str) -> tuple[str, ...]:
+    """The checklist.yaml items beside a suite, or none. A malformed file stops the run."""
+    return read_checklist(dataset_path(dataset).parent / CHECKLIST_FILE)
+
+
+# PROBE PACKS. A pack is a folder of probe files, each named after the suite in SUITES it
+# adds to: prompt_injection.yaml adds to prompt_injection, and that suite's rubrics grade
+# it. attack_suites/ is the default pack, always loaded. RT_EXTRA_SUITES names more, e.g.
+# an agency's own probes in overlays/my-agency/, comma-separated, each relative to the
+# repo or absolute. A suite stays defined here and in judge.yaml; a pack only adds probes.
+#
+# A pack's files sit at its top (overlays/my-agency/hallucination.yaml) or one folder down
+# (attack_suites/04_hallucination_grounding/hallucination.yaml), with their fixtures/ beside
+# them. A checklist.yaml at a pack's top prints whenever its probes run; one beside a
+# suite's file, whenever that file's probes run.
+EXTRA_PACKS_SETTING = "RT_EXTRA_SUITES"
+
+
+@dataclass(frozen=True)
+class Pack:
+    # The folder's name, which selects the pack's probes (--probes my-agency). "" for attack_suites/.
+    name: str
+    root: Path
+    # Suite name -> the pack's file for it.
+    files: dict
+
+    def checklist(self, suites) -> tuple[str, ...]:
+        """What this pack leaves to check by hand, when its probes for `suites` ran."""
+        ran = [suite for suite in SUITES if suite in set(suites) and suite in self.files]
+        if not ran:
+            return ()
+        items = list(read_checklist(self.root / CHECKLIST_FILE))
+        for suite in ran:
+            if self.files[suite].parent != self.root:
+                items += read_checklist(self.files[suite].parent / CHECKLIST_FILE)
+        return tuple(items)
+
+
+def _pack_files(root: Path, strict: bool) -> dict[str, Path]:
+    """Suite name -> file, for the dataset files at the top of `root` or one folder down.
+
+    `strict` (every pack but attack_suites/) stops the run on a file named for no suite,
+    or two files for one suite, rather than leave its probes out without a word.
+    """
+    files: dict[str, Path] = {}
+    for path in sorted(root.glob("*.yaml")) + sorted(root.glob("*/*.yaml")):
+        if path.name == CHECKLIST_FILE or path.parent.name == FIXTURES_FOLDER:
+            continue
+        suite = path.stem
+        if suite not in SUITES:
+            if strict:
+                raise SystemExit(
+                    f"{shown_path(path)} is named for no suite, so nothing would grade its probes. Name it after "
+                    f"the suite it adds to: {', '.join(SUITES)}."
+                )
+            continue
+        if suite in files:
+            if strict:
+                raise SystemExit(f"{shown_path(root)} has two files for {suite}: {shown_path(files[suite])} and "
+                                 f"{shown_path(path)}. Put its probes in one.")
+            continue
+        files[suite] = path
+    return files
+
+
+def default_pack() -> Pack:
+    """attack_suites/: the probes every run starts from."""
+    return Pack("", DATASETS_DIR, _pack_files(DATASETS_DIR, strict=False))
+
+
+def extra_packs() -> tuple[Pack, ...]:
+    """The packs RT_EXTRA_SUITES names, in its order. A folder that is missing or misnamed stops the run."""
+    packs: list[Pack] = []
+    for entry in (e.strip() for e in os.getenv(EXTRA_PACKS_SETTING, "").split(",")):
+        if not entry:
+            continue
+        root = Path(entry).expanduser()
+        if not root.is_absolute():
+            root = REPO_ROOT / root
+        if not root.is_dir():
+            raise SystemExit(f"{EXTRA_PACKS_SETTING}={entry!r}: there is no folder {shown_path(root)}.")
+        name = root.name
+        if name in SUITES:
+            raise SystemExit(
+                f"{EXTRA_PACKS_SETTING}: the folder {shown_path(root)} is named like the suite {name!r}, so "
+                "--probes could not tell them apart. Rename the folder, e.g. after your agency."
+            )
+        if any(pack.name == name for pack in packs):
+            raise SystemExit(f"{EXTRA_PACKS_SETTING} names two folders called {name!r}; rename one.")
+        files = _pack_files(root, strict=True)
+        if not files:
+            raise SystemExit(
+                f"{EXTRA_PACKS_SETTING}: {shown_path(root)} has no probe files. Name each after the suite it "
+                f"adds to, e.g. prompt_injection.yaml. Suites: {', '.join(SUITES)}."
+            )
+        packs.append(Pack(name, root, files))
+    return tuple(packs)
+
+
+def pack_file(dataset: str, overlay: str = "") -> Path | None:
+    """Where a probe of `dataset` from pack `overlay` is written ("" for attack_suites/).
+
+    None for a pack RT_EXTRA_SUITES does not name now, e.g. reporting on an old run.
+    """
+    if not overlay:
+        return dataset_path(dataset)
+    pack = next((p for p in extra_packs() if p.name == overlay), None)
+    return pack.files.get(dataset) if pack else None
 
 
 @dataclass(frozen=True)
@@ -112,11 +231,18 @@ class Profile:
     objectives_file: str = ""
 
 
-def checklist_for(profile: Profile, datasets) -> tuple[str, ...]:
-    """What is left to check by hand after a run: the profile's items, then those of each suite that ran."""
+def checklist_for(profile: Profile, datasets, overlays=None) -> tuple[str, ...]:
+    """What is left to check by hand after a run: the profile's items, then those of each suite that ran.
+
+    Then each extra pack's, for the suites it adds to that ran. `overlays`, if given, are
+    the packs whose probes were sent: a pack none of whose probes ran adds nothing.
+    """
     ran = set(datasets)
     # Suites in one folder share its checklist.yaml: list each item once.
-    items = (item for suite in SUITES if suite in ran for item in suite_checklist(suite))
+    items = [item for suite in SUITES if suite in ran for item in suite_checklist(suite)]
+    for pack in extra_packs():
+        if overlays is None or pack.name in overlays:
+            items += pack.checklist(ran)
     return profile.checklist + tuple(dict.fromkeys(items))
 
 

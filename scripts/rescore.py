@@ -171,7 +171,12 @@ def plan(results, memory, rubrics: dict, only_rubrics: set[str] | None, only_pro
             shown += f" (repeat {repeat})"
         probe = probes.get((dataset, name))
         if probe is None:
-            if not dataset_path(dataset).exists():
+            if labels.get("rt_overlay"):
+                skipped.append(
+                    f"{shown}: from the pack {labels['rt_overlay']!r}, which is not loaded or no longer has it. "
+                    "Set RT_EXTRA_SUITES to its folder to re-score it."
+                )
+            elif not dataset_path(dataset).exists():
                 missing_suites[dataset] += 1
             else:
                 skipped.append(f"{shown}: no longer in {dataset}, so its pass criteria and facts are unknown.")
@@ -200,7 +205,7 @@ def plan(results, memory, rubrics: dict, only_rubrics: set[str] | None, only_pro
         if not wanted(only_probes, name, probe.pair_id, dataset):
             continue
         old = judge_verdicts(scores)
-        now = {key for key, rubric in rubrics.items() if dataset in rubric.get("grades", []) and key not in PAIR_RUBRICS}
+        now = {key for key, rubric in rubrics.items() if scan.graded_by(probe, key, rubric) and key not in PAIR_RUBRICS}
         for key in sorted(set(old) | now):
             if not wanted(only_rubrics, key):
                 continue

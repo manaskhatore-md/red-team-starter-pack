@@ -250,9 +250,28 @@ def _format_problems(name: str, prompt: str, pair: bool) -> list[Problem]:
     return problems
 
 
+def _probe_rubric_problems(rubrics: dict, probes) -> list[Problem]:
+    """A probe's `rubric:` that names no rubric in the file, or a pair rubric, which cannot grade one reply."""
+    problems = []
+    for probe in probes:
+        where = f"{probe.overlay or 'attack_suites'} / {probe.dataset} / {probe.name}"
+        for key in probe.rubrics:
+            if key not in rubrics:
+                guess = difflib.get_close_matches(key, list(rubrics), n=1)
+                hint = f" Did you mean `{guess[0]}`?" if guess else ""
+                problems.append(Problem("error", where, f"`rubric: {key}` names no rubric in the rubric file.{hint}"))
+            elif key in PAIR_RUBRICS:
+                problems.append(Problem(
+                    "error", where,
+                    f"`rubric: {key}` is a pair rubric: it compares two replies grouped by pair_id, so it "
+                    "cannot be added to one probe. Give the probe a pair_id in a suite it grades instead.",
+                ))
+    return problems
+
+
 def _slot_problems(name: str, prompt: str, pair: bool, probe_slots: dict[str, set[str]] | None,
-                   grades: list) -> list[Problem]:
-    """[[SLOTS]] in a rubric that nothing will fill."""
+                   grades: list, tagged: set[str] = frozenset()) -> list[Problem]:
+    """[[SLOTS]] in a rubric that nothing will fill. `tagged`: slots filled by probes that name this rubric."""
     used = set(SLOT.findall(prompt))
     problems = []
     if pair:
@@ -281,7 +300,7 @@ def _slot_problems(name: str, prompt: str, pair: bool, probe_slots: dict[str, se
         ))
     if probe_slots is None:
         return problems
-    filled_by_probes = set().union(*(probe_slots.get(d, set()) for d in grades)) if grades else set()
+    filled_by_probes = set(tagged).union(*(probe_slots.get(d, set()) for d in grades)) if grades else set(tagged)
     known = KIT_SLOTS | set().union(*probe_slots.values()) if probe_slots else set(KIT_SLOTS)
     for slot in sorted(used - KIT_SLOTS - filled_by_probes):
         guess = difflib.get_close_matches(slot, sorted(known - {slot}), n=1)
@@ -379,12 +398,17 @@ def check(rubrics: dict | None = None, probes=None, objectives: bool = False,
     if judge_text_entries is None:
         judge_text_entries = read_rubric_file().get("judge_text")
     probe_slots: dict[str, set[str]] | None = None
+    # Slots filled by the probes that name a rubric in their `rubric:` metadata, by rubric.
+    tagged_slots: dict[str, set[str]] = {}
+    problems: list[Problem] = []
     if probes is not None:
         probe_slots = {}
         for probe in probes:
             probe_slots.setdefault(probe.dataset, set()).update(slot for slot, _ in probe.judge_context)
+            for key in probe.rubrics:
+                tagged_slots.setdefault(key, set()).update(slot for slot, _ in probe.judge_context)
+        problems += _probe_rubric_problems(rubrics, probes)
 
-    problems: list[Problem] = []
     for name, rubric in rubrics.items():
         if not isinstance(rubric, dict):
             problems.append(Problem("error", name, "must be a set of fields (system_prompt, grades, ...), not a value."))
@@ -423,7 +447,7 @@ def check(rubrics: dict | None = None, probes=None, objectives: bool = False,
             problems.append(_unread(name, f"`{field}:`", field, RUBRIC_FIELDS))
 
         problems += _format_problems(name, prompt, pair)
-        problems += _slot_problems(name, prompt, pair, probe_slots, grades)
+        problems += _slot_problems(name, prompt, pair, probe_slots, grades, tagged_slots.get(name, set()))
         problems += _reply_format_problems(name, prompt)
 
     problems += _judge_text_problems(judge_text_entries)
