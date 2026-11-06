@@ -1,4 +1,5 @@
-"""Probe loading and --probes / RT_PROBES selection across attack_suites/*/*.yaml."""
+"""Probe loading and --probes / RT_PROBES selection across attack_suites/*/*.yaml and any
+extra probe packs RT_EXTRA_SUITES names (see PROBE PACKS in profiles.py)."""
 
 import os
 import re
@@ -6,7 +7,7 @@ from dataclasses import dataclass
 
 from harnesses.pyrit_campaigns import profiles
 from harnesses.pyrit_campaigns.probe_templates import expand, fill, load_dataset
-from harnesses.pyrit_campaigns.profiles import Profile, dataset_path, placeholders
+from harnesses.pyrit_campaigns.profiles import Pack, Profile, placeholders, shown_path
 
 # [[SLOTS]] the kit fills itself, so a probe's judge_context cannot set them.
 # PASS_CRITERIA comes from the probe's own pass_criteria.
@@ -54,6 +55,11 @@ class Probe:
     # name, and the fixture entry it was filled with, as "path/to/file.yaml#entry_id".
     template: str = ""
     fixture: str = ""
+    # The extra pack the probe comes from (its folder's name), "" for attack_suites/.
+    overlay: str = ""
+    # Rubrics the probe's metadata names in `rubric:`, which grade it on top of the ones
+    # whose `grades:` lists its suite. See graded_by().
+    rubrics: tuple[str, ...] = ()
 
     def judge_slots(self) -> dict[str, str]:
         """Every [[SLOT]] this probe fills in its rubrics, pass criteria included."""
@@ -79,48 +85,119 @@ def judge_context(raw, where: str, placeholders: dict[str, str]) -> tuple[tuple[
     return tuple(pairs)
 
 
-def load_probes(datasets=None) -> list[Probe]:
-    """A Probe for every seed in the datasets, every suite by default: one per fixture entry for a template seed.
+def probe_rubrics(raw, where: str) -> tuple[str, ...]:
+    """A seed's `rubric:` metadata (one rubric name or a list) as a tuple, or SystemExit saying what is wrong.
 
-    In SUITES order, which is the order --list-probes numbers them in.
+    Whether each names a rubric in judge.yaml is checked with the rubrics (rubrics.check).
+    """
+    if raw in (None, "", []):
+        return ()
+    names = [raw] if isinstance(raw, str) else raw
+    if not isinstance(names, list) or not all(isinstance(n, str) and n.strip() for n in names):
+        raise SystemExit(f"{where}: rubric must be a rubric name or a list of them, e.g. rubric: ungrounded_claim")
+    return tuple(dict.fromkeys(n.strip() for n in names))
+
+
+def graded_by(probe: Probe, key: str, rubric: dict) -> bool:
+    """Whether rubric `key` grades the probe: its `grades:` lists the probe's suite, or the probe names it."""
+    return probe.dataset in (rubric.get("grades") or []) or key in probe.rubrics
+
+
+def load_pack(pack: Pack, dataset: str, values: dict[str, str]) -> list[Probe]:
+    """A Probe for every seed in one pack's file for `dataset`: one per fixture entry for a template seed."""
+    path = pack.files.get(dataset)
+    if path is None:
+        return []
+    probes: list[Probe] = []
+    for seed in load_dataset(path).seeds:
+        # A template seed becomes one probe per entry in its fixture file; any
+        # other seed, one probe. See probe_templates.py.
+        for expanded in expand(seed, path):
+            metadata = expanded.metadata
+            where = f"{shown_path(path)}, probe {expanded.name!r}"
+            probes.append(
+                Probe(
+                    dataset=dataset,
+                    name=expanded.name,
+                    # fill() leaves unrecognized placeholders in place rather than
+                    # raising, so adding a token to a dataset does not break the run
+                    # before you have given it a value in PLACEHOLDERS.
+                    prompt=fill(expanded.value, **values),
+                    harm_categories=tuple(seed.harm_categories or ()),
+                    pair_id=str(metadata.get("pair_id", "")),
+                    variant=str(metadata.get("variant", "")),
+                    compare_on=str(metadata.get("compare_on", "")),
+                    attribute=str(metadata.get("attribute", "")),
+                    control=bool(metadata.get("control")),
+                    pass_criteria=" ".join(fill(str(metadata.get("pass_criteria", "")), **values).split()),
+                    asks_for_instructions=bool(metadata.get("asks_for_instructions")),
+                    needs_trace=bool(metadata.get("needs_trace")),
+                    judge_context=judge_context(metadata.get("judge_context"), where, values),
+                    template=expanded.template,
+                    fixture=expanded.fixture,
+                    overlay=pack.name,
+                    rubrics=probe_rubrics(metadata.get("rubric"), where),
+                )
+            )
+    return probes
+
+
+def load_probes(datasets=None) -> list[Probe]:
+    """A Probe for every seed in the datasets, every suite by default, from every pack.
+
+    attack_suites/ first, in SUITES order, which is the order --list-probes numbers them
+    in. Then each RT_EXTRA_SUITES pack in its order, again in SUITES order, so an extra
+    pack never renumbers a shared probe: a saved range like RT_PROBES=1-20 keeps meaning
+    the same probes.
     """
     values = placeholders()
-    probes: list[Probe] = []
-    for name in datasets or profiles.SUITES:
-        path = dataset_path(name)
-        if not path.exists():
-            raise SystemExit(f"Suite {name!r} has no dataset: {path}")
-        dataset = load_dataset(path)
-        for seed in dataset.seeds:
-            # A template seed becomes one probe per entry in its fixture file; any
-            # other seed, one probe. See probe_templates.py.
-            for expanded in expand(seed, path):
-                metadata = expanded.metadata
-                probes.append(
-                    Probe(
-                        dataset=name,
-                        name=expanded.name,
-                        # fill() leaves unrecognized placeholders in place rather than
-                        # raising, so adding a token to a dataset does not break the run
-                        # before you have given it a value in PLACEHOLDERS.
-                        prompt=fill(expanded.value, **values),
-                        harm_categories=tuple(seed.harm_categories or ()),
-                        pair_id=str(metadata.get("pair_id", "")),
-                        variant=str(metadata.get("variant", "")),
-                        compare_on=str(metadata.get("compare_on", "")),
-                        attribute=str(metadata.get("attribute", "")),
-                        control=bool(metadata.get("control")),
-                        pass_criteria=" ".join(fill(str(metadata.get("pass_criteria", "")), **values).split()),
-                        asks_for_instructions=bool(metadata.get("asks_for_instructions")),
-                        needs_trace=bool(metadata.get("needs_trace")),
-                        judge_context=judge_context(
-                            metadata.get("judge_context"), f"{path.name}, probe {expanded.name!r}", values
-                        ),
-                        template=expanded.template,
-                        fixture=expanded.fixture,
-                    )
-                )
+    default = profiles.default_pack()
+    extras = profiles.extra_packs()
+    for pack in extras:
+        if pack.name.lower().replace("_", "-") in PROBE_CATEGORIES or pack.name.lower() == "all":
+            raise SystemExit(
+                f"The folder {shown_path(pack.root)} is named like the --probes keyword {pack.name!r}, so "
+                "--probes could not tell them apart. Rename the folder, e.g. after your agency."
+            )
+        if RANGE_TOKEN.fullmatch(pack.name):
+            raise SystemExit(
+                f"The folder {shown_path(pack.root)} is named like a probe number or range, so --probes "
+                f"{pack.name} could not tell them apart. Rename the folder, e.g. after your agency."
+            )
+    suites = list(datasets or profiles.SUITES)
+    for name in suites:
+        if name not in default.files:
+            raise SystemExit(f"Suite {name!r} has no dataset: {profiles.dataset_path(name)}")
+    probes = [probe for pack in (default, *extras) for name in suites for probe in load_pack(pack, name, values)]
+    _check_extra_names(probes)
     return probes
+
+
+def _check_extra_names(probes: list[Probe]) -> None:
+    """Stop the run if an extra pack's probe shares a name with another probe, or a pack shares a probe's name.
+
+    Results, rescoring and --probes all find a probe by its name, so two probes of one
+    name would be graded and reported as one.
+    """
+    seen: dict[str, Probe] = {}
+    for probe in probes:
+        other = seen.get(probe.name)
+        if other is not None and (probe.overlay or other.overlay):
+            where = lambda p: f"{p.overlay or 'attack_suites'} ({p.dataset})"  # noqa: E731
+            raise SystemExit(
+                f"Two probes are named {probe.name!r}: one in {where(other)}, one in {where(probe)}. "
+                "Rename the pack's probe; names must be unique across packs."
+            )
+        seen.setdefault(probe.name, probe)
+    names = set(seen) | {p.template for p in probes if p.template} | {p.pair_id for p in probes if p.pair_id}
+    names = {n.lower() for n in names}
+    for overlay in sorted({p.overlay for p in probes if p.overlay}):
+        # --probes matches a pack's name in any case, so compare without it.
+        if overlay.lower() in names:
+            raise SystemExit(
+                f"The pack {overlay!r} is named like a probe, template, or pair, so --probes {overlay} would be "
+                "ambiguous. Rename the folder."
+            )
 
 
 BIAS_DATASET = "algorithmic_bias"
@@ -131,12 +208,15 @@ NOT_CORE_WHEN_TEMPLATED = frozenset({BIAS_DATASET, HALLUCINATION_DATASET})
 
 PROBE_CATEGORIES = {
     "general": lambda p: p.dataset != BIAS_DATASET,
-    "core": lambda p: p.dataset not in NOT_CORE_WHEN_TEMPLATED or not p.template,
+    # core and the -core keywords pick attack_suites/ probes only, so a profile's default run
+    # sends the same probes whatever packs are loaded: an extra pack is run by its name. Every
+    # other keyword, and a suite's name, picks by topic, so it takes a pack's probes on it too.
+    "core": lambda p: not p.overlay and (p.dataset not in NOT_CORE_WHEN_TEMPLATED or not p.template),
     "bias": lambda p: p.dataset == BIAS_DATASET,
-    "bias-core": lambda p: p.dataset == BIAS_DATASET and not p.template,
+    "bias-core": lambda p: not p.overlay and p.dataset == BIAS_DATASET and not p.template,
     "bias-templated": lambda p: p.dataset == BIAS_DATASET and bool(p.template),
     "hallucination": lambda p: p.dataset == HALLUCINATION_DATASET,
-    "hallucination-core": lambda p: p.dataset == HALLUCINATION_DATASET and not p.template,
+    "hallucination-core": lambda p: not p.overlay and p.dataset == HALLUCINATION_DATASET and not p.template,
     "hallucination-templated": lambda p: p.dataset == HALLUCINATION_DATASET and bool(p.template),
 }
 
@@ -157,9 +237,11 @@ def select_probes(probes: list[Probe], spec: str = "") -> list[Probe]:
       - `all` (or an empty `spec`): every probe in `probes`
       - A category keyword in PROBE_CATEGORIES: `general`, `core`, `bias`, `bias-core`, `bias-templated`,
         `hallucination`, `hallucination-core`, `hallucination-templated`
+        (`core` and the `-core` ones pick attack_suites/ probes only; the rest include extra packs')
       - A 1-based probe number (`k`) or inclusive range (`m-n`)
       - A dataset name (`probe.dataset`), probe name (`probe.name`), template name
-        (`probe.template`), or matched-pair id (`probe.pair_id`)
+        (`probe.template`), matched-pair id (`probe.pair_id`), or extra pack name
+        (`probe.overlay`, e.g. `my-agency` for RT_EXTRA_SUITES=overlays/my-agency; any case)
 
     Whenever a selected probe belongs to a matched pair (`probe.pair_id`), its partner
     probe is automatically included and the result is returned in original file order
@@ -194,7 +276,11 @@ def select_probes(probes: list[Probe], spec: str = "") -> list[Probe]:
             directly_selected.update(matched)
             continue
 
-        matched = [i for i, p in enumerate(probes) if token in (p.name, p.pair_id, p.template, p.dataset)]
+        # A pack is a folder, whose name's case is easy to get wrong: match it in any case.
+        matched = [
+            i for i, p in enumerate(probes)
+            if token in (p.name, p.pair_id, p.template, p.dataset) or (p.overlay and token.lower() == p.overlay.lower())
+        ]
         if matched:
             directly_selected.update(matched)
             continue
@@ -217,7 +303,7 @@ def select_probes(probes: list[Probe], spec: str = "") -> list[Probe]:
         categories = ", ".join(PROBE_CATEGORIES)
         raise SystemExit(
             f"Unknown probe selector {token!r}. Use a category ({categories}), a 1-{total} number or m-n range, "
-            "or a dataset, probe, template, or pair name from --list-probes."
+            "or a dataset, probe, template, pair, or extra pack name from --list-probes."
         )
 
     selected_pair_ids = {probes[i].pair_id for i in directly_selected if probes[i].pair_id}
@@ -234,6 +320,25 @@ def select_probes(probes: list[Probe], spec: str = "") -> list[Probe]:
         i for i, p in enumerate(probes) if p.pair_id in selected_pair_ids
     }
     return [probes[i] for i in range(total) if i in all_selected]
+
+
+def unselected_packs_note(all_probes: list[Probe], selected: list[Probe], spec: str) -> str:
+    """A line for each extra pack that loaded probes the selection sends none of, or "".
+
+    `core`, the profiles' default, picks attack_suites/ probes only, so without this an
+    agency that set RT_EXTRA_SUITES could run without its own probes and not notice.
+    """
+    sent = {p.overlay for p in selected}
+    loaded: dict[str, int] = {}
+    for probe in all_probes:
+        if probe.overlay:
+            loaded[probe.overlay] = loaded.get(probe.overlay, 0) + 1
+    lines = [
+        f"Note: {profiles.EXTRA_PACKS_SETTING} loaded {count} probe(s) from {name}, but the selection "
+        f"({spec or 'all'}) sends none of them. To send them, add the pack's name: --probes {spec or 'core'},{name}"
+        for name, count in loaded.items() if name not in sent
+    ]
+    return "\n".join(lines)
 
 
 def profile_probes(profile: Profile) -> list[Probe]:

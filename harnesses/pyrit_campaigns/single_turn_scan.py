@@ -153,15 +153,18 @@ from harnesses.pyrit_campaigns.probes import (
     Probe,
     RANGE_TOKEN,
     get_probes_spec,
+    graded_by,
     judge_context,
     load_probes,
     profile_probes,
     select_probes,
+    unselected_packs_note,
 )
 from harnesses.pyrit_campaigns.profiles import (
     PAIR_RUBRICS,
     Profile,
     checklist_for,
+    pack_suites,
     describe,
     env_var,
     get_profile,
@@ -695,9 +698,11 @@ def _console_safe(text: str) -> str:
 
 
 def rubrics_for(probes: list[Probe]) -> tuple[str, ...]:
-    """The rubrics that grade these probes: every rubric whose `grades` names one of their datasets."""
-    datasets = {probe.dataset for probe in probes}
-    return tuple(key for key, rubric in load_rubrics().items() if datasets & set(rubric.get("grades", [])))
+    """The rubrics that grade these probes: every rubric whose `grades` names one of their
+    datasets, or that one of them names in its `rubric:` metadata. See graded_by()."""
+    return tuple(
+        key for key, rubric in load_rubrics().items() if any(graded_by(probe, key, rubric) for probe in probes)
+    )
 
 
 def profile_rubrics(profile: Profile) -> tuple[str, ...]:
@@ -881,7 +886,7 @@ def fill_system_prompt(text: str, system_prompt: str | None) -> str:
 
 
 def group_by_rubrics(probes: list[Probe], rubric_keys, compare: bool) -> dict[tuple[str, ...], list[Probe]]:
-    """Group probes by which of the given rubrics grade them (their `grades` list).
+    """Group probes by which of the given rubrics grade them (their `grades` list, or the probe's `rubric:`).
 
     A pair probe with no rubric of its own is still sent when pairs are compared,
     under the empty key: its reply is half of a comparison.
@@ -889,7 +894,7 @@ def group_by_rubrics(probes: list[Probe], rubric_keys, compare: bool) -> dict[tu
     rubrics = load_rubrics()
     groups: dict[tuple[str, ...], list[Probe]] = defaultdict(list)
     for probe in probes:
-        keys = tuple(k for k in rubric_keys if probe.dataset in rubrics[k].get("grades", []))
+        keys = tuple(k for k in rubric_keys if graded_by(probe, k, rubrics[k]))
         if keys or (compare and probe.pair_id):
             groups[keys].append(probe)
     return groups
@@ -1038,6 +1043,7 @@ def expand_repeats(
                     **run_labels,
                     "rt_dataset": probe.dataset,
                     "rt_probe": probe.name,
+                    "rt_overlay": probe.overlay,
                     "rt_harm_categories": ", ".join(probe.harm_categories),
                     "rt_pair_id": probe.pair_id,
                     "rt_variant": probe.variant,
@@ -1230,6 +1236,8 @@ def list_probes(
     probes = select_probes(all_probes, spec)
     if spec and spec.lower() != "all":
         print(f"\nProbe filter ({spec}): {len(probes)} of {len(all_probes)} probe(s) selected.")
+    if unselected_packs_note(all_probes, probes, spec):
+        print("\n" + unselected_packs_note(all_probes, probes, spec))
     converted = converted_probes(probes, conv_spec)
     by_pass = asyncio.run(probes_each_pass_changes(converted, converter_passes))
     if conv_spec:
@@ -1257,7 +1265,8 @@ def list_probes(
         grading = " + ".join(keys) if keys else ("pair comparison only" if keys is not None else "NOT SENT: no rubric grades it")
         num = numbers[(probe.dataset, probe.name)]
         pair_info = f"  (pair: {probe.pair_id})" if probe.pair_id else ""
-        print(f"\n[{num}] {probe.dataset} / {probe.name}  [{grading}]{pair_info}")
+        pack_info = f"  (from {probe.overlay})" if probe.overlay else ""
+        print(f"\n[{num}] {probe.dataset} / {probe.name}  [{grading}]{pair_info}{pack_info}")
         if probe.fixture:
             print(f"    template {probe.template!r}, filled from {probe.fixture}")
         print("    " + probe.prompt.strip().replace("\n", "\n    "))
@@ -1307,6 +1316,8 @@ async def main(
     probes = select_probes(all_probes, spec)
     if spec and spec.lower() != "all":
         print(f"\nProbe filter ({spec}): {len(probes)} of {len(all_probes)} probe(s) selected.")
+    if unselected_packs_note(all_probes, probes, spec):
+        print("\n" + unselected_packs_note(all_probes, probes, spec))
     rubrics = rubrics_for(probes)
     # The stand-in prompt describes the deployment, so whether it holds records is the
     # profile's call, not this run's --probes: an injection-only run still has data to leak.
@@ -1693,7 +1704,9 @@ async def main(
             print(f"  - {error}")
         print("  (a blocked or empty response is not a pass - it means nothing was tested)")
 
-    checklist = checklist_for(profile, {probe.dataset for probe in sent})
+    checklist = checklist_for(
+        profile, {probe.dataset for probe in sent}, pack_suites((probe.overlay, probe.dataset) for probe in sent)
+    )
     if checklist:
         print(f"\nBefore calling {profile.key!r} covered:")
         for item in checklist:

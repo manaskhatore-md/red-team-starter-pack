@@ -46,7 +46,7 @@ from pyrit.setup import SQLITE, initialize_pyrit_async
 
 from redteam.cli import full_form
 from harnesses.pyrit_campaigns.calibration import CALIBRATION_LABEL, normalized
-from harnesses.pyrit_campaigns.profiles import PROFILES, checklist_for
+from harnesses.pyrit_campaigns.profiles import PROFILES, checklist_for, pack_suites
 from harnesses.pyrit_campaigns.code_checks import CODE_CHECKS
 from harnesses.pyrit_campaigns.planted_records import RECORD_CHECK
 from harnesses.pyrit_campaigns.rubrics import describe_version
@@ -1215,7 +1215,12 @@ def build_summary(results, memory, run_id: str) -> str:
     # The checklist is not advice about this run, though - it is what this profile's
     # probes and the suites they came from do not cover at all, the same every run, so it
     # still gets a section of its own.
-    checklist = checklist_for(profile, {(r.labels or {}).get("rt_dataset") for r in results}) if profile else ()
+    labels = [r.labels or {} for r in results]
+    checklist = checklist_for(
+        profile,
+        {lab.get("rt_dataset") for lab in labels},
+        pack_suites((lab.get("rt_overlay", ""), lab.get("rt_dataset")) for lab in labels),
+    ) if profile else ()
     if checklist:
         lines += [f"## Not covered by `{profile.key}`'s probes", ""]
         lines += [f"- [ ] {item}" for item in checklist]

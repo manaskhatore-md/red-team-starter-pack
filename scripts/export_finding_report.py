@@ -56,7 +56,7 @@ from pyrit.models import ConversationType
 from pyrit.setup import SQLITE, initialize_pyrit_async
 
 from redteam.cli import command_for, full_form
-from harnesses.pyrit_campaigns.profiles import PROFILES, REPO_ROOT, dataset_path
+from harnesses.pyrit_campaigns.profiles import PROFILES, pack_file, shown_path
 from harnesses.pyrit_campaigns.code_checks import CODE_CHECKS
 from harnesses.pyrit_campaigns.rubrics import SEVERITIES, describe_version
 from harnesses.pyrit_campaigns.rubrics import load_rubrics as load_judge_rubrics
@@ -277,9 +277,23 @@ def encoding_label(labels: dict) -> str:
     return labels["rt_encoding"] if "rt_encoding" in labels else labels.get("rt_converters") or ""
 
 
+def probe_file(dataset: str, overlay: str = "") -> str:
+    """The file a probe is written in, as the report shows it: attack_suites/ or its extra pack's.
+
+    A pack RT_EXTRA_SUITES does not name now (or names wrongly) is shown by name, not path.
+    """
+    try:
+        path = pack_file(dataset, overlay)
+    except SystemExit:
+        path = None
+    if path is None:
+        return f"{dataset}.yaml in the pack {overlay!r}"
+    return shown_path(path)
+
+
 def probe_step(labels: dict) -> str:
     """Where the probe is written, as a reproduction step: its dataset, and for a template, the fixture entry."""
-    dataset = dataset_path(labels.get("rt_dataset", "")).relative_to(REPO_ROOT).as_posix()
+    dataset = probe_file(labels.get("rt_dataset", ""), labels.get("rt_overlay", ""))
     encoded = (
         f" It was sent encoded with `{encoding_label(labels)}`; the transcript shows what the target received."
         if encoding_label(labels)
