@@ -1117,7 +1117,9 @@ rubric that grades none of the profile's probes — stops the run with where it 
 
 A **probe pack** is a folder of probe files, each named after the suite it adds to.
 `attack_suites/` is the default pack and always loads; `RT_EXTRA_SUITES` names more,
-comma-separated, relative to the repo or absolute (it can live outside the repo):
+comma-separated, relative to the repo or absolute (it can live outside the repo).
+`overlays/` is in `.gitignore`: a pack is your agency's own and never goes into the shared
+repo, so keep it there or outside the repo, and version it somewhere of your own:
 
 ```
 overlays/my-agency/
@@ -1138,8 +1140,14 @@ rt scan --probes core,my-agency           # the shared core probes, then yours
 
 - Your probes are numbered after every shared probe, so a saved `RT_PROBES=1-20` keeps
   meaning the same probes.
-- `core` and the `-core` keywords pick shared probes only. Name the pack in `--probes` to
+- `core` and the `-core` keywords pick shared probes only, so a profile's default run sends
+  the same probes whatever packs are loaded. Name the pack in `--probes` (in any case) to
   send yours; a run that loads a pack but sends none of it says so.
+- Every other keyword (`general`, `bias`, `hallucination`, `-templated`) and a suite's name
+  pick by topic, so they include your pack's probes on that topic: `--probes hallucination`
+  sends the shared hallucination probes and yours.
+- A pack's `checklist.yaml` prints after a run that sent its probes, for the suites they
+  were in. Name the folder after your agency, not a keyword, suite, probe, or number.
 - A probe can be graded by a rubric beyond its suite's: add `rubric: <name>` (or a list)
   to its `metadata:`, e.g. `rubric: excessive_agency` on a hallucination probe that asks for
   an eligibility decision. No edit to `judge.yaml` is needed. (PyRIT allows this per probe,

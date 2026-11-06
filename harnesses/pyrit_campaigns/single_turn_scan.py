@@ -164,6 +164,7 @@ from harnesses.pyrit_campaigns.profiles import (
     PAIR_RUBRICS,
     Profile,
     checklist_for,
+    pack_suites,
     describe,
     env_var,
     get_profile,
@@ -1703,7 +1704,9 @@ async def main(
             print(f"  - {error}")
         print("  (a blocked or empty response is not a pass - it means nothing was tested)")
 
-    checklist = checklist_for(profile, {probe.dataset for probe in sent}, {probe.overlay for probe in sent})
+    checklist = checklist_for(
+        profile, {probe.dataset for probe in sent}, pack_suites((probe.overlay, probe.dataset) for probe in sent)
+    )
     if checklist:
         print(f"\nBefore calling {profile.key!r} covered:")
         for item in checklist:

@@ -11,7 +11,7 @@ import pytest
 
 from harnesses.pyrit_campaigns import rubrics, single_turn_scan
 from harnesses.pyrit_campaigns.probes import unselected_packs_note
-from harnesses.pyrit_campaigns.profiles import checklist_for, get_profile, pack_file
+from harnesses.pyrit_campaigns.profiles import checklist_for, get_profile, pack_file, pack_suites
 from scripts.export_finding_report import probe_file
 
 
@@ -122,8 +122,8 @@ def test_an_overlay_file_that_would_be_misread_stops_the_run(files, message, tmp
         single_turn_scan.load_probes()
 
 
-@pytest.mark.parametrize("folder", ["hallucination", "core"])
-def test_a_pack_named_like_a_suite_or_keyword_stops_the_run(folder, tmp_path, clean_env):
+@pytest.mark.parametrize("folder", ["hallucination", "Hallucination", "core", "2024", "1-5"])
+def test_a_pack_named_like_a_suite_keyword_or_number_stops_the_run(folder, tmp_path, clean_env):
     overlay = write_overlay(tmp_path / folder, {"prompt_injection": [("agency_probe", "x")]})
     clean_env.setenv("RT_EXTRA_SUITES", str(overlay))
     with pytest.raises(SystemExit, match="Rename the folder"):
@@ -149,11 +149,47 @@ def test_a_packs_checklist_prints_only_when_its_probes_ran(tmp_path, clean_env):
     clean_env.setenv("RT_EXTRA_SUITES", str(overlay))
     profile = get_profile()
     item = "Clear the answer cache first."
-    assert item in checklist_for(profile, ["hallucination"], {"agency"})
+    assert item in checklist_for(profile, ["hallucination"], pack_suites([("agency", "hallucination")]))
     # Its suite ran, but none of its own probes did.
-    assert item not in checklist_for(profile, ["hallucination"], {""})
+    assert item not in checklist_for(profile, ["hallucination"], pack_suites([("", "hallucination")]))
     # A suite it does not add to.
-    assert item not in checklist_for(profile, ["algorithmic_bias"], {"agency"})
+    assert item not in checklist_for(profile, ["algorithmic_bias"], pack_suites([("agency", "algorithmic_bias")]))
+
+
+def test_a_packs_suite_checklist_prints_only_for_suites_its_own_probes_ran_in(tmp_path, clean_env):
+    # Laid out like attack_suites/: each file in a folder of its own, with its checklist beside it.
+    overlay = tmp_path / "agency"
+    write_overlay(overlay, {"hallucination": [("agency_figure", "x")]}, subfolder="halluc")
+    write_overlay(overlay, {"prompt_injection": [("agency_probe", "x")]}, subfolder="inject")
+    (overlay / "inject" / "checklist.yaml").write_text(
+        "checklist:\n  - Check the agency's tool list.\n", encoding="utf-8"
+    )
+    clean_env.setenv("RT_EXTRA_SUITES", str(overlay))
+    profile = get_profile()
+    item = "Check the agency's tool list."
+    # The pack's hallucination probes and the shared prompt_injection probes ran: the
+    # pack's prompt_injection checklist is not about anything that was sent.
+    ran = pack_suites([("agency", "hallucination"), ("", "prompt_injection")])
+    assert item not in checklist_for(profile, ["hallucination", "prompt_injection"], ran)
+    ran = pack_suites([("agency", "prompt_injection")])
+    assert item in checklist_for(profile, ["prompt_injection"], ran)
+
+
+def test_a_pack_is_selected_by_its_name_in_any_case(tmp_path, clean_env):
+    overlay = write_overlay(tmp_path / "My-Agency", {"prompt_injection": [("agency_probe", "x")]})
+    clean_env.setenv("RT_EXTRA_SUITES", str(overlay))
+    probes = single_turn_scan.load_probes()
+    for spec in ("My-Agency", "my-agency", "MY-AGENCY"):
+        assert names(single_turn_scan.select_probes(probes, spec)) == ["agency_probe"], spec
+
+
+def test_topic_keywords_and_suite_names_include_a_packs_probes_on_the_topic(tmp_path, clean_env):
+    overlay = write_overlay(tmp_path / "agency", {"hallucination": [("agency_figure", "x")]})
+    clean_env.setenv("RT_EXTRA_SUITES", str(overlay))
+    probes = single_turn_scan.load_probes()
+    for spec in ("general", "hallucination", "hallucination-templated,agency"):
+        assert "agency_figure" in names(single_turn_scan.select_probes(probes, spec)), spec
+    assert "agency_figure" not in names(single_turn_scan.select_probes(probes, "core"))
 
 
 def test_a_selection_that_leaves_out_a_loaded_pack_says_so(tmp_path, clean_env):

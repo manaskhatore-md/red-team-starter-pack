@@ -182,12 +182,12 @@ def extra_packs() -> tuple[Pack, ...]:
         if not root.is_dir():
             raise SystemExit(f"{EXTRA_PACKS_SETTING}={entry!r}: there is no folder {shown_path(root)}.")
         name = root.name
-        if name in SUITES:
+        if name.lower() in SUITES:
             raise SystemExit(
                 f"{EXTRA_PACKS_SETTING}: the folder {shown_path(root)} is named like the suite {name!r}, so "
                 "--probes could not tell them apart. Rename the folder, e.g. after your agency."
             )
-        if any(pack.name == name for pack in packs):
+        if any(pack.name.lower() == name.lower() for pack in packs):
             raise SystemExit(f"{EXTRA_PACKS_SETTING} names two folders called {name!r}; rename one.")
         files = _pack_files(root, strict=True)
         if not files:
@@ -231,18 +231,31 @@ class Profile:
     objectives_file: str = ""
 
 
+def pack_suites(pairs) -> dict[str, set[str]]:
+    """{pack name: suites its probes ran in}, from (overlay, dataset) pairs, for checklist_for()."""
+    ran: dict[str, set[str]] = {}
+    for overlay, dataset in pairs:
+        if overlay:
+            ran.setdefault(overlay, set()).add(dataset)
+    return ran
+
+
 def checklist_for(profile: Profile, datasets, overlays=None) -> tuple[str, ...]:
     """What is left to check by hand after a run: the profile's items, then those of each suite that ran.
 
-    Then each extra pack's, for the suites it adds to that ran. `overlays`, if given, are
-    the packs whose probes were sent: a pack none of whose probes ran adds nothing.
+    Then each extra pack's. `overlays`, if given, maps each pack whose probes were sent to
+    the suites those probes are in (see pack_suites): a pack's items print only for the
+    suites its own probes ran in, not for a suite only the shared probes ran in. Unset,
+    every loaded pack counts as having run in every suite that ran.
     """
     ran = set(datasets)
     # Suites in one folder share its checklist.yaml: list each item once.
     items = [item for suite in SUITES if suite in ran for item in suite_checklist(suite)]
     for pack in extra_packs():
-        if overlays is None or pack.name in overlays:
+        if overlays is None:
             items += pack.checklist(ran)
+        elif pack.name in overlays:
+            items += pack.checklist(overlays[pack.name])
     return profile.checklist + tuple(dict.fromkeys(items))
 
 

@@ -37,3 +37,7 @@ node_modules/
 # pip install -e . (pyproject.toml) writes these
 *.egg-info/
 build/
+
+# Agency probe packs (RT_EXTRA_SUITES): each agency's own probes stay with that agency,
+# never in the shared repo. Keep yours here or in a folder outside the repo.
+overlays/

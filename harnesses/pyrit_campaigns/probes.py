@@ -159,6 +159,11 @@ def load_probes(datasets=None) -> list[Probe]:
                 f"The folder {shown_path(pack.root)} is named like the --probes keyword {pack.name!r}, so "
                 "--probes could not tell them apart. Rename the folder, e.g. after your agency."
             )
+        if RANGE_TOKEN.fullmatch(pack.name):
+            raise SystemExit(
+                f"The folder {shown_path(pack.root)} is named like a probe number or range, so --probes "
+                f"{pack.name} could not tell them apart. Rename the folder, e.g. after your agency."
+            )
     suites = list(datasets or profiles.SUITES)
     for name in suites:
         if name not in default.files:
@@ -185,8 +190,10 @@ def _check_extra_names(probes: list[Probe]) -> None:
             )
         seen.setdefault(probe.name, probe)
     names = set(seen) | {p.template for p in probes if p.template} | {p.pair_id for p in probes if p.pair_id}
+    names = {n.lower() for n in names}
     for overlay in sorted({p.overlay for p in probes if p.overlay}):
-        if overlay in names:
+        # --probes matches a pack's name in any case, so compare without it.
+        if overlay.lower() in names:
             raise SystemExit(
                 f"The pack {overlay!r} is named like a probe, template, or pair, so --probes {overlay} would be "
                 "ambiguous. Rename the folder."
@@ -201,7 +208,9 @@ NOT_CORE_WHEN_TEMPLATED = frozenset({BIAS_DATASET, HALLUCINATION_DATASET})
 
 PROBE_CATEGORIES = {
     "general": lambda p: p.dataset != BIAS_DATASET,
-    # core and the -core keywords pick attack_suites/ probes only: an extra pack is run by its name.
+    # core and the -core keywords pick attack_suites/ probes only, so a profile's default run
+    # sends the same probes whatever packs are loaded: an extra pack is run by its name. Every
+    # other keyword, and a suite's name, picks by topic, so it takes a pack's probes on it too.
     "core": lambda p: not p.overlay and (p.dataset not in NOT_CORE_WHEN_TEMPLATED or not p.template),
     "bias": lambda p: p.dataset == BIAS_DATASET,
     "bias-core": lambda p: not p.overlay and p.dataset == BIAS_DATASET and not p.template,
@@ -228,10 +237,11 @@ def select_probes(probes: list[Probe], spec: str = "") -> list[Probe]:
       - `all` (or an empty `spec`): every probe in `probes`
       - A category keyword in PROBE_CATEGORIES: `general`, `core`, `bias`, `bias-core`, `bias-templated`,
         `hallucination`, `hallucination-core`, `hallucination-templated`
+        (`core` and the `-core` ones pick attack_suites/ probes only; the rest include extra packs')
       - A 1-based probe number (`k`) or inclusive range (`m-n`)
       - A dataset name (`probe.dataset`), probe name (`probe.name`), template name
         (`probe.template`), matched-pair id (`probe.pair_id`), or extra pack name
-        (`probe.overlay`, e.g. `my-agency` for RT_EXTRA_SUITES=overlays/my-agency)
+        (`probe.overlay`, e.g. `my-agency` for RT_EXTRA_SUITES=overlays/my-agency; any case)
 
     Whenever a selected probe belongs to a matched pair (`probe.pair_id`), its partner
     probe is automatically included and the result is returned in original file order
@@ -266,7 +276,11 @@ def select_probes(probes: list[Probe], spec: str = "") -> list[Probe]:
             directly_selected.update(matched)
             continue
 
-        matched = [i for i, p in enumerate(probes) if token in (p.name, p.pair_id, p.template, p.dataset, p.overlay)]
+        # A pack is a folder, whose name's case is easy to get wrong: match it in any case.
+        matched = [
+            i for i, p in enumerate(probes)
+            if token in (p.name, p.pair_id, p.template, p.dataset) or (p.overlay and token.lower() == p.overlay.lower())
+        ]
         if matched:
             directly_selected.update(matched)
             continue
