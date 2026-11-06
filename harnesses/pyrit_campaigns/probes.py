@@ -208,9 +208,10 @@ NOT_CORE_WHEN_TEMPLATED = frozenset({BIAS_DATASET, HALLUCINATION_DATASET})
 
 PROBE_CATEGORIES = {
     "general": lambda p: p.dataset != BIAS_DATASET,
-    # core and the -core keywords pick attack_suites/ probes only, so a profile's default run
-    # sends the same probes whatever packs are loaded: an extra pack is run by its name. Every
-    # other keyword, and a suite's name, picks by topic, so it takes a pack's probes on it too.
+    # core and the -core keywords pick attack_suites/ probes only: an extra pack is run by its
+    # name. Every other keyword, and a suite's name, picks by topic, so it takes a pack's probes
+    # on it too. A profile that mixes the two (prompt_injection,...,hallucination-core) sends a
+    # pack's probes in some suites and not others; unselected_packs_note() says which.
     "core": lambda p: not p.overlay and (p.dataset not in NOT_CORE_WHEN_TEMPLATED or not p.template),
     "bias": lambda p: p.dataset == BIAS_DATASET,
     "bias-core": lambda p: not p.overlay and p.dataset == BIAS_DATASET and not p.template,
@@ -323,21 +324,39 @@ def select_probes(probes: list[Probe], spec: str = "") -> list[Probe]:
 
 
 def unselected_packs_note(all_probes: list[Probe], selected: list[Probe], spec: str) -> str:
-    """A line for each extra pack that loaded probes the selection sends none of, or "".
+    """A line for each extra pack the selection leaves out any of the loaded probes of, or "".
 
-    `core`, the profiles' default, picks attack_suites/ probes only, so without this an
-    agency that set RT_EXTRA_SUITES could run without its own probes and not notice.
+    Each line says how many it leaves out, in which suites. `core` picks no pack probes, and
+    a profile that names suites but runs `hallucination-core` sends a pack's probes in those
+    suites but not its hallucination ones, so without this an agency that set
+    RT_EXTRA_SUITES could run without some or all of its own probes and not notice.
     """
-    sent = {p.overlay for p in selected}
+    # A pack probe's name is unique across every pack (load_probes checks), so it identifies it.
+    sent = {p.name for p in selected if p.overlay}
     loaded: dict[str, int] = {}
+    left_out: dict[str, dict[str, int]] = {}
     for probe in all_probes:
-        if probe.overlay:
-            loaded[probe.overlay] = loaded.get(probe.overlay, 0) + 1
-    lines = [
-        f"Note: {profiles.EXTRA_PACKS_SETTING} loaded {count} probe(s) from {name}, but the selection "
-        f"({spec or 'all'}) sends none of them. To send them, add the pack's name: --probes {spec or 'core'},{name}"
-        for name, count in loaded.items() if name not in sent
-    ]
+        if not probe.overlay:
+            continue
+        loaded[probe.overlay] = loaded.get(probe.overlay, 0) + 1
+        if probe.name not in sent:
+            suites = left_out.setdefault(probe.overlay, {})
+            suites[probe.dataset] = suites.get(probe.dataset, 0) + 1
+    lines = []
+    for name, suites in left_out.items():
+        where = ", ".join(f"{suites[s]} in {s}" for s in profiles.SUITES if s in suites)
+        missing = sum(suites.values())
+        to_send = f"add the pack's name: --probes {spec or 'core'},{name}"
+        if missing == loaded[name]:
+            lines.append(
+                f"Note: {profiles.EXTRA_PACKS_SETTING} loaded {loaded[name]} probe(s) from {name}, but the selection "
+                f"({spec or 'all'}) sends none of them ({where}). To send them, {to_send}"
+            )
+        else:
+            lines.append(
+                f"Note: the selection ({spec or 'all'}) sends {loaded[name] - missing} of the {loaded[name]} probe(s) "
+                f"{profiles.EXTRA_PACKS_SETTING} loaded from {name}. It leaves out {where}. To send them all, {to_send}"
+            )
     return "\n".join(lines)
 
 
