@@ -13,17 +13,17 @@ from harnesses.pyrit_campaigns import target_factory
 from harnesses.pyrit_campaigns.target_factory import build_scoring_target, build_target, model_name
 
 
-def test_default_provider_is_gemini(fake_keys):
+def test_default_provider_is_gemini(fake_keys, memory):
     assert model_name(build_target()) == "gemini/gemini-3.8-flash"
 
 
 @pytest.mark.parametrize("provider", sorted(target_factory.PROVIDER_DEFAULTS))
-def test_each_key_based_provider_gets_its_default_model(fake_keys, provider):
+def test_each_key_based_provider_gets_its_default_model(fake_keys, memory, provider):
     expected, _key = target_factory.PROVIDER_DEFAULTS[provider]
     assert model_name(build_target(provider=provider)) == expected
 
 
-def test_rt_model_overrides_the_default(fake_keys, clean_env):
+def test_rt_model_overrides_the_default(fake_keys, clean_env, memory):
     clean_env.setenv("RT_MODEL", "gemini/gemini-2.5-pro")
     assert model_name(build_target()) == "gemini/gemini-2.5-pro"
 
@@ -38,12 +38,12 @@ def test_unknown_provider_lists_the_options(fake_keys):
         build_target(provider="nope")
 
 
-def test_judge_defaults_to_the_target_provider(fake_keys, clean_env):
+def test_judge_defaults_to_the_target_provider(fake_keys, clean_env, memory):
     clean_env.setenv("RT_PROVIDER", "openai")
     assert model_name(build_scoring_target()) == "openai/gpt-5"
 
 
-def test_judge_on_another_provider_gets_that_providers_model(fake_keys, clean_env):
+def test_judge_on_another_provider_gets_that_providers_model(fake_keys, clean_env, memory):
     # Target on Gemini with an explicit model, judge on Anthropic. The judge used to
     # be built with the Gemini model id and the Anthropic key, so every judge call
     # failed.
@@ -53,13 +53,13 @@ def test_judge_on_another_provider_gets_that_providers_model(fake_keys, clean_en
     assert model_name(build_scoring_target()) == "anthropic/claude-haiku-4-5"
 
 
-def test_rt_judge_model_picks_the_judge_model(fake_keys, clean_env):
+def test_rt_judge_model_picks_the_judge_model(fake_keys, clean_env, memory):
     clean_env.setenv("RT_JUDGE_PROVIDER", "anthropic")
     clean_env.setenv("RT_JUDGE_MODEL", "anthropic/claude-sonnet-4-5")
     assert model_name(build_scoring_target()) == "anthropic/claude-sonnet-4-5"
 
 
-def test_judge_on_the_target_provider_does_not_inherit_rt_model(fake_keys, clean_env):
+def test_judge_on_the_target_provider_does_not_inherit_rt_model(fake_keys, clean_env, memory):
     # RT_MODEL is the model under test. A judge that picked it up would grade its
     # own answers without anyone having asked for that.
     clean_env.setenv("RT_MODEL", "gemini/gemini-2.5-pro")
@@ -81,7 +81,7 @@ def test_attacker_provider_falls_back_to_judge_then_target(clean_env, settings, 
     assert target_factory.resolve_provider("adversarial") == expected
 
 
-def test_rt_adversarial_model_picks_the_attacker_model(fake_keys, clean_env):
+def test_rt_adversarial_model_picks_the_attacker_model(fake_keys, clean_env, memory):
     clean_env.setenv("RT_ADVERSARIAL_PROVIDER", "openai")
     clean_env.setenv("RT_ADVERSARIAL_MODEL", "openai/gpt-5-mini")
     assert model_name(build_target("adversarial")) == "openai/gpt-5-mini"
@@ -220,25 +220,25 @@ def test_target_model_from_another_provider_stops(fake_keys, clean_env):
         build_target()
 
 
-def test_unprefixed_model_ids_are_left_to_the_provider(fake_keys, clean_env):
+def test_unprefixed_model_ids_are_left_to_the_provider(fake_keys, clean_env, memory):
     # LiteLLM accepts bare OpenAI names; only a prefix naming another provider is a mismatch.
     clean_env.setenv("RT_PROVIDER", "openai")
     clean_env.setenv("RT_MODEL", "gpt-5-mini")
     assert model_name(build_target()) == "gpt-5-mini"
 
 
-def test_a_judge_that_is_the_target_gets_a_note(fake_keys, capsys):
+def test_a_judge_that_is_the_target_gets_a_note(fake_keys, memory, capsys):
     build_scoring_target()
     assert "the judge is the model under test" in capsys.readouterr().out
 
 
-def test_a_judge_on_another_model_gets_no_note(fake_keys, clean_env, capsys):
+def test_a_judge_on_another_model_gets_no_note(fake_keys, clean_env, memory, capsys):
     clean_env.setenv("RT_JUDGE_PROVIDER", "anthropic")
     build_scoring_target()
     assert "model under test" not in capsys.readouterr().out
 
 
-def test_an_attacker_that_is_the_target_is_called_the_attacker(fake_keys, capsys):
+def test_an_attacker_that_is_the_target_is_called_the_attacker(fake_keys, memory, capsys):
     build_target("adversarial")
     assert "the attacker is the model under test" in capsys.readouterr().out
 
@@ -777,7 +777,7 @@ def test_app_trace_path_supports_multiple_comma_separated_paths(fake_app, clean_
     }
 
 
-def test_app_trace_path_strips_static_and_history_bloat_and_trims_per_tool_result():
+def test_app_trace_path_strips_static_and_history_bloat_and_trims_per_tool_result(memory):
     import json
 
     target = target_factory.AppChatTarget(
@@ -845,7 +845,7 @@ def test_app_trace_path_strips_static_and_history_bloat_and_trims_per_tool_resul
     assert parsed["rounds"][2]["tool_calls"][0] == {"name": "final_round_report", "response": {"pageViews": 47706}}
 
 
-def test_app_trace_path_projects_field_across_list_of_rounds():
+def test_app_trace_path_projects_field_across_list_of_rounds(memory):
     import json
 
     target = target_factory.AppChatTarget(
