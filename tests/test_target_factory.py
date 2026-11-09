@@ -873,7 +873,7 @@ def test_app_trace_path_projects_field_across_list_of_rounds(memory):
     assert target.trace_text(no_tools_body) == ""
 
 
-# --- Streaming responses (SSE, NDJSON, Lambda streaming) ---------------------------
+# --- Streaming responses (SSE, NDJSON, Lambda streaming) & APP_TOKEN_COMMAND --------
 
 
 SSE_BODY = "\n".join([
@@ -991,12 +991,80 @@ def test_streaming_error_names_the_stream_kind_response_path_and_first_event(fak
     assert f"first event: {first_event}" in msg
 
 
+def test_app_token_command_fetches_initial_token_and_recovers_after_mid_run_401(fake_app, clean_env, tmp_path):
+    import sys
+
+    counter_file = tmp_path / "token_count.txt"
+    counter_file.write_text("0")
+    script = tmp_path / "emit_token.py"
+    script.write_text(
+        "from pathlib import Path\n"
+        f"p = Path({str(counter_file)!r})\n"
+        "n = int(p.read_text()) + 1\n"
+        "p.write_text(str(n))\n"
+        "print(f'fresh-token-{n}')\n"
+    )
+    clean_env.setenv("APP_TOKEN_COMMAND", f'"{sys.executable}" "{script}"')
+    fake_app["replies"] = [
+        (200, '{"answer": "first reply"}'),
+        (401, '{"message": "token expired"}'),
+        (200, '{"answer": "second reply after refresh"}'),
+    ]
+
+    target = build_target()
+    # Building the target does not run the command until a request is sent.
+    assert counter_file.read_text() == "0"
+    try:
+        m1 = Message(message_pieces=[MessagePiece(role="user", original_value="turn 1", conversation_id=str(uuid.uuid4()))])
+        m2 = Message(message_pieces=[MessagePiece(role="user", original_value="turn 2", conversation_id=str(uuid.uuid4()))])
+        r1 = asyncio.run(target.send_prompt_async(message=m1))[0].get_value()
+        r2 = asyncio.run(target.send_prompt_async(message=m2))[0].get_value()
+    finally:
+        asyncio.run(target_factory.close_target(target))
+
+    assert (r1, r2) == ("first reply", "second reply after refresh")
+    assert counter_file.read_text() == "2"
+    auth_headers = [
+        {k.lower(): v for k, v in req["headers"].items()}["authorization"]
+        for req in fake_app["requests"]
+    ]
+    assert auth_headers == [
+        "Bearer fresh-token-1",
+        "Bearer fresh-token-1",
+        "Bearer fresh-token-2",
+    ]
 
 
+def test_app_token_command_stops_after_one_retry_when_401_persists(fake_app, clean_env):
+    import sys
+
+    clean_env.setenv("APP_TOKEN_COMMAND", f'"{sys.executable}" -c "print(\'still-bad-token\')"')
+    fake_app["replies"] = [(401, '{"message": "Unauthorized"}')]
+    with pytest.raises(RuntimeError, match="HTTP 401"):
+        _send_to_app()
+    # Initial request + 1 retry after refreshing the token.
+    assert len(fake_app["requests"]) == 2
 
 
+def test_app_token_command_failure_reports_exit_code_and_output(fake_app, clean_env):
+    import sys
+
+    clean_env.setenv(
+        "APP_TOKEN_COMMAND",
+        f'"{sys.executable}" -c "import sys; sys.stderr.write(\'sso session expired\\n\'); sys.exit(2)"',
+    )
+    with pytest.raises(RuntimeError, match=r"APP_TOKEN_COMMAND failed \(exit 2\): sso session expired"):
+        _send_to_app()
+    assert fake_app["requests"] == []
 
 
+def test_app_token_command_empty_output_raises_clear_error(fake_app, clean_env):
+    import sys
+
+    clean_env.setenv("APP_TOKEN_COMMAND", f'"{sys.executable}" -c "print(\'   \')"')
+    with pytest.raises(RuntimeError, match="APP_TOKEN_COMMAND printed an empty token"):
+        _send_to_app()
+    assert fake_app["requests"] == []
 
 
 def test_app_sse_without_response_path_joins_plain_text_events(fake_app, clean_env):
@@ -1087,3 +1155,44 @@ def test_concat_recognizes_an_app_that_resends_the_whole_reply_so_far(fake_app, 
     repeated_deltas = 'data: {"text": "a"}\n\ndata: {"text": "a"}\n\n'
     fake_app["replies"] = [(200, repeated_deltas)]
     assert _send_to_app() == "aa"
+
+
+def test_app_token_command_that_hangs_is_stopped_and_its_command_is_not_shown(fake_app, clean_env):
+    import sys
+    import time
+
+    clean_env.setenv("APP_TIMEOUT", "2")
+    # Run through the shell, as a real command is: stopping only the shell would leave
+    # this program running and the run waiting the full 30 s.
+    clean_env.setenv(
+        "APP_TOKEN_COMMAND", f'"{sys.executable}" -c "import time; time.sleep(30)" --password=Hunter2secret'
+    )
+    start = time.monotonic()
+    with pytest.raises(RuntimeError) as exc_info:
+        _send_to_app()
+    assert time.monotonic() - start < 15
+    message = str(exc_info.value)
+    assert "did not finish within 2 s" in message
+    assert "Hunter2secret" not in message and "sleep" not in message
+    assert exc_info.value.__suppress_context__  # Python's timeout error, which quotes the command, is not chained
+    assert fake_app["requests"] == []
+
+
+def test_app_token_command_failure_never_shows_its_standard_output(fake_app, clean_env):
+    import sys
+
+    clean_env.setenv(
+        "APP_TOKEN_COMMAND", f'"{sys.executable}" -c "import sys; print(\'secret-token-abc\'); sys.exit(3)"'
+    )
+    with pytest.raises(RuntimeError) as exc_info:
+        _send_to_app()
+    message = str(exc_info.value)
+    assert "exit 3" in message and "nothing on standard error" in message
+    assert "secret-token-abc" not in message
+
+
+def test_app_token_command_is_refused_with_browser_api():
+    from harnesses.pyrit_campaigns.browser_target import BrowserApiTarget
+
+    with pytest.raises(SystemExit, match="APP_TOKEN_COMMAND works only with APP_TRANSPORT=http"):
+        BrowserApiTarget(page_url="https://example.test/", endpoint="/chat", token_command="echo token")

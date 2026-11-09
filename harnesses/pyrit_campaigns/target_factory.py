@@ -33,9 +33,11 @@ Providers come in two flavors, which is why they are not all one dict:
     failure and it is invisible without knowing which principal you are.
 """
 
+import asyncio
 import json
 import os
 import re
+import subprocess
 import uuid
 
 from pyrit.exceptions import RateLimitException, pyrit_target_retry
@@ -778,6 +780,61 @@ def _extract_paths(events: list, paths_spec: str, *, clean_trace: bool = False) 
     return json.dumps(extracted)
 
 
+def run_token_command(command: str, timeout: float) -> str:
+    """Run APP_TOKEN_COMMAND through the shell (cmd.exe on Windows) and return what it printed.
+
+    Error messages never show the command, which may carry a password or client secret,
+    or its standard output, which may hold a token: only its exit code and standard
+    error. Its input is empty, so a command that asks for something fails instead of
+    waiting. On a timeout the command's whole process tree is stopped: stopping only the
+    shell would leave the program it started running, holding the output open, and the
+    run would wait for that program anyway.
+    """
+    group = {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP} if os.name == "nt" else {"start_new_session": True}
+    proc = subprocess.Popen(
+        command,
+        shell=True,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        errors="replace",
+        **group,
+    )
+    try:
+        out, err = proc.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        _stop_process_tree(proc)
+        # from None: Python's own timeout error quotes the whole command.
+        raise RuntimeError(
+            f"APP_TOKEN_COMMAND did not finish within {timeout:g} s (APP_TIMEOUT) and was stopped. "
+            "It must print a token without waiting for anything, such as a sign-in in the browser."
+        ) from None
+    if proc.returncode != 0:
+        detail = (err or "").strip()[:300] or "(nothing on standard error)"
+        raise RuntimeError(f"APP_TOKEN_COMMAND failed (exit {proc.returncode}): {detail}")
+    return out
+
+
+def _stop_process_tree(proc: subprocess.Popen) -> None:
+    """Stop a command started by run_token_command, with everything it started."""
+    if os.name == "nt":
+        subprocess.run(
+            ["taskkill", "/F", "/T", "/PID", str(proc.pid)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+        )
+    else:
+        import signal
+
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            pass
+    try:
+        proc.communicate(timeout=5)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+
+
 class AppChatTarget(PromptTarget):
     """Your own deployed chat application, over HTTP.
 
@@ -810,6 +867,10 @@ class AppChatTarget(PromptTarget):
                               blocked,guardrail. Stored in prompt_metadata["rt_control"].
         APP_API_KEY           sent as the x-api-key header (API Gateway API keys)
         APP_TOKEN             sent as Authorization: Bearer <token>
+        APP_TOKEN_COMMAND     optional: a shell command (cmd.exe on Windows) that prints
+                              a fresh bearer token, run before the first request and
+                              again on HTTP 401, then the request is retried once. It
+                              replaces APP_TOKEN. Not used with APP_TRANSPORT=browser-api.
         APP_TIMEOUT           seconds to wait for a reply. Default 60.
         APP_MAX_RPM           requests per minute, to stay inside the app's throttling
 
@@ -837,6 +898,7 @@ class AppChatTarget(PromptTarget):
         stream_mode: str = "concat",
         trace_path: str = "",
         control_path: str = "",
+        token_command: str = "",
         headers: dict[str, str] | None = None,
         timeout: float = 60.0,
         max_requests_per_minute: int | None = None,
@@ -889,6 +951,9 @@ class AppChatTarget(PromptTarget):
         self._stream_mode = mode
         self._trace_path = trace_path.strip()
         self._control_path = control_path.strip()
+        self._token_command = token_command.strip()
+        self._token_lock = asyncio.Lock()
+        self._token_loads = 0
         self._headers = {"Content-Type": "application/json", **(headers or {})}
         self._timeout = timeout
         self._client = None
@@ -911,6 +976,7 @@ class AppChatTarget(PromptTarget):
             stream_mode=os.getenv("APP_STREAM_MODE") or "concat",
             trace_path=os.getenv("APP_TRACE_PATH", ""),
             control_path=os.getenv("APP_CONTROL_PATH", ""),
+            token_command=os.getenv("APP_TOKEN_COMMAND", ""),
             headers=headers,
             timeout=float(os.getenv("APP_TIMEOUT") or 60),
             max_requests_per_minute=int(rpm) if rpm else None,
@@ -1065,14 +1131,38 @@ class AppChatTarget(PromptTarget):
         _kind, events = _parse_response_events(body)
         return _extract_paths(events, self._control_path, clean_trace=False)
 
-    async def _post(self, body: str) -> tuple[int, str]:
-        """Send one request body to APP_ENDPOINT; return the status and the response body."""
+    async def _refresh_token(self) -> None:
+        """Run APP_TOKEN_COMMAND to get a fresh bearer token and store it in the Authorization header."""
+        token = (await asyncio.to_thread(run_token_command, self._token_command, self._timeout)).strip()
+        if token.lower().startswith("bearer "):
+            token = token[7:].strip()
+        if not token:
+            raise RuntimeError("APP_TOKEN_COMMAND printed an empty token.")
+        self._headers["Authorization"] = f"Bearer {token}"
+        self._token_loads += 1
+
+    async def _send_http(self, body: str) -> tuple[int, str]:
         import httpx
 
         if self._client is None:
             self._client = httpx.AsyncClient(timeout=self._timeout)
         response = await self._client.post(self._endpoint, content=body, headers=self._headers)
         return response.status_code, response.text
+
+    async def _post(self, body: str) -> tuple[int, str]:
+        """Send one request body to APP_ENDPOINT; return the status and the response body."""
+        if self._token_command and self._token_loads == 0:
+            async with self._token_lock:
+                if self._token_loads == 0:
+                    await self._refresh_token()
+        loads = self._token_loads
+        status, response_body = await self._send_http(body)
+        if status == 401 and self._token_command:
+            async with self._token_lock:
+                if self._token_loads == loads:
+                    await self._refresh_token()
+            status, response_body = await self._send_http(body)
+        return status, response_body
 
     @limit_requests_per_minute
     @pyrit_target_retry

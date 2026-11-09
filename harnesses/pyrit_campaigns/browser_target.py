@@ -361,6 +361,13 @@ class BrowserApiTarget(AppChatTarget):
         parsed = urlparse(page_url)
         if parsed.scheme not in ("http", "https") or not parsed.netloc:
             raise SystemExit(f"APP_BROWSER_URL={page_url!r} is not an http(s) URL.")
+        if (app_settings.get("token_command") or "").strip():
+            # The signed-in page sends the requests with its own sign-in, and is reloaded
+            # when that lapses, so a token from a command would never be used.
+            raise SystemExit(
+                "APP_TOKEN_COMMAND works only with APP_TRANSPORT=http. With browser-api the signed-in page "
+                "sends the requests and is reloaded if its sign-in lapses; leave APP_TOKEN_COMMAND blank."
+            )
         super().__init__(endpoint=urljoin(page_url, endpoint), **app_settings)
         api = urlparse(self._endpoint)
         self.set_model_name(model_name=f"app:{api.netloc}{api.path} (browser-api)")
