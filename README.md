@@ -388,6 +388,21 @@ APP_RESPONSE_PATH=reply
 If the sign-in lapses mid-run, the page is reloaded once so you can sign in again. Every
 setting is documented in `BrowserApiTarget`, in `browser_target.py`.
 
+**Streaming responses.** If your app streams its reply as
+Server-Sent Events (`text/event-stream`), newline-delimited JSON (`NDJSON`), or AWS Lambda
+response streaming chunks, `AppChatTarget` (and `BrowserApiTarget`) detects the stream
+automatically, reads `APP_RESPONSE_PATH` from each event, and joins the text pieces. An app
+that resends the whole reply so far in each event is recognized, and its last event is the
+reply; `APP_STREAM_MODE=last` always takes the last event's text. Trace and control fields
+(`APP_TRACE_PATH`, `APP_CONTROL_PATH`) are collected across the events. A stream that ends
+in an error event fails that request, like an HTTP error, so a cut-off reply is never
+graded as the app's answer.
+
+```bash
+APP_RESPONSE_PATH=choices.0.delta.content
+APP_STREAM_MODE=concat                           # default; last takes the final event's text
+```
+
 **Tool calls and retrieved sources (`APP_TRACE_PATH`).** If the app's JSON response
 includes what happened behind the scenes alongside the reply — such as an agent's per-turn
 rounds and tool calls (`trace.rounds` or `trace.rounds.tool_calls`) or a RAG pipeline's

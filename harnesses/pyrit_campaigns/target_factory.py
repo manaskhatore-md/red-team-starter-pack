@@ -456,6 +456,11 @@ def _holds_whole_value(value, slot: str) -> bool:
 # so the judge and reports see what tools or sources the app used without putting raw
 # JSON traces into converted_value (where {HISTORY}, the attacker, and regex checks read).
 TRACE_METADATA_KEY = "rt_trace"
+# Stored on the assistant MessagePiece's prompt_metadata when APP_CONTROL_PATH is set,
+# so guardrail and reach checks can read control fields (e.g. blocked, guardrail.action)
+# from single-JSON or streamed responses.
+CONTROL_METADATA_KEY = "rt_control"
+STREAM_MODES = ("concat", "last")
 # Set on a probe's results when its judge needs the app's sources to tell a real
 # specific from an invented one (needs_trace in the dataset). See trace_unavailable().
 NEEDS_TRACE_LABEL = "rt_needs_trace"
@@ -569,11 +574,215 @@ def _trim_tool_results(value, *, max_result_chars: int = MAX_TOOL_RESULT_CHARS):
     return value
 
 
+_SSE_FIELDS = ("data", "event", "id", "retry")
+
+
+def _sse_events(body: str) -> list[tuple[str, str]] | None:
+    """The events of a text/event-stream body as (event type, data), or None if it isn't one.
+
+    Follows the SSE format: a blank line ends an event, an event's data: lines are
+    joined with newlines (so a reply's line breaks survive, and JSON may span lines),
+    one space after the colon is dropped, and lines starting with ":" are comments.
+    The last event is kept even without a closing blank line, since the body is whole.
+    """
+    lines = body.splitlines()
+    fields = []
+    for line in lines:
+        name = line.split(":", 1)[0].strip() if line.strip() else ""
+        fields.append(name)
+    non_empty = [(line, name) for line, name in zip(lines, fields) if line.strip()]
+    if not non_empty or not any(name == "data" for _, name in non_empty):
+        return None
+    if not all(line.lstrip().startswith(":") or name in _SSE_FIELDS for line, name in non_empty):
+        return None
+
+    events: list[tuple[str, str]] = []
+    event_type, data = "", []
+
+    def dispatch():
+        nonlocal event_type, data
+        # Tolerate a server that sends the [DONE] end marker without the blank line
+        # that should end the event before it.
+        if len(data) > 1 and data[-1].strip() == "[DONE]":
+            data = data[:-1]
+        if data:
+            events.append((event_type or "message", "\n".join(data)))
+        event_type, data = "", []
+
+    for line in lines:
+        if not line.strip():
+            dispatch()
+            continue
+        line = line.lstrip()
+        if line.startswith(":"):
+            continue
+        name, _, value = line.partition(":")
+        if value.startswith(" "):
+            value = value[1:]
+        if name.strip() == "data":
+            data.append(value)
+        elif name.strip() == "event":
+            # A second event: line in one event means the server left out the blank
+            # line between two events, so the first ends here. An event: line after
+            # untyped data is legal SSE and names that same event's type.
+            if data and event_type:
+                dispatch()
+            event_type = value.strip()
+    dispatch()
+    return events
+
+
+def _parse_response_events(body: str) -> tuple[str | None, list]:
+    """Parse a response body as a single JSON value, an SSE event stream, or NDJSON / JSON chunks.
+
+    Returns (kind, events) where kind is None for a single JSON document, "SSE" for
+    text/event-stream, or "NDJSON" for newline-delimited or concatenated JSON chunks
+    (such as AWS Lambda response streaming). Returns (None, []) when the body is not
+    JSON or an event stream. An SSE event's data is parsed as JSON when it is JSON and
+    kept as text otherwise; the [DONE] end marker and empty data are left out.
+    """
+    try:
+        return None, [json.loads(body)]
+    except ValueError:
+        pass
+
+    sse = _sse_events(body)
+    if sse is not None:
+        events = []
+        for _event_type, payload in sse:
+            if not payload.strip() or payload.strip() == "[DONE]":
+                continue
+            try:
+                events.append(json.loads(payload))
+            except ValueError:
+                lines = [ln for ln in payload.splitlines() if ln.strip() and ln.strip() != "[DONE]"]
+                if len(lines) > 1:
+                    try:
+                        events.extend(json.loads(ln) for ln in lines)
+                        continue
+                    except ValueError:
+                        pass
+                events.append(payload)
+        return "SSE", events
+
+    decoder = json.JSONDecoder()
+    idx, n = 0, len(body)
+    events = []
+    try:
+        while idx < n:
+            while idx < n and body[idx] in " \t\r\n\x00":
+                idx += 1
+            if idx >= n:
+                break
+            obj, idx = decoder.raw_decode(body, idx)
+            events.append(obj)
+    except ValueError:
+        events = []
+    if len(events) >= 2:
+        return "NDJSON", events
+    return None, []
+
+
+def _stream_error(body: str) -> str:
+    """The error a streamed response ended with, or "" if it has none.
+
+    A stream can start a reply and then fail (the model was overloaded, the connection
+    to it dropped). What arrived before the error is a cut-off reply, so it must not be
+    graded as the app's answer. Counts as an error: an SSE event of type "error", or a
+    streamed JSON event with a non-empty top-level "error" field. A single JSON response
+    is left alone, since its "error" field (if any) is the app's own business.
+    """
+    sse = _sse_events(body)
+    if sse is not None:
+        for event_type, payload in sse:
+            if event_type == "error":
+                return payload.strip() or "(no details)"
+    kind, events = _parse_response_events(body)
+    if kind is None:
+        return ""
+    for event in events:
+        if isinstance(event, dict) and event.get("error"):
+            return json.dumps(event)
+    return ""
+
+
+def _step_path(root, path: str) -> tuple[bool, object]:
+    """Resolve one dotted path on a JSON value, supporting list indices and list field projection."""
+    value = root
+    for step in path.split("."):
+        if isinstance(value, list) and step.lstrip("-").isdigit() and -len(value) <= int(step) < len(value):
+            value = value[int(step)]
+        elif isinstance(value, list):
+            projected = []
+            for item in value:
+                if isinstance(item, dict) and step in item:
+                    sub = item[step]
+                    if isinstance(sub, list):
+                        projected.extend(sub)
+                    elif sub is not None:
+                        projected.append(sub)
+            if not projected:
+                return False, None
+            value = projected
+        elif isinstance(value, dict) and step in value:
+            value = value[step]
+        else:
+            return False, None
+    return True, value
+
+
+def _merge_event_values(values: list):
+    """Combine a path's values across streaming events: concatenate lists, merge dicts, or take the latest scalar."""
+    if len(values) == 1:
+        return values[0]
+    if all(isinstance(v, list) for v in values):
+        return [item for sublist in values for item in sublist]
+    if all(isinstance(v, dict) for v in values):
+        merged: dict = {}
+        for d in values:
+            for k, v in d.items():
+                if k in merged and isinstance(merged[k], list) and isinstance(v, list):
+                    merged[k] = [*merged[k], *v]
+                elif k in merged and isinstance(merged[k], dict) and isinstance(v, dict):
+                    merged[k] = _merge_event_values([merged[k], v])
+                else:
+                    merged[k] = v
+        return merged
+    return values[-1]
+
+
+def _extract_paths(events: list, paths_spec: str, *, clean_trace: bool = False) -> str:
+    """Read one or more comma-separated dotted paths from parsed response event(s)."""
+    if not paths_spec or not events:
+        return ""
+    paths = [p.strip() for p in paths_spec.split(",") if p.strip()]
+    extracted: dict[str, object] = {}
+    for path in paths:
+        values = []
+        for event in events:
+            found, val = _step_path(event, path)
+            if not found:
+                continue
+            cleaned = _trim_tool_results(_strip_static_trace_fields(val)) if clean_trace else val
+            if cleaned in (None, "", [], {}) and not isinstance(cleaned, bool):
+                continue
+            values.append(cleaned)
+        if not values:
+            continue
+        extracted[path] = _merge_event_values(values)
+    if not extracted:
+        return ""
+    if len(paths) == 1:
+        only = next(iter(extracted.values()))
+        return only if isinstance(only, str) else json.dumps(only)
+    return json.dumps(extracted)
+
+
 class AppChatTarget(PromptTarget):
     """Your own deployed chat application, over HTTP.
 
     Sends each probe as one JSON request and reads the reply from one field of the
-    JSON response. Settings (all from .env):
+    JSON response (or from an SSE / NDJSON / Lambda response stream). Settings (all from .env):
 
         APP_ENDPOINT          the chat URL, e.g. https://abc123.execute-api.us-east-1.amazonaws.com/test/chat
         APP_REQUEST_TEMPLATE  the request body, with {PROMPT} where the probe goes.
@@ -587,11 +796,18 @@ class AppChatTarget(PromptTarget):
                               order. Default: user,assistant
         APP_RESPONSE_PATH     where the reply is in the response, dotted, e.g. answer
                               or choices.0.message.content. Unset: the whole body.
+        APP_STREAM_MODE       how to combine APP_RESPONSE_PATH across streamed SSE or
+                              NDJSON events: concat (the default, joins the pieces, or
+                              takes the last one if each repeats the reply so far) or
+                              last (takes the last event carrying the path).
         APP_TRACE_PATH        optional: where tool calls, retrieved sources, or citations
                               are in the response, dotted (or comma-separated paths), e.g.
                               trace.rounds or citations. Shown to the judge in
                               <response_trace> and included in reports, without being
                               sent back in {HISTORY} or scanned as user-visible reply text.
+        APP_CONTROL_PATH      optional: where guardrail or routing control fields are in
+                              the response, dotted (or comma-separated paths), e.g.
+                              blocked,guardrail. Stored in prompt_metadata["rt_control"].
         APP_API_KEY           sent as the x-api-key header (API Gateway API keys)
         APP_TOKEN             sent as Authorization: Bearer <token>
         APP_TIMEOUT           seconds to wait for a reply. Default 60.
@@ -618,7 +834,9 @@ class AppChatTarget(PromptTarget):
         history_turn: str = DEFAULT_HISTORY_TURN,
         history_roles: str = "user,assistant",
         response_path: str = "",
+        stream_mode: str = "concat",
         trace_path: str = "",
+        control_path: str = "",
         headers: dict[str, str] | None = None,
         timeout: float = 60.0,
         max_requests_per_minute: int | None = None,
@@ -634,6 +852,9 @@ class AppChatTarget(PromptTarget):
             raise SystemExit(f"APP_REQUEST_TEMPLATE is not valid JSON ({e}): {request_template}") from e
         if PROMPT_SLOT not in request_template:
             raise SystemExit(f"APP_REQUEST_TEMPLATE has no {PROMPT_SLOT} for the probe to go in: {request_template}")
+        mode = (stream_mode or "concat").strip().lower()
+        if mode not in STREAM_MODES:
+            raise SystemExit(f"APP_STREAM_MODE={stream_mode!r}: use concat (the default) or last.")
 
         # None: the app keeps its own history, and requests carry only the new message.
         self._history_turn = None
@@ -665,7 +886,9 @@ class AppChatTarget(PromptTarget):
             ) if self._history_turn is not None else None,
         )
         self._response_path = response_path.strip()
+        self._stream_mode = mode
         self._trace_path = trace_path.strip()
+        self._control_path = control_path.strip()
         self._headers = {"Content-Type": "application/json", **(headers or {})}
         self._timeout = timeout
         self._client = None
@@ -685,7 +908,9 @@ class AppChatTarget(PromptTarget):
             history_turn=os.getenv("APP_HISTORY_TURN") or DEFAULT_HISTORY_TURN,
             history_roles=os.getenv("APP_HISTORY_ROLES") or "user,assistant",
             response_path=os.getenv("APP_RESPONSE_PATH", ""),
+            stream_mode=os.getenv("APP_STREAM_MODE") or "concat",
             trace_path=os.getenv("APP_TRACE_PATH", ""),
+            control_path=os.getenv("APP_CONTROL_PATH", ""),
             headers=headers,
             timeout=float(os.getenv("APP_TIMEOUT") or 60),
             max_requests_per_minute=int(rpm) if rpm else None,
@@ -731,88 +956,114 @@ class AppChatTarget(PromptTarget):
         return turns
 
     def reply_text(self, body: str) -> str:
-        """The reply, read from APP_RESPONSE_PATH in the response body."""
+        """The reply, read from APP_RESPONSE_PATH in the response body (single JSON, SSE, or NDJSON)."""
+        kind, events = _parse_response_events(body)
         if not self._response_path:
+            if kind == "SSE":
+                # Only a JSON object or list means the reply sits in a field. A plain-text
+                # token such as 15 or true also parses as JSON, so join the raw text.
+                structured = next((e for e in events if isinstance(e, (dict, list))), None)
+                if structured is not None:
+                    raise ValueError(
+                        "The app's response is a stream of JSON events, so the reply is in one of their fields: "
+                        "set APP_RESPONSE_PATH to it (e.g. choices.0.delta.content). "
+                        f"First JSON event: {json.dumps(structured)[:300]}"
+                    )
+                # A token that is only a space is part of the text: keep it.
+                payloads = [p for _type, p in _sse_events(body) or [] if p and p.strip() != "[DONE]"]
+                return self._combine_pieces(payloads)
             return body
-        try:
-            value = json.loads(body)
-        except ValueError as e:
-            raise ValueError(f"The app's response is not JSON, so APP_RESPONSE_PATH cannot be read: {body[:300]}") from e
-        for step in self._response_path.split("."):
-            if isinstance(value, list) and step.lstrip("-").isdigit() and -len(value) <= int(step) < len(value):
-                value = value[int(step)]
-            elif isinstance(value, dict) and step in value:
-                value = value[step]
-            else:
-                found = sorted(value) if isinstance(value, dict) else type(value).__name__
-                raise ValueError(
-                    f"APP_RESPONSE_PATH={self._response_path}: no {step!r} in the response (found: {found}). "
-                    f"Response: {body[:300]}"
-                )
-        if value is None:
+        if kind is None and not events:
+            raise ValueError(f"The app's response is not JSON, so APP_RESPONSE_PATH cannot be read: {body[:300]}")
+        if kind is None:
+            value = events[0]
+            for step in self._response_path.split("."):
+                if isinstance(value, list) and step.lstrip("-").isdigit() and -len(value) <= int(step) < len(value):
+                    value = value[int(step)]
+                elif isinstance(value, dict) and step in value:
+                    value = value[step]
+                else:
+                    found = sorted(value) if isinstance(value, dict) else type(value).__name__
+                    raise ValueError(
+                        f"APP_RESPONSE_PATH={self._response_path}: no {step!r} in the response (found: {found}). "
+                        f"Response: {body[:300]}"
+                    )
+            if value is None:
+                return ""
+            return value if isinstance(value, str) else json.dumps(value)
+
+        pieces: list[str] = []
+        matched = False
+        for event in events:
+            found, value = _step_path(event, self._response_path)
+            if found and value is not None:
+                matched = True
+                if isinstance(value, list) and all(isinstance(x, str) for x in value):
+                    pieces.extend(value)
+                else:
+                    pieces.append(value if isinstance(value, str) else json.dumps(value))
+        if not matched:
+            first = (
+                (events[0] if isinstance(events[0], str) else json.dumps(events[0]))
+                if events
+                else body.strip()
+            )
+            raise ValueError(
+                f"response looks like {kind} but no event had APP_RESPONSE_PATH={self._response_path}; "
+                f"first event: {first[:300]}"
+            )
+        return self._combine_pieces(pieces)
+
+    def _combine_pieces(self, pieces: list[str]) -> str:
+        """Join a stream's text pieces into the reply, per APP_STREAM_MODE.
+
+        last keeps the final non-empty piece. concat joins them, unless each piece is
+        the one before it plus more ("Hel", "Hello", "Hello!"): that app resends the
+        whole reply so far each time, so joining would repeat it, and the last piece is
+        the reply.
+        """
+        non_empty = [p for p in pieces if p]
+        if not non_empty:
             return ""
-        return value if isinstance(value, str) else json.dumps(value)
+        if self._stream_mode == "last":
+            return non_empty[-1]
+        snapshots = (
+            len(non_empty) >= 2
+            and bool(non_empty[0].strip())
+            and len(non_empty[-1]) > len(non_empty[0])
+            and all(cur.startswith(prev) for prev, cur in zip(non_empty, non_empty[1:]))
+        )
+        return non_empty[-1] if snapshots else "".join(non_empty)
 
     def trace_text(self, body: str) -> str:
         """The response trace, read from APP_TRACE_PATH in the response body ("" if unset or absent).
 
         Supports one dotted path (e.g. trace.rounds or citations) or several
-        comma-separated paths. Stepping by field name into a list of dicts collects that
-        field across the list (so trace.rounds.tool_calls collects tool_calls from every
-        round). Unlike APP_RESPONSE_PATH, a missing or empty trace on a turn is normal
-        (for example, a turn that called no tools) and returns "".
+        comma-separated paths, across single-JSON or streamed (SSE / NDJSON) responses.
+        Stepping by field name into a list of dicts collects that field across the list
+        (so trace.rounds.tool_calls collects tool_calls from every round). Unlike
+        APP_RESPONSE_PATH, a missing or empty trace on a turn is normal (for example, a
+        turn that called no tools) and returns "".
         """
         if not self._trace_path:
             return ""
-        try:
-            root = json.loads(body)
-        except ValueError:
+        _kind, events = _parse_response_events(body)
+        text = _extract_paths(events, self._trace_path, clean_trace=True)
+        if not text:
             return ""
-        paths = [p.strip() for p in self._trace_path.split(",") if p.strip()]
-        extracted: dict[str, object] = {}
-        for path in paths:
-            value = root
-            found = True
-            for step in path.split("."):
-                if isinstance(value, list) and step.lstrip("-").isdigit() and -len(value) <= int(step) < len(value):
-                    value = value[int(step)]
-                elif isinstance(value, list):
-                    projected = []
-                    for item in value:
-                        if isinstance(item, dict) and step in item:
-                            sub = item[step]
-                            if isinstance(sub, list):
-                                projected.extend(sub)
-                            elif sub is not None:
-                                projected.append(sub)
-                    if not projected:
-                        found = False
-                        break
-                    value = projected
-                elif isinstance(value, dict) and step in value:
-                    value = value[step]
-                else:
-                    found = False
-                    break
-            if not found:
-                continue
-            cleaned = _trim_tool_results(_strip_static_trace_fields(value))
-            if cleaned in (None, "", [], {}):
-                continue
-            extracted[path] = cleaned
-        if not extracted:
-            return ""
-        if len(paths) == 1:
-            only = next(iter(extracted.values()))
-            text = only if isinstance(only, str) else json.dumps(only)
-        else:
-            text = json.dumps(extracted)
         max_chars = int(os.getenv("APP_TRACE_MAX_CHARS") or MAX_TRACE_CHARS)
         if len(text) > max_chars:
             head = max_chars // 3
             tail = max_chars - head
             return text[:head] + " ... [truncated] ... " + text[-tail:]
         return text
+
+    def control_text(self, body: str) -> str:
+        """The guardrail/control fields, read from APP_CONTROL_PATH in the response body ("" if unset or absent)."""
+        if not self._control_path:
+            return ""
+        _kind, events = _parse_response_events(body)
+        return _extract_paths(events, self._control_path, clean_trace=False)
 
     async def _post(self, body: str) -> tuple[int, str]:
         """Send one request body to APP_ENDPOINT; return the status and the response body."""
@@ -836,11 +1087,27 @@ class AppChatTarget(PromptTarget):
             # Token" is a wrong URL, 403 "Forbidden" a missing or wrong API key, and 502
             # a Lambda that crashed or returned the wrong shape. The body says which.
             raise RuntimeError(f"The app returned HTTP {status}: {body[:300]}")
+        error = _stream_error(body)
+        if error:
+            # Whatever text came before the error is a cut-off reply: fail the request
+            # like an HTTP error, rather than grade part of an answer as the whole one.
+            raise RuntimeError(f"The app's streamed reply ended with an error: {error[:300]}")
 
         text = self.reply_text(body)
         trace = self.trace_text(body)
-        metadata = {TRACE_METADATA_KEY: trace} if trace else None
-        return [construct_response_from_request(request=request, response_text_pieces=[text], prompt_metadata=metadata)]
+        control = self.control_text(body)
+        metadata = {}
+        if trace:
+            metadata[TRACE_METADATA_KEY] = trace
+        if control:
+            metadata[CONTROL_METADATA_KEY] = control
+        return [
+            construct_response_from_request(
+                request=request,
+                response_text_pieces=[text],
+                prompt_metadata=metadata or None,
+            )
+        ]
 
     async def cleanup_target_async(self) -> None:
         if self._client is not None:

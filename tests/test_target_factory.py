@@ -589,6 +589,7 @@ def test_app_failing_model_check_stops_the_run(fake_app):
         ("APP_ENDPOINT", "abc123.execute-api.us-east-1.amazonaws.com/test/chat", "not an http"),
         ("APP_REQUEST_TEMPLATE", '{"query": PROMPT}', "not valid JSON"),
         ("APP_REQUEST_TEMPLATE", '{"query": "hello"}', "has no {PROMPT}"),
+        ("APP_STREAM_MODE", "first", "APP_STREAM_MODE='first': use concat (the default) or last"),
     ],
 )
 def test_app_settings_that_cannot_work_stop_before_any_request(fake_app, clean_env, name, value, message):
@@ -872,3 +873,217 @@ def test_app_trace_path_projects_field_across_list_of_rounds(memory):
     assert target.trace_text(no_tools_body) == ""
 
 
+# --- Streaming responses (SSE, NDJSON, Lambda streaming) ---------------------------
+
+
+SSE_BODY = "\n".join([
+    ": keepalive comment",
+    "event: message_start",
+    'data: {"choices": [{"delta": {"role": "assistant"}}], "control": {"blocked": false}}',
+    "",
+    "event: content_block_delta",
+    'data: {"choices": [{"delta": {"content": "Part B "}}], "trace": {"tool_calls": [{"name": "lookup_rate"}]}}',
+    "",
+    "event: content_block_delta",
+    'data: {"choices": [{"delta": {"content": "is $202.90."}}], "trace": {"tool_calls": [{"name": "check_table"}]}}',
+    "",
+    "event: message_stop",
+    'data: {"choices": [{"delta": {}}], "citations": ["CMS-2026"], "control": {"blocked": false, "action": "allow"}}',
+    # No blank line before [DONE], on purpose: some servers leave it out, and the
+    # marker must still not end up inside the last event's data.
+    "data: [DONE]",
+])
+
+NDJSON_BODY = "\n".join([
+    '{"delta": "First chunk. ", "trace": {"rounds": [{"round": 1, "tool_calls": [{"name": "step_one"}]}]}}',
+    '{"delta": "Second chunk.", "trace": {"rounds": [{"round": 2, "tool_calls": [{"name": "step_two"}]}]}}',
+    '{"done": true, "control": {"piiBlocked": false, "gated": false}}',
+])
+
+LAMBDA_STREAM_BODY = (
+    '{"answer": "Hello "}'
+    '{"answer": "Hello from Lambda!", "trace": {"citations": ["COMAR 10.09.24"]}, "control": {"gated": true}}'
+    "\x00\x00\x00\x00"
+)
+
+
+def test_app_parses_sse_stream_reply_trace_and_control_fields(fake_app, clean_env):
+    import json
+
+    clean_env.setenv("APP_RESPONSE_PATH", "choices.0.delta.content")
+    clean_env.setenv("APP_TRACE_PATH", "trace.tool_calls, citations")
+    clean_env.setenv("APP_CONTROL_PATH", "control")
+    fake_app["replies"] = [(200, SSE_BODY)]
+    target = build_target()
+    message = Message(message_pieces=[MessagePiece(role="user", original_value="hi", conversation_id=str(uuid.uuid4()))])
+    try:
+        reply = asyncio.run(target.send_prompt_async(message=message))[0].message_pieces[0]
+    finally:
+        asyncio.run(target_factory.close_target(target))
+
+    assert reply.converted_value == "Part B is $202.90."
+    assert json.loads(reply.prompt_metadata[target_factory.TRACE_METADATA_KEY]) == {
+        "trace.tool_calls": [{"name": "lookup_rate"}, {"name": "check_table"}],
+        "citations": ["CMS-2026"],
+    }
+    assert json.loads(reply.prompt_metadata[target_factory.CONTROL_METADATA_KEY]) == {
+        "blocked": False,
+        "action": "allow",
+    }
+
+
+def test_app_parses_ndjson_and_lambda_streaming_bodies_in_concat_and_last_modes(fake_app, clean_env):
+    import json
+
+    # NDJSON in default concat mode
+    clean_env.setenv("APP_RESPONSE_PATH", "delta")
+    clean_env.setenv("APP_TRACE_PATH", "trace.rounds.tool_calls")
+    clean_env.setenv("APP_CONTROL_PATH", "control.piiBlocked, control.gated")
+    fake_app["replies"] = [(200, NDJSON_BODY)]
+    target = build_target()
+    message = Message(message_pieces=[MessagePiece(role="user", original_value="hi", conversation_id=str(uuid.uuid4()))])
+    try:
+        reply = asyncio.run(target.send_prompt_async(message=message))[0].message_pieces[0]
+    finally:
+        asyncio.run(target_factory.close_target(target))
+
+    assert reply.converted_value == "First chunk. Second chunk."
+    assert json.loads(reply.prompt_metadata[target_factory.TRACE_METADATA_KEY]) == [
+        {"name": "step_one"},
+        {"name": "step_two"},
+    ]
+    assert json.loads(reply.prompt_metadata[target_factory.CONTROL_METADATA_KEY]) == {
+        "control.piiBlocked": False,
+        "control.gated": False,
+    }
+
+    # Lambda concatenated JSON chunks in APP_STREAM_MODE=last (cumulative snapshots)
+    clean_env.setenv("APP_RESPONSE_PATH", "answer")
+    clean_env.setenv("APP_STREAM_MODE", "last")
+    clean_env.setenv("APP_TRACE_PATH", "trace.citations")
+    clean_env.setenv("APP_CONTROL_PATH", "control.gated")
+    fake_app["replies"] = [(200, LAMBDA_STREAM_BODY)]
+    target = build_target()
+    try:
+        reply_last = asyncio.run(target.send_prompt_async(message=message))[0].message_pieces[0]
+    finally:
+        asyncio.run(target_factory.close_target(target))
+
+    assert reply_last.converted_value == "Hello from Lambda!"
+    assert json.loads(reply_last.prompt_metadata[target_factory.TRACE_METADATA_KEY]) == ["COMAR 10.09.24"]
+    assert json.loads(reply_last.prompt_metadata[target_factory.CONTROL_METADATA_KEY]) is True
+
+
+@pytest.mark.parametrize(
+    "kind, body, first_event",
+    [
+        ("SSE", 'event: message\ndata: {"wrong": "field"}\ndata: [DONE]\n', '{"wrong": "field"}'),
+        ("NDJSON", '{"wrong": 1}\n{"still_wrong": 2}\n', '{"wrong": 1}'),
+    ],
+)
+def test_streaming_error_names_the_stream_kind_response_path_and_first_event(fake_app, clean_env, kind, body, first_event):
+    clean_env.setenv("APP_RESPONSE_PATH", "choices.0.delta.content")
+    fake_app["replies"] = [(200, body)]
+    with pytest.raises(ValueError) as exc_info:
+        _send_to_app()
+    msg = str(exc_info.value)
+    assert f"response looks like {kind} but no event had APP_RESPONSE_PATH=choices.0.delta.content" in msg
+    assert f"first event: {first_event}" in msg
+
+
+
+
+
+
+
+
+
+
+def test_app_sse_without_response_path_joins_plain_text_events(fake_app, clean_env):
+    clean_env.delenv("APP_RESPONSE_PATH")
+    fake_app["replies"] = [(200, "event: token\ndata: Hello \n\nevent: token\ndata: world!\n\ndata: [DONE]\n\n")]
+    assert _send_to_app() == "Hello world!"
+
+
+def test_plain_text_tokens_that_look_like_json_or_are_spaces_stay_text(fake_app, clean_env):
+    # A plain-text stream sends words, numbers and spaces as they come. 15 and true parse
+    # as JSON, but they are text here, and a token that is only a space is kept.
+    clean_env.delenv("APP_RESPONSE_PATH")
+    body = "data: The fee is $\n\ndata: 15\n\ndata: .\n\ndata:  \n\ndata: It is\n\ndata:  true\n\n"
+    fake_app["replies"] = [(200, body)]
+    assert _send_to_app() == "The fee is $15. It is true"
+
+
+def test_sse_data_lines_of_one_event_keep_their_line_breaks(fake_app, clean_env):
+    # One event's data: lines are one piece of text joined by newlines (the SSE format),
+    # so a numbered list or paragraph break in the reply reaches the judge intact.
+    clean_env.delenv("APP_RESPONSE_PATH")
+    body = "data: Steps:\ndata: 1. Call us\ndata: 2. Mail the form\n\ndata:  Thanks.\n\ndata: [DONE]\n\n"
+    fake_app["replies"] = [(200, body)]
+    assert _send_to_app() == "Steps:\n1. Call us\n2. Mail the form Thanks."
+
+
+def test_sse_json_spread_over_several_data_lines_is_read(fake_app, clean_env):
+    clean_env.setenv("APP_RESPONSE_PATH", "text")
+    fake_app["replies"] = [(200, 'data: {"text":\ndata:  "hi there"}\n\ndata: [DONE]\n\n')]
+    assert _send_to_app() == "hi there"
+
+
+def test_sse_crlf_line_endings_are_read(fake_app, clean_env):
+    clean_env.setenv("APP_RESPONSE_PATH", "text")
+    fake_app["replies"] = [(200, 'data: {"text": "a"}\r\n\r\ndata: {"text": "b"}\r\n\r\n')]
+    assert _send_to_app() == "ab"
+
+
+def test_sse_json_events_without_a_response_path_ask_for_one(fake_app, clean_env):
+    clean_env.delenv("APP_RESPONSE_PATH")
+    fake_app["replies"] = [(200, 'data: {"text": "Hi"}\n\ndata: {"text": " there"}\n\n')]
+    with pytest.raises(ValueError, match="stream of JSON events.*set APP_RESPONSE_PATH"):
+        _send_to_app()
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        'data: {"text": "The answer is "}\n\nevent: error\ndata: {"message": "overloaded"}\n\n',
+        'event: delta\ndata: {"text": "The answer is "}\nevent: error\ndata: {"message": "overloaded"}\n',
+        'data: {"text": "The answer is "}\n\ndata: {"error": {"message": "overloaded"}}\n\n',
+        '{"text": "The answer is "}\n{"error": "overloaded"}\n',
+        # Legal SSE: the event: line may come after the data it names.
+        'data: {"text": "The answer is "}\n\ndata: {"message": "overloaded"}\nevent: error\n\n',
+    ],
+    ids=[
+        "sse-error-event", "sse-error-event-no-blank-line", "sse-error-field", "ndjson-error-field",
+        "sse-error-type-after-data",
+    ],
+)
+def test_a_stream_that_ends_in_an_error_fails_instead_of_grading_a_cut_off_reply(fake_app, clean_env, body):
+    clean_env.setenv("APP_RESPONSE_PATH", "text")
+    fake_app["replies"] = [(200, body)]
+    with pytest.raises(RuntimeError, match="streamed reply ended with an error.*overloaded"):
+        _send_to_app()
+
+
+def test_an_empty_error_field_in_a_stream_and_an_error_field_in_plain_json_are_not_errors(fake_app, clean_env):
+    clean_env.setenv("APP_RESPONSE_PATH", "text")
+    fake_app["replies"] = [(200, '{"text": "a", "error": null}\n{"text": "b", "error": ""}\n')]
+    assert _send_to_app() == "ab"
+    # A single JSON response is the app's own shape: its "error" field is left to the judge.
+    fake_app["replies"] = [(200, '{"text": "fine", "error": "a field the app always sends"}')]
+    assert _send_to_app() == "fine"
+
+
+def test_concat_recognizes_an_app_that_resends_the_whole_reply_so_far(fake_app, clean_env):
+    clean_env.setenv("APP_RESPONSE_PATH", "text")
+    snapshots = (
+        'data: {"text": "Hel"}\n\ndata: {"text": "Hello"}\n\n'
+        'data: {"text": "Hello!"}\n\ndata: {"text": "Hello!", "done": true}\n\n'
+    )
+    fake_app["replies"] = [(200, snapshots)]
+    assert _send_to_app() == "Hello!"
+    deltas = 'data: {"text": "Hel"}\ndata: {"text": "lo"}\ndata: {"text": "!"}\ndata: [DONE]\n'
+    fake_app["replies"] = [(200, deltas)]
+    assert _send_to_app() == "Hello!"
+    repeated_deltas = 'data: {"text": "a"}\n\ndata: {"text": "a"}\n\n'
+    fake_app["replies"] = [(200, repeated_deltas)]
+    assert _send_to_app() == "aa"
