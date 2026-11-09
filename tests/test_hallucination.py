@@ -1,8 +1,10 @@
 """Hallucination and grounding: invented specifics, citations, and summaries of supplied text.
 
 The suite is attack_suites/04_hallucination_grounding/; the ungrounded_claim rubric
-judges it, shown each probe's REFERENCE_FACTS. Its templated probes are left out of
-`core` and selected with `hallucination-templated`.
+judges it, shown each probe's REFERENCE_FACTS. Its facts (fixtures/facts.yaml) are asked
+by the `ask` templates and sent in `core`; its excerpt probes are left out of `core` and
+selected with `hallucination-templated`. An agency's own facts, in a probe pack, are in
+test_facts.py.
 """
 
 import json
@@ -21,7 +23,9 @@ from scripts import export_finding_report as ex, rescore, run_summary
 from test_judge_tools import FlagsEverything, rescore_run
 
 FIXTURES = Path(dataset_path("hallucination")).parent / "fixtures"
-REFERENCE_TEMPLATES = ("authority_premise", "summarize_reference", "premise_pushback")
+# The template that asks each way an entry's `ask` list can name.
+FACT_TEMPLATES = {"question": "known_answer", "premise": "authority_premise", "pushback": "premise_pushback",
+                  "summary": "summarize_reference"}
 EXCERPT_TEMPLATES = ("summarize_excerpt", "excerpt_unanswered", "excerpt_answered")
 RUBRIC = single_turn_scan.load_rubrics()["ungrounded_claim"]
 
@@ -34,14 +38,18 @@ def suite():
     return single_turn_scan.select_probes(single_turn_scan.load_probes(), "hallucination")
 
 
-def test_every_reference_and_excerpt_is_asked_each_of_the_three_ways():
+def test_every_fact_is_asked_each_way_it_lists_and_every_excerpt_three_ways():
     templated = [p for p in suite() if p.template]
-    references = [e["id"] for e in entries("references")]
     excerpts = [e["id"] for e in entries("excerpts")]
-    assert [p.name for p in templated] == (
-        [f"{t}[{r}]" for t in REFERENCE_TEMPLATES for r in references]
-        + [f"{t}[{e}]" for t in EXCERPT_TEMPLATES for e in excerpts]
-    )
+    asked = [
+        f"{template}[{e['id']}]"
+        for ask, template in FACT_TEMPLATES.items()
+        for e in entries("facts")
+        if ask in e.get("ask", ["question"])
+    ]
+    assert [p.name for p in templated] == asked + [f"{t}[{e}]" for t in EXCERPT_TEMPLATES for e in excerpts]
+    # Every way of asking is in use as shipped, so each template is exercised as it stands.
+    assert {p.ask for p in templated if p.ask} == set(FACT_TEMPLATES)
     for probe in templated:
         # Every templated probe tells the judge what is true, and nothing is left unfilled.
         facts = dict(probe.judge_context)["REFERENCE_FACTS"]
@@ -49,26 +57,24 @@ def test_every_reference_and_excerpt_is_asked_each_of_the_three_ways():
         assert "{{" not in probe.prompt + probe.pass_criteria + facts, probe.name
 
 
-def test_a_reference_is_fictitious_or_real_and_a_real_one_says_where_it_was_checked():
-    for entry in entries("references"):
-        assert entry["status"] in ("fictitious", "real"), entry["id"]
+def test_every_shipped_fact_was_made_up_for_the_test_so_it_fits_any_system():
+    for entry in entries("facts"):
+        # A real fact would be about one program: those go in an agency's own pack.
+        assert entry["status"] == "fictitious", entry["id"]
         # The judge is told about the citation the probe names.
-        assert entry["citation"].lower() in entry["facts"].lower(), entry["id"]
-        if entry["status"] == "real":
-            assert entry.get("source"), entry["id"]
-    # The shipped example of a real entry, so the pattern is there to copy.
-    assert {e["status"] for e in entries("references")} == {"fictitious", "real"}
+        if "citation" in entry:
+            assert entry["citation"].lower() in entry["facts"].lower(), entry["id"]
 
 
 @pytest.mark.parametrize("profile_key", ["default", "public_conversational"])
-def test_the_written_out_probes_are_sent_and_the_templated_ones_left_out(profile_key):
+def test_the_written_out_probes_and_the_facts_are_sent_and_the_excerpts_left_out(profile_key):
     probes = single_turn_scan.profile_probes(get_profile(profile_key))
     sent = {p.name for p in probes if p.dataset == "hallucination"}
-    assert sent == {p.name for p in suite() if not p.template}
-    assert "fabricated_form_number" in sent
+    assert sent == {p.name for p in suite() if not p.template or p.ask}
+    assert {"fabricated_form_number", "known_answer[program_rumor]", "premise_pushback[hardship_waiver]"} <= sent
     # One keyword brings the rest in, as bias-templated does for the bias suite.
     templated = single_turn_scan.select_probes(single_turn_scan.load_probes(), "hallucination-templated")
-    assert {p.name for p in templated} == {p.name for p in suite() if p.template}
+    assert {p.name for p in templated} == {p.name for p in suite() if p.template and not p.ask}
 
 
 def test_the_suite_is_graded_by_ungrounded_claim_alone():
@@ -87,9 +93,9 @@ def test_the_judge_is_shown_each_probes_facts_and_the_system_prompt(memory):
     scorer = scorers["ungrounded_claim"]
     by_name = {p.name: p for p in probes}
 
-    real = scorer.rubric_for(by_name["premise_pushback[snap_fair_hearing]"].prompt)
-    assert "prior 90 days" in real and "Call 1-800-555-0100 for help." in real
-    assert "[[" not in real
+    fake = scorer.rubric_for(by_name["premise_pushback[hardship_waiver]"].prompt)
+    assert "no such law exists" in fake and "Call 1-800-555-0100 for help." in fake
+    assert "[[" not in fake
 
     excerpt = scorer.rubric_for(by_name["excerpt_answered[renewals]"].prompt)
     assert "It answers the question: 45 days before the certification period ends" in excerpt
@@ -100,13 +106,13 @@ def test_the_judge_is_shown_each_probes_facts_and_the_system_prompt(memory):
 
     # The rumor and the rule were written for the test, so the judge is told they are
     # false, and needs no trace to judge them.
-    for name in ("program_rumor", "draft_unverified_rule"):
+    for name in ("known_answer[program_rumor]", "known_answer[draft_unverified_rule]"):
         facts = dict(by_name[name].judge_context)["REFERENCE_FACTS"]
         assert "written for this test" in facts and "{{" not in facts, name
         assert facts in scorer.rubric_for(by_name[name].prompt), name
 
 
-OUT_OF_CORPUS = ("nonexistent_office", "future_figure")
+OUT_OF_CORPUS = ("known_answer[nonexistent_office]", "known_answer[future_figure]")
 
 
 def test_the_judge_is_told_what_no_document_can_answer_and_to_judge_only_that(memory):
@@ -123,7 +129,7 @@ def test_the_judge_is_told_what_no_document_can_answer_and_to_judge_only_that(me
         assert "do not flag it here" in facts, name
         assert facts in scorer.rubric_for(probe.prompt), name
         # Sent in every run, not only with the templated probes.
-        assert not probe.template and not probe.needs_trace, name
+        assert probe.ask == "question" and not probe.needs_trace, name
 
 
 @pytest.mark.parametrize("probe", OUT_OF_CORPUS)
@@ -155,7 +161,7 @@ def test_a_scan_of_the_templated_probes_sends_each_and_prints_the_suites_checkli
     exit_code, _ = scan_main(monkeypatch, target, profile="default")
     out = capsys.readouterr().out
     assert exit_code == 0
-    templated = len([p for p in suite() if p.template])
+    templated = len([p for p in suite() if p.template and not p.ask])
     assert f"Sending {templated} probes: {templated} graded by ungrounded_claim" in out
     assert len(target.seen) == templated
     assert all(item in out for item in suite_checklist("hallucination"))
@@ -168,7 +174,7 @@ SPECIFICS = {"fabricated_form_number", "fabricated_deadline", "fabricated_contac
 
 
 def test_only_the_specifics_probes_need_a_trace():
-    # The rumor, the draft rule, and the templated probes bring their own answers.
+    # The facts and the excerpt probes bring their own answers.
     assert {p.name for p in suite() if p.needs_trace} == SPECIFICS
 
 
@@ -176,7 +182,7 @@ def test_only_the_specifics_probes_need_a_trace():
     # Against an app with no APP_TRACE_PATH, the form number flag is unverified, and does not
     # fail the CI gate; the rumor brings its own answer, so its flag still counts.
     ("app", "fabricated_form_number", 0, 1, 0, "Sources hidden: 1 probe is reported as check by hand."),
-    ("app", "fabricated_form_number,program_rumor", 1, 1, 1, "Sources hidden: 1 probe is"),
+    ("app", "fabricated_form_number,known_answer[program_rumor]", 1, 1, 1, "Sources hidden: 1 probe is"),
     # With APP_TRACE_PATH, the judge sees what the app retrieved.
     ("app trace", "fabricated_form_number", 1, 0, 1, "Sources shown: the judge sees what the app retrieved"),
     # A bare model has no documents: the judge saw every source it had, so the flag counts.
@@ -212,14 +218,14 @@ def test_a_flag_on_a_specifics_probe_is_unverified_only_against_an_app_without_a
 def test_a_scan_with_no_probe_that_needs_a_trace_says_nothing_of_sources(monkeypatch, clean_env, memory, capsys):
     clean_env.setenv("RT_PROVIDER", "app")
     clean_env.setenv("RT_SKIP_CALIBRATION", "1")
-    clean_env.setenv("RT_PROBES", "program_rumor")
+    clean_env.setenv("RT_PROBES", "known_answer[program_rumor]")
     scan_main(monkeypatch, FakeModel(), FlagsEverything(), profile="default")
     assert "Sources hidden" not in capsys.readouterr().out
 
 
 @pytest.mark.parametrize("probes, mode", [
     ("fabricated_form_number", "Sources hidden: 1 probe is reported as check by hand."),
-    ("program_rumor", None),
+    ("known_answer[program_rumor]", None),
 ])
 def test_list_probes_says_how_the_specifics_probes_would_be_judged(probes, mode, clean_env, capsys):
     clean_env.setenv("RT_PROVIDER", "app")
@@ -311,7 +317,7 @@ def test_the_summary_opens_with_how_the_specifics_probes_were_judged(case, mode,
 def test_the_export_marks_an_unverified_report_as_not_a_finding(memory, run_exporter, tmp_path):
     specifics_result(memory)
     add_probe(memory, "My caseworker said ...", "Yes, that rule applies.", rubric="ungrounded_claim", flagged=True,
-              rt_dataset="hallucination", rt_probe="program_rumor", rt_needs_trace="false", rt_provider="app")
+              rt_dataset="hallucination", rt_probe="known_answer[program_rumor]", rt_needs_trace="false", rt_provider="app")
     out = run_exporter("--rubric", "any", "--run-id", RUN[:8], "--out", str(tmp_path), "--no-scrub")
     manifest = json.loads((tmp_path / "manifest.json").read_text(encoding="utf-8"))
     assert {m["objective"]: m["unverified"] for m in manifest} == {

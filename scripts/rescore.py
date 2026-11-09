@@ -96,6 +96,8 @@ class Rejudged:
     new: bool | None = None         # None: the judge gave no verdict (see error)
     new_rationale: str = ""
     new_unverified: bool = False
+    # Why a flag is unverified: "no trace", or "fact not confirmed" (Probe.unconfirmed).
+    unverified_reason: str = "no trace"
     error: str = ""
     control: bool = False
     notes: list[str] = field(default_factory=list)
@@ -105,9 +107,9 @@ class Rejudged:
         return self.old is not None and self.new is not None and self.old != self.new
 
 
-def verdict(value: bool | None, unverified: bool = False) -> str:
+def verdict(value: bool | None, unverified: bool = False, reason: str = "no trace") -> str:
     if value and unverified:
-        return "true (flagged, unverified: no trace)"
+        return f"true (flagged, unverified: {reason})"
     return {True: "true (flagged)", False: "false (passed)", None: "none"}[value]
 
 
@@ -194,9 +196,9 @@ def plan(results, memory, rubrics: dict, only_rubrics: set[str] | None, only_pro
         if prompt_note:
             notes.append(prompt_note)
         # As the scan decides it: the run's target and trace path, and the probe as it is now.
-        unverifiable = probe.needs_trace and trace_unavailable(
+        unverifiable = probe.unconfirmed or (probe.needs_trace and trace_unavailable(
             labels.get("rt_provider", ""), labels.get("rt_trace_path", ""), labels.get("rt_app_retrieval") == "no"
-        )
+        ))
 
         # Each encoding pass compares its own pairs, as the scan did.
         if probe.pair_id and wanted(only_rubrics, PAIR_RUBRIC) and wanted(only_probes, name, probe.pair_id, dataset):
@@ -252,6 +254,8 @@ async def rejudge(singles, pair_tasks, rubrics: dict, judge) -> list[Rejudged]:
 
     async def one(key, probe, objective, reply, system_prompt, unverifiable, old, shown, notes) -> Rejudged:
         item = Rejudged(key, shown, reply.converted_value or "", notes=list(notes))
+        if probe.unconfirmed:
+            item.unverified_reason = "fact not confirmed"
         if old is not None:
             item.old, item.old_rationale, item.old_unverified = old
         scorer = scan.RubricScorer(
@@ -358,8 +362,8 @@ def build_report(run_id: str, labels: dict, judge_shown: str, items: list[Rejudg
 
     def detail(item: Rejudged) -> list[str]:
         out = [
-            f"### {item.shown} - {item.rubric}: {verdict(item.old, item.old_unverified)} → "
-            f"{verdict(item.new, item.new_unverified)}",
+            f"### {item.shown} - {item.rubric}: {verdict(item.old, item.old_unverified, item.unverified_reason)} → "
+            f"{verdict(item.new, item.new_unverified, item.unverified_reason)}",
             "",
         ]
         out += [f"- Note: {note}." for note in item.notes]
@@ -381,7 +385,8 @@ def build_report(run_id: str, labels: dict, judge_shown: str, items: list[Rejudg
         lines += ["## New verdicts", "", "From rubrics that grade these probes now but did not in the run.", ""]
         lines += ["| Probe | Rubric | Verdict | Rationale |", "|---|---|---|---|"]
         lines += [
-            f"| {cell(i.shown)} | {i.rubric} | {verdict(i.new, i.new_unverified)} | {cell(i.new_rationale, 160)} |"
+            f"| {cell(i.shown)} | {i.rubric} | {verdict(i.new, i.new_unverified, i.unverified_reason)} | "
+            f"{cell(i.new_rationale, 160)} |"
             for i in new
         ]
         lines.append("")
