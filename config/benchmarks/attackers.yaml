@@ -1,0 +1,39 @@
+# A benchmark: the same campaign, run once per entry, with only one model changed between runs.
+#
+#   rt benchmark --dry-run                            # what would run, and roughly how many calls
+#   rt benchmark                                      # this file
+#   rt benchmark --config config/benchmarks/mine.yaml
+#
+# Everything else - the target (RT_PROVIDER, APP_*), the judge, the profile - comes from .env,
+# the same as for any run, and is the same for every entry. Copy this file to compare other models.
+
+# Which model changes between runs:
+#   attacker  the model writing the attacks (RT_ADVERSARIAL_*). Which one breaks the target most?
+#   target    the model under test (RT_PROVIDER / RT_MODEL). Which one holds up best?
+role: attacker
+
+# adaptive (RedTeamingAttack; works against any app) or crescendo (needs {HISTORY} for an app).
+campaign: adaptive
+
+# Each objective runs this many times per entry. A rate from 1 try is a coin toss; 3 is a
+# minimum and 5 or more is better. Calls grow with repeats x turns x objectives x entries.
+repeats: 3
+max_turns: 5
+
+# Optional: the deployment profile (RT_PROFILE). Blank uses .env's.
+profile:
+
+# Optional: pin the judge for every entry. Blank uses .env's RT_JUDGE_PROVIDER and RT_JUDGE_MODEL.
+# Use a judge that is none of the entries: a model tends to go easy on its own work.
+judge:
+  provider:
+  model:
+
+# At least two. name is what the report calls it; provider and model are the role's settings.
+entries:
+  - name: gemini-4-argon-cyber-permissive
+    provider: vertex
+    model: vertex_ai/gemini-4-argon-cyber-permissive
+  - name: claude-opus-5-5
+    provider: vertex
+    model: claude-opus-5-5
