@@ -7,6 +7,8 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
+import yaml
+
 from harnesses.pyrit_campaigns import profiles
 from harnesses.pyrit_campaigns.probe_templates import (
     FixtureFile,
@@ -215,6 +217,17 @@ def fixture_feeds(dataset: str, seeds, shipped_file: Path, extras) -> dict[str, 
             path = (pack.feeds or {}).get(dataset, {}).get(name)
             if path is None:
                 continue
+            own_file = pack.files.get(dataset)
+            if own_file is not None and name in _fixtures_read(own_file):
+                # The pack's own templates read this file (beside its own file, the same folder),
+                # most likely copies of the shared ones made before packs could feed them. Filling
+                # the shared templates from it too would send each fact twice.
+                print(
+                    f"Note: {shown_path(path)} is read by the pack's own templates in {shown_path(own_file)}, so "
+                    "the shared templates are not filled from it as well. To have the shared templates ask about "
+                    f"these entries, delete the pack's templates that read {name}."
+                )
+                continue
             own = read_fixture(path, variable=shipped.variable, allow_empty=True)
             if own.mode == "replace":
                 replacing.append(shown_path(path))
@@ -240,6 +253,32 @@ def fixture_feeds(dataset: str, seeds, shipped_file: Path, extras) -> dict[str, 
                 seen[entry["id"]] = fixture.path
         feeds[name] = Feed(shipped=shipped, include_shipped=not replacing, packs=packs)
     return feeds
+
+
+def _fixtures_read(path: Path) -> set[str]:
+    """The fixtures the templates in a probe file name in `expand_with`."""
+    data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    seeds = data.get("seeds") if isinstance(data, dict) else None
+    return {
+        str(seed["metadata"]["expand_with"])
+        for seed in seeds or []
+        if isinstance(seed, dict) and isinstance(seed.get("metadata"), dict) and seed["metadata"].get("expand_with")
+    }
+
+
+def _check_own_facts(seeds, path: Path) -> None:
+    """check_facts() on each fact fixture a pack's own `ask` templates read, against their own `ask` names.
+
+    The shared templates' fixtures are checked in fixture_feeds(); a pack's own templates
+    read the file beside the pack's file, which fixture_feeds() leaves to them.
+    """
+    asks: dict[str, set[str]] = {}
+    for seed in seeds:
+        ask = template_ask(seed)
+        if ask:
+            asks.setdefault(str(seed.metadata["expand_with"]), set()).add(ask)
+    for name, names in asks.items():
+        check_facts(read_fixture(fixture_path(path, name)), names)
 
 
 def _probe(seed, expanded, dataset: str, pack: Pack, values: dict[str, str], template_file: Path) -> Probe:
@@ -291,6 +330,8 @@ def load_pack(
     path = pack.files.get(dataset)
     if path is not None:
         seeds = shared[1] if (shared and not pack.name) else load_dataset(path).seeds
+        if pack.name:
+            _check_own_facts(seeds, path)
         for seed in seeds:
             fixture = str((seed.metadata or {}).get("expand_with") or "")
             if not pack.name and fixture in feeds and not feeds[fixture].include_shipped:

@@ -124,6 +124,48 @@ def test_a_pack_cannot_rename_the_entry_the_shared_templates_use(tmp_path, clean
         load(clean_env, write_facts(tmp_path / "agency", [CONFIRMED], variable="q"))
 
 
+def write_own_template(root, name, ask="question"):
+    """A hallucination.yaml in the pack with one template of its own that reads fixtures/facts.yaml."""
+    (root / "hallucination.yaml").write_text(
+        "name: hallucination\ndataset_name: hallucination\nharm_categories: [hallucination]\nseeds:\n"
+        f"  - value: '{{{{ fact.question }}}}'\n    name: {name}\n    metadata:\n"
+        f"      expand_with: facts\n      ask: {ask}\n      pass_criteria: '{{{{ fact.pass }}}}'\n",
+        encoding="utf-8",
+    )
+    return root
+
+
+@pytest.mark.parametrize("own_name", ["my_known", "known_answer"])
+def test_facts_the_packs_own_templates_read_are_not_also_sent_by_the_shared_ones(
+    own_name, tmp_path, clean_env, capsys
+):
+    # A pack that copied the templates before packs could feed the shared ones, then named
+    # its fixture facts.yaml. Each fact is sent once, by the pack's own template: also by the
+    # shared ones would send it twice, or, with the copy's name kept, stop on a name clash.
+    root = write_own_template(write_facts(tmp_path / "agency", [CONFIRMED]), own_name)
+    added = [p for p in load(clean_env, root) if p.overlay]
+    assert [p.name for p in added] == [f"{own_name}[permit_fee]"]
+    assert added[0].template_file.endswith("agency/hallucination.yaml")
+    out = capsys.readouterr().out
+    assert "is read by the pack's own templates" in out and "delete the pack's templates that read facts" in out
+
+
+def test_a_packs_own_fact_templates_have_their_facts_checked(tmp_path, clean_env):
+    root = write_own_template(write_facts(tmp_path / "agency", [{**CONFIRMED, "source": ""}]), "my_known")
+    with pytest.raises(SystemExit, match="a real fact needs a `source`"):
+        load(clean_env, root)
+
+
+def test_a_packs_own_way_of_asking_is_checked_against_its_own_templates(tmp_path, clean_env):
+    # `quiz` is a way only the pack's template asks: right for its file, though the shared
+    # templates have no such way. A way none of its templates asks is still caught.
+    root = write_own_template(write_facts(tmp_path / "agency", [{**CONFIRMED, "ask": ["quiz"]}]), "my_quiz", "quiz")
+    assert [p.name for p in load(clean_env, root) if p.overlay] == ["my_quiz[permit_fee]"]
+    write_facts(root, [{**CONFIRMED, "ask": ["question"]}])
+    with pytest.raises(SystemExit, match="`ask` names 'question', which no template asks"):
+        load(clean_env, root)
+
+
 def test_two_packs_cannot_both_replace_the_shared_facts(tmp_path, clean_env):
     one = write_facts(tmp_path / "one", [CONFIRMED], mode="replace")
     two = write_facts(tmp_path / "two", [{**CONFIRMED, "id": "other_fee"}], mode="replace")
