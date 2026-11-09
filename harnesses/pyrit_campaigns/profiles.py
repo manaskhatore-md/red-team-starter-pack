@@ -115,6 +115,10 @@ def suite_checklist(dataset: str) -> tuple[str, ...]:
 # (attack_suites/04_hallucination_grounding/hallucination.yaml), with their fixtures/ beside
 # them. A checklist.yaml at a pack's top prints whenever its probes run; one beside a
 # suite's file, whenever that file's probes run.
+#
+# A pack can also hold only facts: a fixtures/facts.yaml in it (named like a fact fixture of
+# attack_suites/'s) feeds the shared hallucination templates, which are then sent once per
+# entry of the pack's file too, as the pack's probes. See FIXTURE FEEDS in probes.py.
 EXTRA_PACKS_SETTING = "RT_EXTRA_SUITES"
 
 
@@ -125,15 +129,23 @@ class Pack:
     root: Path
     # Suite name -> the pack's file for it.
     files: dict
+    # Suite name -> {fixture name: the pack's file}, for each of the pack's fixture files named
+    # like a fact fixture of that suite's in attack_suites/. Those entries feed the shared templates.
+    feeds: dict = None
+
+    def fixture_dir(self, suite: str) -> Path:
+        """Where the pack keeps fixtures for `suite`: beside its file for it, or at its top."""
+        return (self.files[suite].parent if suite in self.files else self.root) / FIXTURES_FOLDER
 
     def checklist(self, suites) -> tuple[str, ...]:
         """What this pack leaves to check by hand, when its probes for `suites` ran."""
-        ran = [suite for suite in SUITES if suite in set(suites) and suite in self.files]
+        fed = self.feeds or {}
+        ran = [suite for suite in SUITES if suite in set(suites) and (suite in self.files or suite in fed)]
         if not ran:
             return ()
         items = list(read_checklist(self.root / CHECKLIST_FILE))
         for suite in ran:
-            if self.files[suite].parent != self.root:
+            if suite in self.files and self.files[suite].parent != self.root:
                 items += read_checklist(self.files[suite].parent / CHECKLIST_FILE)
         return tuple(items)
 
@@ -190,13 +202,43 @@ def extra_packs() -> tuple[Pack, ...]:
         if any(pack.name.lower() == name.lower() for pack in packs):
             raise SystemExit(f"{EXTRA_PACKS_SETTING} names two folders called {name!r}; rename one.")
         files = _pack_files(root, strict=True)
-        if not files:
+        pack = Pack(name, root, files)
+        pack = replace(pack, feeds=_pack_feeds(pack))
+        if not files and not pack.feeds:
             raise SystemExit(
-                f"{EXTRA_PACKS_SETTING}: {shown_path(root)} has no probe files. Name each after the suite it "
-                f"adds to, e.g. prompt_injection.yaml. Suites: {', '.join(SUITES)}."
+                f"{EXTRA_PACKS_SETTING}: {shown_path(root)} has no probe files and no fixture files. Name each "
+                f"probe file after the suite it adds to, e.g. prompt_injection.yaml (suites: {', '.join(SUITES)}), "
+                "or put your facts in fixtures/facts.yaml."
             )
-        packs.append(Pack(name, root, files))
+        packs.append(pack)
     return tuple(packs)
+
+
+def fact_fixtures(suite: str) -> frozenset[str]:
+    """The fixtures an `ask` template in the suite's attack_suites/ file reads, e.g. {"facts"}: its fact fixtures."""
+    path = dataset_path(suite)
+    data = yaml.safe_load(path.read_text(encoding="utf-8")) if path.is_file() else None
+    seeds = data.get("seeds") if isinstance(data, dict) else None
+    return frozenset(
+        str(seed["metadata"]["expand_with"])
+        for seed in seeds or []
+        if isinstance(seed, dict) and isinstance(seed.get("metadata"), dict)
+        and seed["metadata"].get("ask") and seed["metadata"].get("expand_with")
+    )
+
+
+def _pack_feeds(pack: Pack) -> dict:
+    """Suite -> {fixture name: file} for the pack's fixture files named like an attack_suites/ fact fixture.
+
+    Their entries feed the shared fact templates (FIXTURE FEEDS in probes.py).
+    """
+    feeds: dict[str, dict[str, Path]] = {}
+    for suite in SUITES:
+        for fixture in sorted(fact_fixtures(suite)):
+            path = pack.fixture_dir(suite) / f"{fixture}.yaml"
+            if path.is_file():
+                feeds.setdefault(suite, {})[fixture] = path
+    return feeds
 
 
 def pack_file(dataset: str, overlay: str = "") -> Path | None:

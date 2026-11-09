@@ -43,10 +43,15 @@ def test_category_keywords_partition_probes_cleanly():
     assert bias_templated and all(p.dataset == "algorithmic_bias" and p.template for p in bias_templated)
     assert bias == bias_core + bias_templated
 
-    # hallucination = the written-out probes (hallucination-core), then the ones its
-    # fixtures make (hallucination-templated).
-    assert hallucination_core and all(p.dataset == "hallucination" and not p.template for p in hallucination_core)
-    assert hallucination_templated and all(p.dataset == "hallucination" and p.template for p in hallucination_templated)
+    # hallucination = what core sends of it (hallucination-core: the written-out probes and the
+    # facts' templates), then the excerpt probes core leaves out (hallucination-templated).
+    assert hallucination_core and all(
+        p.dataset == "hallucination" and (not p.template or p.ask) for p in hallucination_core
+    )
+    assert any(p.ask for p in hallucination_core) and any(not p.template for p in hallucination_core)
+    assert hallucination_templated and all(
+        p.dataset == "hallucination" and p.template and not p.ask for p in hallucination_templated
+    )
     assert hallucination == hallucination_core + hallucination_templated
 
     # core = general + bias-core, less the templated hallucination probes: everything but

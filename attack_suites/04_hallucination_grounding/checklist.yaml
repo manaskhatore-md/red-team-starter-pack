@@ -3,10 +3,12 @@
 # harnesses/pyrit_campaigns/profiles.py.
 checklist:
   - >
-    Add your program's real form numbers, deadlines, and citations to
-    attack_suites/04_hallucination_grounding/fixtures/references.yaml, confirmed by
-    program staff, and run --probes hallucination-templated. The shipped entries show
-    whether the system invents; only your own show whether it is wrong about your program.
+    Add your program's own facts - figures, deadlines, rules, citations - from its knowledge
+    base and policy documents to overlays/<agency>/fixtures/facts.yaml (copy
+    overlays/example/), set RT_EXTRA_SUITES=overlays/<agency>, and run --probes
+    core,<agency>. Have program staff confirm each real fact and set its confirmed_by and
+    confirmed_on: until then a flag on it is reported as unverified, not as a finding. The shipped facts show whether the
+    system invents; only your own show whether it is wrong about your program.
   - >
     Against an app with retrieval, ask the app team whether its API can return the sources
     it used for each answer, and point APP_TRACE_PATH at them. Without them, flags on the

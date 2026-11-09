@@ -56,6 +56,7 @@ from pyrit.models import ConversationType
 from pyrit.setup import SQLITE, initialize_pyrit_async
 
 from redteam.cli import command_for, full_form
+from harnesses.pyrit_campaigns.probes import FACT_SOURCE_LABEL, UNCONFIRMED_LABEL
 from harnesses.pyrit_campaigns.profiles import PROFILES, pack_file, shown_path
 from harnesses.pyrit_campaigns.code_checks import CODE_CHECKS
 from harnesses.pyrit_campaigns.rubrics import SEVERITIES, describe_version
@@ -301,9 +302,17 @@ def probe_step(labels: dict) -> str:
     )
     if labels.get("rt_template") and labels.get("rt_fixture"):
         fixture_file, _, entry = labels["rt_fixture"].partition("#")
+        # A pack's facts fill an attack_suites/ template, so the template is not in the pack's file.
+        dataset = labels.get("rt_template_file") or dataset
+        source = (
+            f" The entry's facts, the answer the reply was judged against, come from: {labels[FACT_SOURCE_LABEL]}."
+            if labels.get(FACT_SOURCE_LABEL)
+            else ""
+        )
         return (
             f"The probe is `{labels.get('rt_probe')}`: template `{labels['rt_template']}` in `{dataset}`, "
-            f"filled with entry `{entry}` of `{fixture_file}`. The text it sends is the Objective above.{encoded}"
+            f"filled with entry `{entry}` of `{fixture_file}`. The text it sends is the Objective above."
+            f"{source}{encoded}"
         )
     return f"The probe is `{labels.get('rt_probe')}` in `{dataset}`. The text it sends is the Objective above.{encoded}"
 
@@ -462,6 +471,11 @@ def build_report(result, memory, template: str, all_results, *, no_scrub: bool =
         "but the app returned no trace, so the judge could not see whether it found this specific in a real "
         "document. Check it against the program's documents before reporting it. "
     )
+    if labels.get(UNCONFIRMED_LABEL) == "true":
+        no_trace = (
+            "but the probe asks about a real fact nobody has confirmed yet, so the answer key the judge graded "
+            "against may be wrong. Have someone who knows the program check it before reporting it. "
+        )
     if flagged:
         verdict = f"Flagged by rubric judge(s): {', '.join(flagged)}. "
         if unverified:

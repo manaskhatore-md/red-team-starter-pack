@@ -1,12 +1,24 @@
 """Probe loading and --probes / RT_PROBES selection across attack_suites/*/*.yaml and any
 extra probe packs RT_EXTRA_SUITES names (see PROBE PACKS in profiles.py)."""
 
+import datetime
 import os
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from pathlib import Path
 
 from harnesses.pyrit_campaigns import profiles
-from harnesses.pyrit_campaigns.probe_templates import expand, fill, load_dataset
+from harnesses.pyrit_campaigns.probe_templates import (
+    FixtureFile,
+    check_facts,
+    confirmed_date,
+    expand,
+    fill,
+    fixture_path,
+    load_dataset,
+    read_fixture,
+    template_ask,
+)
 from harnesses.pyrit_campaigns.profiles import Pack, Profile, placeholders, shown_path
 
 # [[SLOTS]] the kit fills itself, so a probe's judge_context cannot set them.
@@ -60,6 +72,17 @@ class Probe:
     # Rubrics the probe's metadata names in `rubric:`, which grade it on top of the ones
     # whose `grades:` lists its suite. See graded_by().
     rubrics: tuple[str, ...] = ()
+    # The file the template is written in, for a templated probe. Not always the pack's own:
+    # a pack's fixture can feed an attack_suites/ template (FIXTURE FEEDS below).
+    template_file: str = ""
+    # Set only for a probe made from a fact fixture (an `ask` template; see probe_templates.py):
+    # the way the template asks, and the entry's `source` and `confirmed_on` (YYYY-MM-DD).
+    ask: str = ""
+    fact_source: str = ""
+    confirmed_on: str = ""
+    # A real fact nobody has confirmed yet: the judge's flag on it is reported as unverified,
+    # not as a finding, until someone sets the entry's confirmed_by and confirmed_on.
+    unconfirmed: bool = False
 
     def judge_slots(self) -> dict[str, str]:
         """Every [[SLOT]] this probe fills in its rubrics, pass criteria included."""
@@ -67,6 +90,51 @@ class Probe:
         if self.pass_criteria:
             slots["PASS_CRITERIA"] = self.pass_criteria
         return slots
+
+
+# Result labels for a probe made from a fact fixture (see Probe.unconfirmed and stale_facts()).
+UNCONFIRMED_LABEL = "rt_unconfirmed"
+STALE_LABEL = "rt_stale_fact"
+FACT_SOURCE_LABEL = "rt_fact_source"
+# How old a fact's confirmed_on may be before the run lists it to re-check.
+FACT_MAX_AGE_SETTING = "RT_FACT_MAX_AGE_DAYS"
+DEFAULT_FACT_MAX_AGE_DAYS = 365
+
+
+def fact_max_age_days() -> int:
+    """RT_FACT_MAX_AGE_DAYS, or the default. A value that is not a whole number of days stops the run."""
+    raw = os.getenv(FACT_MAX_AGE_SETTING, "").strip()
+    if not raw:
+        return DEFAULT_FACT_MAX_AGE_DAYS
+    if not raw.isdigit() or int(raw) < 1:
+        raise SystemExit(f"{FACT_MAX_AGE_SETTING}={raw!r}: give a whole number of days, e.g. 365")
+    return int(raw)
+
+
+def stale_facts(probes, today: datetime.date | None = None) -> list[Probe]:
+    """The probes whose fact was confirmed more than RT_FACT_MAX_AGE_DAYS ago, oldest first.
+
+    Policies change: an answer key that was right when it was checked can make a correct
+    reply look wrong later. Unconfirmed facts are not listed - they are unverified already.
+    """
+    today = today or datetime.date.today()
+    limit = datetime.timedelta(days=fact_max_age_days())
+    old = [p for p in probes if p.confirmed_on and today - datetime.date.fromisoformat(p.confirmed_on) > limit]
+    return sorted(old, key=lambda p: p.confirmed_on)
+
+
+def stale_facts_note(probes, today: datetime.date | None = None) -> str:
+    """A paragraph listing each fact to re-check (one line per fixture entry), or ""."""
+    old = stale_facts(probes, today)
+    if not old:
+        return ""
+    entries = dict.fromkeys((p.fixture, p.confirmed_on) for p in old)
+    lines = [
+        f"{len(entries)} fact(s) were confirmed more than {fact_max_age_days()} days ago "
+        f"({FACT_MAX_AGE_SETTING}). Check each is still current, then update its facts and confirmed_on:"
+    ]
+    lines += [f"  - {fixture} (confirmed {confirmed_on})" for fixture, confirmed_on in entries]
+    return "\n".join(lines)
 
 
 def judge_context(raw, where: str, placeholders: dict[str, str]) -> tuple[tuple[str, str], ...]:
@@ -103,42 +171,143 @@ def graded_by(probe: Probe, key: str, rubric: dict) -> bool:
     return probe.dataset in (rubric.get("grades") or []) or key in probe.rubrics
 
 
-def load_pack(pack: Pack, dataset: str, values: dict[str, str]) -> list[Probe]:
-    """A Probe for every seed in one pack's file for `dataset`: one per fixture entry for a template seed."""
-    path = pack.files.get(dataset)
-    if path is None:
-        return []
-    probes: list[Probe] = []
-    for seed in load_dataset(path).seeds:
-        # A template seed becomes one probe per entry in its fixture file; any
-        # other seed, one probe. See probe_templates.py.
-        for expanded in expand(seed, path):
-            metadata = expanded.metadata
-            where = f"{shown_path(path)}, probe {expanded.name!r}"
-            probes.append(
-                Probe(
-                    dataset=dataset,
-                    name=expanded.name,
-                    # fill() leaves unrecognized placeholders in place rather than
-                    # raising, so adding a token to a dataset does not break the run
-                    # before you have given it a value in PLACEHOLDERS.
-                    prompt=fill(expanded.value, **values),
-                    harm_categories=tuple(seed.harm_categories or ()),
-                    pair_id=str(metadata.get("pair_id", "")),
-                    variant=str(metadata.get("variant", "")),
-                    compare_on=str(metadata.get("compare_on", "")),
-                    attribute=str(metadata.get("attribute", "")),
-                    control=bool(metadata.get("control")),
-                    pass_criteria=" ".join(fill(str(metadata.get("pass_criteria", "")), **values).split()),
-                    asks_for_instructions=bool(metadata.get("asks_for_instructions")),
-                    needs_trace=bool(metadata.get("needs_trace")),
-                    judge_context=judge_context(metadata.get("judge_context"), where, values),
-                    template=expanded.template,
-                    fixture=expanded.fixture,
-                    overlay=pack.name,
-                    rubrics=probe_rubrics(metadata.get("rubric"), where),
-                )
+# FIXTURE FEEDS. An attack_suites/ fact template (one with `ask`, see probe_templates.py) is
+# sent once per entry of the fact fixture beside it, and once per entry of each RT_EXTRA_SUITES
+# pack's file of the same name (see profiles._pack_feeds): overlays/my-agency/fixtures/facts.yaml
+# feeds the hallucination templates that read fixtures/facts.yaml. So an agency adds its own facts without copying
+# a template. A pack's file adds to attack_suites/'s, or, with `mode: replace` at its top,
+# is used instead of it. The probes its entries make are the pack's: listed after every
+# attack_suites/ probe, so they renumber none, and picked by --probes <pack>.
+
+
+@dataclass(frozen=True)
+class Feed:
+    """Every fixture file one attack_suites/ fixture's templates are filled from."""
+
+    shipped: FixtureFile
+    # False when a pack's file replaces attack_suites/'s.
+    include_shipped: bool = True
+    # Pack name -> its file.
+    packs: dict = field(default_factory=dict)
+
+
+def fixture_feeds(dataset: str, seeds, shipped_file: Path, extras) -> dict[str, Feed]:
+    """Fixture name -> Feed, for each fact fixture (one an `ask` template reads) of `dataset`.
+
+    Checks each (see probe_templates.check_facts), and stops the run on two entries of one
+    id across the files a template is filled from: results and --probes find a probe by its
+    name, which is the template and the entry id.
+    """
+    templates: dict[str, list] = {}
+    for seed in seeds:
+        name = (seed.metadata or {}).get("expand_with")
+        if name:
+            templates.setdefault(str(name), []).append(seed)
+    feeds = {}
+    for name, users in templates.items():
+        asks = {template_ask(seed) for seed in users} - {""}
+        if not asks:
+            continue
+        shipped = read_fixture(fixture_path(shipped_file, name))
+        check_facts(shipped, asks)
+        packs, replacing = {}, []
+        for pack in extras:
+            path = (pack.feeds or {}).get(dataset, {}).get(name)
+            if path is None:
+                continue
+            own = read_fixture(path, variable=shipped.variable, allow_empty=True)
+            if own.mode == "replace":
+                replacing.append(shown_path(path))
+            if not own.entries:
+                print(f"Note: {shown_path(path)} has no entries yet, so it adds no probes.")
+                continue
+            check_facts(own, asks)
+            packs[pack.name] = own
+        if len(replacing) > 1:
+            raise SystemExit(
+                f"Two packs replace attack_suites/'s {name}.yaml: {' and '.join(replacing)}. Only one can; "
+                "set `mode: add` (or leave mode out) in the other."
             )
+        files = ([shipped] if not replacing else []) + list(packs.values())
+        seen: dict[str, Path] = {}
+        for fixture in files:
+            for entry in fixture.entries:
+                if entry["id"] in seen:
+                    raise SystemExit(
+                        f"Two {name} entries have the id {entry['id']!r}: in {shown_path(seen[entry['id']])} and "
+                        f"{shown_path(fixture.path)}. The probes are named after it, so rename one."
+                    )
+                seen[entry["id"]] = fixture.path
+        feeds[name] = Feed(shipped=shipped, include_shipped=not replacing, packs=packs)
+    return feeds
+
+
+def _probe(seed, expanded, dataset: str, pack: Pack, values: dict[str, str], template_file: Path) -> Probe:
+    """The Probe one expanded seed is, with its placeholders filled."""
+    metadata = expanded.metadata
+    where = f"{shown_path(template_file)}, probe {expanded.name!r}"
+    entry = expanded.entry if expanded.ask else {}
+    confirmed = confirmed_date(entry.get("confirmed_on")) if entry.get("confirmed_on") is not None else None
+    return Probe(
+        dataset=dataset,
+        name=expanded.name,
+        # fill() leaves unrecognized placeholders in place rather than
+        # raising, so adding a token to a dataset does not break the run
+        # before you have given it a value in PLACEHOLDERS.
+        prompt=fill(expanded.value, **values),
+        harm_categories=tuple(seed.harm_categories or ()),
+        pair_id=str(metadata.get("pair_id", "")),
+        variant=str(metadata.get("variant", "")),
+        compare_on=str(metadata.get("compare_on", "")),
+        attribute=str(metadata.get("attribute", "")),
+        control=bool(metadata.get("control")),
+        pass_criteria=" ".join(fill(str(metadata.get("pass_criteria", "")), **values).split()),
+        asks_for_instructions=bool(metadata.get("asks_for_instructions")),
+        needs_trace=bool(metadata.get("needs_trace")),
+        judge_context=judge_context(metadata.get("judge_context"), where, values),
+        template=expanded.template,
+        fixture=expanded.fixture,
+        overlay=pack.name,
+        rubrics=probe_rubrics(metadata.get("rubric"), where),
+        template_file=shown_path(template_file) if expanded.template else "",
+        ask=expanded.ask,
+        fact_source=" ".join(str(entry.get("source") or "").split()),
+        confirmed_on=confirmed.isoformat() if confirmed else "",
+        unconfirmed=entry.get("status") == "real" and not str(entry.get("confirmed_by") or "").strip(),
+    )
+
+
+def load_pack(
+    pack: Pack, dataset: str, values: dict[str, str], feeds: dict[str, Feed] | None = None, shared=None
+) -> list[Probe]:
+    """A Probe for every seed in one pack's file for `dataset`: one per fixture entry for a template seed.
+
+    For an extra pack, then one per entry of each of its fixture files that feeds an
+    attack_suites/ template: `feeds` (fixture_feeds()), and `shared`, the attack_suites/
+    file's (path, seeds). Without them, a pack's own file is all it sends.
+    """
+    feeds = feeds or {}
+    probes: list[Probe] = []
+    path = pack.files.get(dataset)
+    if path is not None:
+        seeds = shared[1] if (shared and not pack.name) else load_dataset(path).seeds
+        for seed in seeds:
+            fixture = str((seed.metadata or {}).get("expand_with") or "")
+            if not pack.name and fixture in feeds and not feeds[fixture].include_shipped:
+                # A pack's file replaces this one: its entries are sent as the pack's probes.
+                continue
+            # A template seed becomes one probe per entry in its fixture file; any
+            # other seed, one probe. See probe_templates.py.
+            probes += [_probe(seed, expanded, dataset, pack, values, path) for expanded in expand(seed, path)]
+    if pack.name and shared:
+        shared_file, shared_seeds = shared
+        for seed in shared_seeds:
+            feed = feeds.get(str((seed.metadata or {}).get("expand_with") or ""))
+            if feed and pack.name in feed.packs:
+                probes += [
+                    _probe(seed, expanded, dataset, pack, values, shared_file)
+                    for expanded in expand(seed, shared_file, source=feed.packs[pack.name])
+                ]
     return probes
 
 
@@ -168,7 +337,14 @@ def load_probes(datasets=None) -> list[Probe]:
     for name in suites:
         if name not in default.files:
             raise SystemExit(f"Suite {name!r} has no dataset: {profiles.dataset_path(name)}")
-    probes = [probe for pack in (default, *extras) for name in suites for probe in load_pack(pack, name, values)]
+    shared = {name: (default.files[name], load_dataset(default.files[name]).seeds) for name in suites}
+    feeds = {name: fixture_feeds(name, shared[name][1], shared[name][0], extras) for name in suites}
+    probes = [
+        probe
+        for pack in (default, *extras)
+        for name in suites
+        for probe in load_pack(pack, name, values, feeds[name], shared[name])
+    ]
     _check_extra_names(probes)
     return probes
 
@@ -203,8 +379,15 @@ def _check_extra_names(probes: list[Probe]) -> None:
 BIAS_DATASET = "algorithmic_bias"
 HALLUCINATION_DATASET = "hallucination"
 # Suites whose templated probes `core` leaves out: bias pairs need repeats to mean
-# anything, and the hallucination references are meant to be replaced with your own.
+# anything, and the hallucination excerpts are an optional extra. The hallucination
+# fact templates (an `ask` template, filled from fixtures/facts.yaml) are in `core`: the
+# shipped facts were made up for the test, so they fit any system as they are.
 NOT_CORE_WHEN_TEMPLATED = frozenset({BIAS_DATASET, HALLUCINATION_DATASET})
+
+
+def _in_core(p: Probe) -> bool:
+    return not p.overlay and (p.dataset not in NOT_CORE_WHEN_TEMPLATED or not p.template or bool(p.ask))
+
 
 PROBE_CATEGORIES = {
     "general": lambda p: p.dataset != BIAS_DATASET,
@@ -212,13 +395,14 @@ PROBE_CATEGORIES = {
     # name. Every other keyword, and a suite's name, picks by topic, so it takes a pack's probes
     # on it too. A profile that mixes the two (prompt_injection,...,hallucination-core) sends a
     # pack's probes in some suites and not others; unselected_packs_note() says which.
-    "core": lambda p: not p.overlay and (p.dataset not in NOT_CORE_WHEN_TEMPLATED or not p.template),
+    "core": _in_core,
     "bias": lambda p: p.dataset == BIAS_DATASET,
     "bias-core": lambda p: not p.overlay and p.dataset == BIAS_DATASET and not p.template,
     "bias-templated": lambda p: p.dataset == BIAS_DATASET and bool(p.template),
     "hallucination": lambda p: p.dataset == HALLUCINATION_DATASET,
-    "hallucination-core": lambda p: not p.overlay and p.dataset == HALLUCINATION_DATASET and not p.template,
-    "hallucination-templated": lambda p: p.dataset == HALLUCINATION_DATASET and bool(p.template),
+    # What `core` sends of the suite, and what it leaves out.
+    "hallucination-core": lambda p: p.dataset == HALLUCINATION_DATASET and _in_core(p),
+    "hallucination-templated": lambda p: p.dataset == HALLUCINATION_DATASET and bool(p.template) and not p.ask,
 }
 
 RANGE_TOKEN = re.compile(r"^(-?\d+)(?:\s*-\s*(-?\d+))?$")

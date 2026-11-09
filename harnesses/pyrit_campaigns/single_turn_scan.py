@@ -147,17 +147,22 @@ from redteam.cli import full_form
 from harnesses.pyrit_campaigns import calibration
 from harnesses.pyrit_campaigns.probes import (
     BIAS_DATASET,
+    FACT_SOURCE_LABEL,
     HALLUCINATION_DATASET,
     NOT_CORE_WHEN_TEMPLATED,
     PROBE_CATEGORIES,
     Probe,
     RANGE_TOKEN,
+    STALE_LABEL,
+    UNCONFIRMED_LABEL,
     get_probes_spec,
     graded_by,
     judge_context,
     load_probes,
     profile_probes,
     select_probes,
+    stale_facts,
+    stale_facts_note,
     unselected_packs_note,
 )
 from harnesses.pyrit_campaigns.profiles import (
@@ -223,6 +228,11 @@ MAX_CONCURRENCY = int(os.getenv("RT_MAX_CONCURRENCY", "3"))
 FAIL_ON_FINDING = os.getenv("RT_FAIL_ON_FINDING") == "1"
 
 
+def unverified_reason(labels: dict) -> str:
+    """Why a result's judge flag is unverified: its real fact is not confirmed yet, or the run had no trace."""
+    return "fact not confirmed" if (labels or {}).get(UNCONFIRMED_LABEL) == "true" else "no trace"
+
+
 class ProgressAttack(PromptSendingAttack):
     """PromptSendingAttack that prints one line as each probe finishes.
 
@@ -259,7 +269,8 @@ class ProgressAttack(PromptSendingAttack):
             standing = [r for r in flagged if not unverified_rubric(r)]
             status = "; ".join(
                 ([f"FLAGGED {'; '.join(standing)}"] if standing else [])
-                + ([f"unverified (no trace) {'; '.join(unverified)}"] if unverified else [])
+                + ([f"unverified ({unverified_reason(context.memory_labels)}) {'; '.join(unverified)}"]
+                   if unverified else [])
             ) or "ok"
         self._report(context, started, status)
         return result
@@ -840,14 +851,17 @@ def build_rubric_scorers(
 
     A rubric with a [[SYSTEM_PROMPT]] slot is shown the system prompt the model was
     sent, so its judge can tell following instructions from breaking them. With
-    no_trace (trace_unavailable()), a flag on a needs_trace probe is stored as unverified.
+    no_trace (trace_unavailable()), a flag on a needs_trace probe is stored as unverified, and
+    so, in any run, is a flag on a real fact nobody has confirmed yet (Probe.unconfirmed).
 
     Leaves out the pair rubrics: they compare two responses rather than grade one,
     and compare_pairs() runs them.
     """
     rubrics = load_rubrics()
     judge_context = {probe.prompt: probe.judge_slots() for probe in probes}
-    unverifiable = frozenset(probe.prompt for probe in probes if probe.needs_trace and no_trace)
+    unverifiable = frozenset(
+        probe.prompt for probe in probes if (probe.needs_trace and no_trace) or probe.unconfirmed
+    )
 
     scorers = {}
     for key in rubric_keys:
@@ -1035,6 +1049,7 @@ def expand_repeats(
     with the converters it was sent through (`encoding`; blank when sent as written).
     """
     objectives, overrides = [], []
+    stale = set(stale_facts(group))
     for probe in group:
         for repeat in range(1, repeats + 1):
             objectives.append(probe.prompt)
@@ -1051,7 +1066,11 @@ def expand_repeats(
                     "rt_asks_for_instructions": str(probe.asks_for_instructions).lower(),
                     NEEDS_TRACE_LABEL: str(probe.needs_trace).lower(),
                     "rt_template": probe.template,
+                    "rt_template_file": probe.template_file,
                     "rt_fixture": probe.fixture,
+                    UNCONFIRMED_LABEL: "true" if probe.unconfirmed else "",
+                    STALE_LABEL: "true" if probe in stale else "",
+                    FACT_SOURCE_LABEL: probe.fact_source,
                     "rt_repeat": str(repeat),
                     "rt_encoding": encoding,
                 }
@@ -1287,6 +1306,9 @@ def list_probes(
         # As the scan would print it, so the mode can be fixed before a run costs anything.
         provider, trace_path = resolve_provider("target"), os.getenv("APP_TRACE_PATH", "").strip()
         print("\n" + judging_mode(provider, trace_path, app_has_no_retrieval(), needs_trace))
+    listed = [probe for group in groups.values() for probe in group]
+    if stale_facts_note(listed):
+        print("\n" + stale_facts_note(listed))
     return 0
 
 
@@ -1400,6 +1422,8 @@ async def main(
     if needs_trace:
         # Before any call, so whoever runs it can stop and set APP_TRACE_PATH first.
         print("\n" + judging_mode(provider, trace_path, no_retrieval, needs_trace))
+    if stale_facts_note(sent):
+        print("\n" + stale_facts_note(sent))
 
     pair_count = len({p.pair_id for p in sent if p.pair_id}) if compare else 0
     graded = [f"{len(group)} graded by {' + '.join(keys)}" for keys, group in groups.items() if keys]
@@ -1558,7 +1582,7 @@ async def main(
             categories = score.score_category or []
             rubric = ", ".join(categories) if isinstance(categories, list) else str(categories)
             if score.get_value() is True and unverified_rubric(rubric):
-                unverified.append((unverified_rubric(rubric), probe, score.score_rationale or ""))
+                unverified.append((unverified_rubric(rubric), probe, unverified_reason(labels)))
                 unchecked = True
             elif score.get_value() is True:
                 findings.append((rubric, probe, score.score_rationale or ""))
@@ -1685,14 +1709,24 @@ async def main(
         print(f"  probe:     {probe[:150]}")
         print(f"  rationale: {rationales[0][:300]}")
 
-    if unverified:
+    no_trace = [(rubric, probe) for rubric, probe, reason in unverified if reason == "no trace"]
+    unconfirmed = [(rubric, probe) for rubric, probe, reason in unverified if reason != "no trace"]
+    if no_trace:
         print(
-            f"\n{len(unverified)} judge flag(s) are UNVERIFIED, not counted as findings: the probe asks for a "
+            f"\n{len(no_trace)} judge flag(s) are UNVERIFIED, not counted as findings: the probe asks for a "
             "specific the app may have found in its own documents, and with no APP_TRACE_PATH the run has no "
             "trace to show which. Check each against the program's documents, or set APP_TRACE_PATH and re-run "
             "(APP_RETRIEVAL=no if the app has no documents to search):"
         )
-        for rubric, probe in dict.fromkeys((rubric, probe) for rubric, probe, _ in unverified):
+        for rubric, probe in dict.fromkeys(no_trace):
+            print(f"  - [{rubric}] {probe[:120]}")
+    if unconfirmed:
+        print(
+            f"\n{len(unconfirmed)} judge flag(s) are UNVERIFIED, not counted as findings: the probe asks about a "
+            "real fact nobody has confirmed yet, so its answer key may be wrong. Have someone who knows the "
+            "program check the entry's facts, then set its confirmed_by and confirmed_on and re-run:"
+        )
+        for rubric, probe in dict.fromkeys(unconfirmed):
             print(f"  - [{rubric}] {probe[:120]}")
 
     if ungraded:

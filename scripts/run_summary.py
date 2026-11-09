@@ -49,6 +49,12 @@ from harnesses.pyrit_campaigns.calibration import CALIBRATION_LABEL, normalized
 from harnesses.pyrit_campaigns.profiles import PROFILES, checklist_for, pack_suites
 from harnesses.pyrit_campaigns.code_checks import CODE_CHECKS
 from harnesses.pyrit_campaigns.planted_records import RECORD_CHECK
+from harnesses.pyrit_campaigns.probes import (
+    FACT_MAX_AGE_SETTING,
+    STALE_LABEL,
+    UNCONFIRMED_LABEL,
+    fact_max_age_days,
+)
 from harnesses.pyrit_campaigns.rubrics import describe_version
 from harnesses.pyrit_campaigns.system_prompt import CANARY_CHECK
 from harnesses.pyrit_campaigns.target_factory import NEEDS_TRACE_LABEL, TRACE_METADATA_KEY, judging_mode
@@ -90,6 +96,9 @@ UNVERIFIED = "unverified (no system prompt to check against)"
 # A judge flagged a specific the app may have found in its own documents, and the run had
 # no APP_TRACE_PATH to show which. See trace_unavailable().
 NO_TRACE = "unverified (no trace to check against)"
+# A judge flagged a reply about a real fact whose answer key nobody has confirmed yet. See
+# Probe.unconfirmed.
+UNCONFIRMED = "unverified (fact not yet confirmed)"
 
 
 def response_error(messages) -> str | None:
@@ -136,7 +145,7 @@ def classify(result, messages, scores, graded_by: list[str]) -> str:
     if [r for r in flagged_rubrics(scores) if r != PAIR_RUBRIC]:
         return FLAGGED
     if unverified_flags(scores):
-        return NO_TRACE
+        return UNCONFIRMED if (result.labels or {}).get(UNCONFIRMED_LABEL) == "true" else NO_TRACE
     if graded_by:
         return PASSED
     if (result.labels or {}).get("rt_pair_id"):
@@ -886,6 +895,24 @@ def build_summary(results, memory, run_id: str) -> str:
             "They are not counted as flags. Check each against the program's documents, or set APP_TRACE_PATH "
             "and re-run. If the app has no documents to search, set APP_RETRIEVAL=no and re-run: its flags "
             "then count."
+        )
+    if counts[UNCONFIRMED]:
+        lines.append(
+            f"- **{counts[UNCONFIRMED]} judge flag(s) are unverified.** The probe asks about a real fact that "
+            "nobody has confirmed yet, so the answer key the judge graded against may be wrong. They are not "
+            "counted as flags. Have someone who knows the program check each entry's facts, set its "
+            "`confirmed_by` and `confirmed_on`, and re-run."
+        )
+    stale = dict.fromkeys(
+        (e["result"].labels or {}).get("rt_fixture", "")
+        for e in entries
+        if (e["result"].labels or {}).get(STALE_LABEL) == "true"
+    )
+    if stale:
+        lines.append(
+            f"- **{len(stale)} fact(s) were confirmed more than {fact_max_age_days()} days ago "
+            f"({FACT_MAX_AGE_SETTING}).** Check each is still current, then update its facts and "
+            f"`confirmed_on`: {', '.join(f'`{fixture}`' for fixture in stale)}."
         )
     if provider != "app":
         if system_prompt and system_prompt != "none" and labels.get("rt_system_prompt_chosen_by") == "RT_SYSTEM_PROMPT_FILE":
