@@ -1178,12 +1178,16 @@ overlays/my-agency/
   hallucination.yaml        # adds to hallucination
   fixtures/facts.yaml       # your facts for the shared hallucination templates
   fixtures/scenarios.yaml   # your questions for the shared bias pairs (case_files.yaml too)
+  fixtures/actions.yaml     # things your users ask the chatbot to do, for the shared excessive_agency templates
   checklist.yaml            # optional: printed after a run that sent this pack's probes
 ```
 
 Each file is an ordinary dataset (same form as `attack_suites/*/*.yaml`, templates
 included). Files may also sit one folder down, laid out like `attack_suites/`. A pack may
-hold only fixtures: `overlays/example/` is one, to copy. How facts work, and which
+hold only fixtures: `overlays/example/` is one, to copy. A file in a pack's `fixtures/` named
+like one a shipped template reads (`facts.yaml`, `excerpts.yaml`, `scenarios.yaml`,
+`case_files.yaml`, `actions.yaml`) feeds that template: its entries are sent with the
+shipped ones, or instead of them if the file starts with `mode: replace`. How facts work, and which
 selectors send them, is in the [hallucination suite's README](attack_suites/04_hallucination_grounding/README.md);
 how your own bias pairs work is in the [bias suite's README](attack_suites/03_algorithmic_bias/README.md).
 

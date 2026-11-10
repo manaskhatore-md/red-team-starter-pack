@@ -46,7 +46,8 @@ changes between the halves.
 VERSION. A pair's two templates may both name, as `version: spanish`, the entry field
 the pair compares with the standard wording. An entry that leaves that field out skips
 the pair, both halves together, so an agency writes only the languages it serves. Such
-a fixture's entries are checked (check_versions): a field no template reads stops the
+a fixture's entries are checked (check_entries, as is every fixture a pack feeds that is
+not a fact fixture): a field no template reads stops the
 run, naming the nearest field it may have meant, so a misspelled `spansh` is not skipped
 in silence. An entry says who checked each version in `reviewed_by` and `reviewed_on`
 (each maps a version to a name, or to a YYYY-MM-DD date). A pair whose version nobody
@@ -303,11 +304,12 @@ def fields_used(seed, variable: str) -> set[str]:
     }
 
 
-def check_versions(fixture: FixtureFile, templates) -> None:
+def check_entries(fixture: FixtureFile, templates) -> None:
     """Stop the run on an entry that would not be sent as its writer meant, naming the entry.
 
     `templates`: the template seeds that read this fixture. Catches a field none of them
-    reads (most often a misspelled version, which would otherwise skip its pair in silence),
+    reads that is close to one they do (a misspelling, which for a version would otherwise
+    skip its pair in silence; any other unread field is the writer's own and is left alone),
     a field they all need that is missing, and, when the templates have versions (VERSION
     above), an entry with no version to compare and a review sign-off that is half set or
     names a version the entry does not give.
@@ -316,23 +318,35 @@ def check_versions(fixture: FixtureFile, templates) -> None:
     versions = {template_version(seed) for seed in templates} - {""}
     used = set().union(*(fields_used(seed, fixture.variable) for seed in templates))
     known = used | {"id"} | (set(REVIEW_FIELDS) if versions else set())
+    # A field no template reads, and close to none they do: a note of the writer's own (notes,
+    # source), or one a kit update stopped reading. Neither should stop an agency's pack from
+    # loading, so it is left alone - but where it may be a version with no pair, said once.
+    unread: dict[str, list[str]] = {}
     for entry in fixture.entries:
         where = f"{shown}, entry {entry['id']!r}"
-        for name in sorted(map(str, set(entry) - known)):
-            close = difflib.get_close_matches(name, sorted(known - {"id"}), n=1)
+        given = set(map(str, entry))
+        for name in sorted(given - known):
+            # Only against fields the entry lacks: a misspelling leaves the field it was meant to be
+            # missing. One beside the field it resembles (requested_by beside request, spanish_notes
+            # beside spanish) is the writer's own note about it.
+            close = difflib.get_close_matches(name, sorted(known - {"id"} - given), n=1)
             if close:
-                hint = f" Did you mean `{close[0]}`?"
-            elif versions:
-                # Most likely a version the templates have no pair for, such as a language.
-                hint = (
-                    " To compare a version these templates have no pair for, write a pair of templates for it "
-                    "(see \"Adding a language\" in attack_suites/03_algorithmic_bias/README.md)."
+                # Left alone, the field it was meant to be stays missing, or, for a version, its
+                # pair is skipped without a word.
+                raise SystemExit(
+                    f"{where}: no template reads `{name}`. Did you mean `{close[0]}`? An entry's fields are: "
+                    f"{', '.join(sorted(known))}."
                 )
-            else:
-                hint = ""
-            raise SystemExit(
-                f"{where}: no template reads `{name}`.{hint} An entry's fields are: {', '.join(sorted(known))}."
+            unread.setdefault(name, []).append(entry["id"])
+    if versions:
+        for name, ids in unread.items():
+            print(
+                f"Note: {shown}: no template reads `{name}` (entry {', '.join(map(repr, ids))}), so it is not sent. "
+                "If it is a version to compare, such as a language, write a pair of templates for it (see "
+                "\"Adding a language\" in attack_suites/03_algorithmic_bias/README.md)."
             )
+    for entry in fixture.entries:
+        where = f"{shown}, entry {entry['id']!r}"
         missing = [name for name in sorted(used - versions - {"id"}) if not str(entry.get(name) or "").strip()]
         if missing:
             raise SystemExit(f"{where}: needs {', '.join(f'`{m}`' for m in missing)}")

@@ -119,8 +119,12 @@ def test_the_variable_defaults_to_fixture(templated):
 @pytest.mark.parametrize(
     "dataset, fixtures, message",
     [
-        (TEMPLATE.replace("ref.claim", "ref.claims"), FIXTURES, "uses ref.claims, which entry 'vehicle'"),
-        (TEMPLATE.replace("{{ ref.claim }}", "drive"), FIXTURES.replace("02", "01-1"), "gives the same text"),
+        # A shipped fixture's entries are checked against the fields its templates read, so a
+        # template and fixture that disagree on a name are caught there, naming the entry.
+        (TEMPLATE.replace("ref.claim", "ref.claims"), FIXTURES, "entry 'vehicle': no template reads `claim`. Did you mean `claims`"),
+        (TEMPLATE.replace("{{ ref.claim }}", "drive"),
+         "\n".join(line for line in FIXTURES.replace("02", "01-1").splitlines() if "claim:" not in line),
+         "gives the same text"),
         (TEMPLATE, None, "Missing fixture file"),
         (TEMPLATE, FIXTURES.replace("  - id: vehicle_control\n", "  - name: vehicle_control\n"), "entry 2 needs an `id`"),
         (TEMPLATE, FIXTURES.replace("id: vehicle_control", "id: vehicle"), "two entries have id 'vehicle'"),

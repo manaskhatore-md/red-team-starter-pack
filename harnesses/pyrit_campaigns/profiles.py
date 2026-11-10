@@ -116,8 +116,8 @@ def suite_checklist(dataset: str) -> tuple[str, ...]:
 # them. A checklist.yaml at a pack's top prints whenever its probes run; one beside a
 # suite's file, whenever that file's probes run.
 #
-# A pack can also hold only fixtures: a file in its fixtures/ named like a fed fixture of
-# attack_suites/'s (fed_fixtures: facts.yaml, scenarios.yaml, case_files.yaml) feeds the
+# A pack can also hold only fixtures: a file in its fixtures/ named like one an attack_suites/
+# template reads (fed_fixtures: facts.yaml, scenarios.yaml, actions.yaml, ...) feeds the
 # shared templates that read it, which are then sent once per entry of the pack's file too,
 # as the pack's probes. See FIXTURE FEEDS in probes.py.
 EXTRA_PACKS_SETTING = "RT_EXTRA_SUITES"
@@ -131,7 +131,7 @@ class Pack:
     # Suite name -> the pack's file for it.
     files: dict
     # Suite name -> {fixture name: the pack's file}, for each of the pack's fixture files named
-    # like a fed fixture of that suite's in attack_suites/. Those entries feed the shared templates.
+    # like a fixture of that suite's in attack_suites/. Those entries feed the shared templates.
     feeds: dict = None
 
     def fixture_dir(self, suite: str) -> Path:
@@ -209,24 +209,16 @@ def extra_packs() -> tuple[Pack, ...]:
             raise SystemExit(
                 f"{EXTRA_PACKS_SETTING}: {shown_path(root)} has no probe files and no fixture files. Name each "
                 f"probe file after the suite it adds to, e.g. prompt_injection.yaml (suites: {', '.join(SUITES)}), "
-                "or put your entries in fixtures/ (facts.yaml for hallucination, scenarios.yaml or case_files.yaml "
-                "for bias)."
+                "or put your entries in fixtures/, named like the fixture they add to (facts.yaml for "
+                "hallucination, scenarios.yaml for bias, actions.yaml for excessive_agency, ...)."
             )
         packs.append(pack)
     return tuple(packs)
 
 
-# Suites every one of whose attack_suites/ fixtures a pack's file of the same name can feed.
-# In the others, only a fact fixture is fed (fed_fixtures).
-FEEDS_EVERY_FIXTURE = frozenset({"algorithmic_bias"})
-
-
 def fed_fixtures(suite: str) -> frozenset[str]:
-    """The suite's attack_suites/ fixtures a pack's file of the same name feeds, e.g. {"facts"}.
-
-    The fact fixtures (those an `ask` template reads), and in a FEEDS_EVERY_FIXTURE suite,
-    every fixture a template reads.
-    """
+    """The suite's attack_suites/ fixtures a pack's file of the same name feeds, e.g. {"facts", "excerpts"}:
+    every fixture one of its templates reads."""
     path = dataset_path(suite)
     data = yaml.safe_load(path.read_text(encoding="utf-8")) if path.is_file() else None
     seeds = data.get("seeds") if isinstance(data, dict) else None
@@ -234,7 +226,6 @@ def fed_fixtures(suite: str) -> frozenset[str]:
         str(seed["metadata"]["expand_with"])
         for seed in seeds or []
         if isinstance(seed, dict) and isinstance(seed.get("metadata"), dict) and seed["metadata"].get("expand_with")
-        and (suite in FEEDS_EVERY_FIXTURE or seed["metadata"].get("ask"))
     )
 
 

@@ -13,7 +13,7 @@ from harnesses.pyrit_campaigns import profiles
 from harnesses.pyrit_campaigns.probe_templates import (
     FixtureFile,
     check_facts,
-    check_versions,
+    check_entries,
     confirmed_date,
     expand,
     fill,
@@ -202,13 +202,12 @@ def graded_by(probe: Probe, key: str, rubric: dict) -> bool:
     return probe.dataset in (rubric.get("grades") or []) or key in probe.rubrics
 
 
-# FIXTURE FEEDS. An attack_suites/ template is sent once per entry of the fixture beside it
-# and, for a fed fixture (profiles.fed_fixtures: the hallucination facts and the bias
-# scenarios and case files), once per entry of each RT_EXTRA_SUITES pack's file of the same
-# name (see profiles._pack_feeds): overlays/my-agency/fixtures/facts.yaml feeds the
-# hallucination templates that read fixtures/facts.yaml, and fixtures/scenarios.yaml the bias
-# templates that read scenarios.yaml. So an agency adds its own entries without copying a
-# template. A pack's file adds to attack_suites/'s, or, with `mode: replace` at its top, is
+# FIXTURE FEEDS. An attack_suites/ template is sent once per entry of the fixture beside it,
+# and once per entry of each RT_EXTRA_SUITES pack's file of the same name (see
+# profiles.fed_fixtures and _pack_feeds): overlays/my-agency/fixtures/facts.yaml feeds the
+# hallucination templates that read fixtures/facts.yaml, fixtures/scenarios.yaml the bias
+# templates, fixtures/actions.yaml the excessive_agency ones. So an agency adds its own
+# entries without copying a template. A pack's file adds to attack_suites/'s, or, with `mode: replace` at its top, is
 # used instead of it. The probes its entries make are the pack's: listed after every
 # attack_suites/ probe, so they renumber none, and picked by --probes <pack>.
 
@@ -225,9 +224,9 @@ class Feed:
 
 
 def fixture_feeds(dataset: str, seeds, shipped_file: Path, extras) -> dict[str, Feed]:
-    """Fixture name -> Feed, for each fed fixture of `dataset` (see profiles.fed_fixtures).
+    """Fixture name -> Feed, for each fixture a template of `dataset` reads (see profiles.fed_fixtures).
 
-    Checks each (probe_templates.check_facts for a fact fixture, check_versions for the
+    Checks each (probe_templates.check_facts for a fact fixture, check_entries for the
     rest), and stops the run on two entries of one id across the files a template is filled
     from: results and --probes find a probe by its name, which is the template and the entry id.
     """
@@ -249,11 +248,18 @@ def fixture_feeds(dataset: str, seeds, shipped_file: Path, extras) -> dict[str, 
             path = (pack.feeds or {}).get(dataset, {}).get(name)
             if path is None:
                 continue
-            own_file = pack.files.get(dataset)
-            if own_file is not None and name in _fixtures_read(own_file):
-                # The pack's own templates read this file (beside its own file, the same folder),
-                # most likely copies of the shared ones made before packs could feed them. Filling
-                # the shared templates from it too would send each fact twice.
+            # Any of the pack's own templates that read this very file, in any suite: copies of the
+            # shared ones made before packs could feed them (filling the shared templates too would
+            # send each entry twice), or the pack's own fixture that happens to share the name, such
+            # as an actions.yaml its prompt_injection templates read, which is not meant for these.
+            own_file = next(
+                (
+                    f for f in pack.files.values()
+                    if name in _fixtures_read(f) and fixture_path(f, name).resolve() == path.resolve()
+                ),
+                None,
+            )
+            if own_file is not None:
                 print(
                     f"Note: {shown_path(path)} is read by the pack's own templates in {shown_path(own_file)}, so "
                     "the shared templates are not filled from it as well. To have the shared templates ask about "
@@ -288,11 +294,11 @@ def fixture_feeds(dataset: str, seeds, shipped_file: Path, extras) -> dict[str, 
 
 
 def _check_fed(fixture: FixtureFile, asks: set[str], templates) -> None:
-    """check_facts() on a fact fixture (one `ask` templates read), check_versions() on any other."""
+    """check_facts() on a fact fixture (one `ask` templates read), check_entries() on any other."""
     if asks:
         check_facts(fixture, asks)
     else:
-        check_versions(fixture, templates)
+        check_entries(fixture, templates)
 
 
 def _fixtures_read(path: Path) -> set[str]:
@@ -309,7 +315,7 @@ def _fixtures_read(path: Path) -> set[str]:
 def _check_own_fixtures(seeds, path: Path) -> None:
     """Check each fixture a pack's own `ask` or `version` templates read, against those templates.
 
-    check_facts() for a fact fixture, check_versions() for one with versions. The shared
+    check_facts() for a fact fixture, check_entries() for one with versions. The shared
     templates' fixtures are checked in fixture_feeds(); a pack's own templates read the file
     beside the pack's file, which fixture_feeds() leaves to them.
     """
@@ -323,7 +329,7 @@ def _check_own_fixtures(seeds, path: Path) -> None:
         if asks:
             check_facts(read_fixture(fixture_path(path, name)), asks)
         elif any(template_version(seed) for seed in users):
-            check_versions(read_fixture(fixture_path(path, name)), users)
+            check_entries(read_fixture(fixture_path(path, name)), users)
 
 
 def _probe(seed, expanded, dataset: str, pack: Pack, values: dict[str, str], template_file: Path) -> Probe:
