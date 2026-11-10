@@ -1217,13 +1217,85 @@ def test_app_stream_event_reads_the_reply_from_only_the_events_it_names(fake_app
     assert _send_to_app() == reply
 
 
-def test_app_stream_event_names_the_events_a_stream_has_when_none_match(fake_app, clean_env):
+# A reply with none of the answer's events, as each API streams it: only a tool call
+# (with its trace), or a refusal in an event of its own.
+TOOL_CALL_ONLY_BODY = (
+    'event: response.created\ndata: {"type": "response.created", "response": {"id": "r1"}}\n\n'
+    'event: response.function_call_arguments.delta\ndata: {"type": "response.function_call_arguments.delta", '
+    '"delta": "{\\"order\\":1}", "trace": {"tool_calls": [{"name": "cancel_order"}]}}\n\n'
+    'event: response.completed\ndata: {"type": "response.completed", "response": {"id": "r1"}}\n\n'
+)
+REFUSAL_ONLY_BODY = (
+    'event: response.created\ndata: {"type": "response.created", "response": {"id": "r1"}}\n\n'
+    'event: response.refusal.delta\ndata: {"type": "response.refusal.delta", "delta": "I can\'t help."}\n\n'
+    'event: response.completed\ndata: {"type": "response.completed", "response": {"id": "r1"}}\n\n'
+)
+
+
+@pytest.mark.parametrize("path", ["delta", ""], ids=["with-response-path", "no-response-path"])
+def test_a_reply_with_none_of_the_app_stream_events_is_graded_as_empty_with_its_trace(
+    fake_app, clean_env, capsys, path
+):
+    if path:
+        clean_env.setenv("APP_RESPONSE_PATH", path)
+    else:
+        clean_env.delenv("APP_RESPONSE_PATH")
+    clean_env.setenv("APP_STREAM_EVENT", "response.output_text.delta")
+    clean_env.setenv("APP_TRACE_PATH", "trace.tool_calls")
+    fake_app["replies"] = [(200, TOOL_CALL_ONLY_BODY, "text/event-stream")]
+    target = build_target()
+    message = Message(message_pieces=[MessagePiece(role="user", original_value="hi", conversation_id=str(uuid.uuid4()))])
+    try:
+        reply = asyncio.run(target.send_prompt_async(message=message))[0].message_pieces[0]
+    finally:
+        asyncio.run(target_factory.close_target(target))
+    assert reply.converted_value == ""
+    assert "cancel_order" in reply.prompt_metadata[target_factory.TRACE_METADATA_KEY]
+    note = capsys.readouterr().out
+    assert "reply text was read as empty" in note
+    assert "response.created, response.function_call_arguments.delta, response.completed" in note
+
+
+def test_the_note_about_a_reply_with_none_of_the_app_stream_events_is_printed_once(fake_app, clean_env, capsys):
     clean_env.setenv("APP_RESPONSE_PATH", "delta")
-    clean_env.setenv("APP_STREAM_EVENT", "output_text.delta")
-    fake_app["replies"] = [(200, RESPONSES_API_BODY)]
-    with pytest.raises(ValueError, match=r"no such events\. Its events are: response\.output_text\.delta, "
-                                         r"response\.function_call_arguments\.delta"):
-        _send_to_app()
+    clean_env.setenv("APP_STREAM_EVENT", "response.output_text.delta")
+    fake_app["replies"] = [(200, REFUSAL_ONLY_BODY), (200, TOOL_CALL_ONLY_BODY), (200, RESPONSES_API_BODY)]
+    target = build_target()
+    replies = []
+    try:
+        for _ in range(3):
+            message = Message(
+                message_pieces=[MessagePiece(role="user", original_value="hi", conversation_id=str(uuid.uuid4()))]
+            )
+            replies.append(asyncio.run(target.send_prompt_async(message=message))[0].message_pieces[0].converted_value)
+    finally:
+        asyncio.run(target_factory.close_target(target))
+    assert replies == ["", "", "Hi there"]
+    out = capsys.readouterr().out
+    assert out.count("reply text was read as empty") == 1
+    assert "response.refusal.delta" in out
+
+
+def test_openai_chat_completions_tool_call_only_stream_reads_null_content_as_empty_with_trace(fake_app, clean_env):
+    clean_env.setenv("APP_RESPONSE_PATH", "choices.0.delta.content")
+    clean_env.setenv("APP_TRACE_PATH", "choices.0.delta.tool_calls")
+    body = (
+        'data: {"id": "c1", "choices": [{"index": 0, "delta": {"role": "assistant", "content": null, '
+        '"tool_calls": [{"index": 0, "id": "call_1", "function": {"name": "cancel_order", "arguments": ""}}]}}]}\n\n'
+        'data: {"id": "c1", "choices": [{"index": 0, "delta": {"tool_calls": '
+        '[{"index": 0, "function": {"arguments": "{\\"order\\":1}"}}]}}]}\n\n'
+        'data: {"id": "c1", "choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls"}]}\n\n'
+        "data: [DONE]\n\n"
+    )
+    fake_app["replies"] = [(200, body, "text/event-stream")]
+    target = build_target()
+    message = Message(message_pieces=[MessagePiece(role="user", original_value="hi", conversation_id=str(uuid.uuid4()))])
+    try:
+        reply = asyncio.run(target.send_prompt_async(message=message))[0].message_pieces[0]
+    finally:
+        asyncio.run(target_factory.close_target(target))
+    assert reply.converted_value == ""
+    assert "cancel_order" in reply.prompt_metadata[target_factory.TRACE_METADATA_KEY]
 
 
 def test_app_stream_event_narrows_the_reply_but_not_the_trace(fake_app, clean_env):

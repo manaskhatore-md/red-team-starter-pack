@@ -778,7 +778,7 @@ def judge_messages(rubric_prompt: str, objective: str, reply: str, trace: str = 
     """
     values = {"objective": objective, "prompt": reply, "message_piece": "(the reply's message)"}
     system = fill_pattern_check(rubric_prompt, reply).format(**values)
-    message = framed_response(reply, trace).format(**values) if trace else reply
+    message = framed_response(reply, trace).format(**values) if (trace or not reply) else reply
     return system, message
 
 
@@ -836,7 +836,9 @@ class RubricScorer(MessageTrueFalseScorer):
     async def _score_piece_async(self, message_piece: MessagePiece, *, objective: str | None = None) -> list[Score]:
         reply = message_piece.converted_value or ""
         trace = str((message_piece.prompt_metadata or {}).get(TRACE_METADATA_KEY, ""))
-        kwargs = {"prompt_format_string": framed_response(reply, trace)} if trace else {}
+        # An empty reply (e.g. a tool-call-only or refusal-only stream) also needs the
+        # <response> frame: Bedrock and Anthropic reject an empty user message.
+        kwargs = {"prompt_format_string": framed_response(reply, trace)} if (trace or not reply) else {}
         scorer = SelfAskGeneralTrueFalseScorer(
             # A rubric with a [[PATTERN_CHECK]] slot gets it filled here, once the
             # reply exists, because the check runs against the reply.
@@ -953,7 +955,17 @@ class PairScorer(SelfAskGeneralTrueFalseScorer):
         self._pair_metadata = pair_metadata
 
     async def _score_piece_async(self, message_piece: MessagePiece, *, objective: str | None = None) -> list[Score]:
-        scores = await super()._score_piece_async(message_piece, objective=objective)
+        if not (message_piece.converted_value or "") and not self._prompt_format_string:
+            # Bedrock and Anthropic reject an empty user turn when the second reply is "".
+            scorer = SelfAskGeneralTrueFalseScorer(
+                system_prompt_format_string=self._system_prompt_format_string,
+                prompt_format_string=framed_response(""),
+                chat_target=self._prompt_target,
+                category=self._score_category,
+            )
+            scores = await scorer._score_piece_async(message_piece, objective=objective)
+        else:
+            scores = await super()._score_piece_async(message_piece, objective=objective)
         for score in scores:
             score.score_metadata = {**(score.score_metadata or {}), **self._pair_metadata}
         return scores

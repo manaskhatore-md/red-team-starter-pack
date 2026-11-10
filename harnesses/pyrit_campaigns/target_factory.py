@@ -1031,6 +1031,7 @@ class AppChatTarget(PromptTarget):
         self._timeout = timeout
         self._client = None
         self._noted_unread_stream = False
+        self._noted_no_chosen_events = False
 
     @staticmethod
     def settings_from_env() -> dict:
@@ -1104,7 +1105,13 @@ class AppChatTarget(PromptTarget):
         """
         kind, labeled = _labeled_events(body, content_type)
         if kind is not None:
-            labeled = self._chosen_events(labeled)
+            chosen = self._chosen_events(labeled)
+            if labeled and not chosen:
+                # A reply that is only a tool call or a refusal has none of the answer's
+                # events. It is still the app's reply, so it is graded (as empty text,
+                # with its trace) instead of failing the request.
+                return ""
+            labeled = chosen
         events = [payload for _sse_type, _kind, payload in labeled]
         if not self._response_path:
             if kind == "SSE":
@@ -1157,8 +1164,9 @@ class AppChatTarget(PromptTarget):
         matched = False
         for sse_type, event_kind, event in labeled:
             found, value = _step_path(event, self._response_path)
-            if found and value is not None:
+            if found:
                 matched = True
+            if found and value is not None:
                 if isinstance(value, list) and all(isinstance(x, str) for x in value):
                     text = list(value)
                 else:
@@ -1190,13 +1198,21 @@ class AppChatTarget(PromptTarget):
         return bool(names & self._stream_events)
 
     def _chosen_events(self, labeled: list) -> list:
-        """The stream events APP_STREAM_EVENT names (all of them if it is unset)."""
+        """The stream events APP_STREAM_EVENT names (all of them if it is unset).
+
+        A stream with none of them is normal for one reply (a tool call, a refusal), so
+        it gives no events, not an error; but every reply having none is a typo in the
+        setting, so the first time it happens, a note lists the kinds the stream had.
+        """
         chosen = [e for e in labeled if self._is_chosen(e[1], e[2])]
-        if labeled and not chosen:
+        if labeled and not chosen and not self._noted_no_chosen_events:
+            self._noted_no_chosen_events = True
             seen = list(dict.fromkeys(k for _t, k, _p in labeled))
-            raise ValueError(
-                f"APP_STREAM_EVENT={','.join(sorted(self._stream_events))}: the app's stream has no such events. "
-                f"Its events are: {', '.join(seen)}."
+            print(
+                f"\nNote: a reply from the app had no APP_STREAM_EVENT={','.join(sorted(self._stream_events))} "
+                f"events, so its reply text was read as empty. Its events were: {', '.join(seen)}. That is normal "
+                "for a reply that is only a tool call or a refusal; if every reply comes back empty, check "
+                "APP_STREAM_EVENT for a typo."
             )
         return chosen
 

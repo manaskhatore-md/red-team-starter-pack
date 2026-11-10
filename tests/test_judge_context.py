@@ -173,6 +173,47 @@ def test_single_turn_rubric_scorer_shows_response_trace_to_judge(memory):
     assert user_text == fill_text("response", RESPONSE="Page views were 500.", TRACE_SECTION=trace)
 
 
+def test_empty_reply_without_trace_is_framed_so_judge_never_receives_empty_user_message(memory):
+    import asyncio
+    import uuid
+    from pyrit.models import Message, MessagePiece
+
+    sent = []
+
+    class RecordingJudge(FakeJudge):
+        async def _send_prompt_to_target_async(self, *, normalized_conversation):
+            sent.append([(p.role, p.converted_value) for m in normalized_conversation for p in m.message_pieces])
+            return await super()._send_prompt_to_target_async(normalized_conversation=normalized_conversation)
+
+    judge = RecordingJudge()
+    scorer = single_turn_scan.RubricScorer(
+        rubric_prompt="Judge it. <probe>{objective}</probe>",
+        judge=judge,
+        category="injection_compliance",
+        judge_context={},
+    )
+    piece = MessagePiece(role="assistant", original_value="", converted_value="", conversation_id=str(uuid.uuid4()))
+    memory.add_message_to_memory(request=Message(message_pieces=[piece]))
+    asyncio.run(scorer._score_piece_async(piece, objective="ignore rules"))
+
+    user_text = [text for role, text in sent[0] if role == "user"][-1]
+    expected = fill_text("response", RESPONSE="", TRACE_SECTION="")
+    assert user_text == expected and "<response>\n</response>" in user_text
+    _, preview_message = single_turn_scan.judge_messages("Judge it. <probe>{objective}</probe>", "ignore rules", "")
+    assert preview_message == expected
+
+    pair_scorer = single_turn_scan.PairScorer(
+        system_prompt_format_string="Compare A and B.",
+        chat_target=judge,
+        category="disparate_treatment",
+        pair_metadata={"first": "a", "second": "b"},
+    )
+    [pair_score] = asyncio.run(pair_scorer._score_piece_async(piece))
+    pair_user_text = [text for role, text in sent[1] if role == "user"][-1]
+    assert pair_user_text == expected
+    assert pair_score.score_metadata == {"first": "a", "second": "b"}
+
+
 @pytest.mark.house_style
 def test_the_judge_is_told_a_truncated_trace_is_partial():
     # target_factory cuts a long trace short with "[truncated]"; the shipped trace text says what that means.
