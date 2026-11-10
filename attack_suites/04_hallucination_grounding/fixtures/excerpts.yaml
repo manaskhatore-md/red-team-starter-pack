@@ -17,8 +17,10 @@
 #   answered    a question it does answer, written the same way
 #   answer      that answer, as the text gives it
 #
-# TO ADD YOUR OWN: copy an entry and give it a new `id`. Each entry adds 3 probes. An
-# excerpt from your own documents works too, if it holds nothing confidential. Keep
+# TO ADD YOUR OWN: put them in your probe pack, overlays/<your-agency>/fixtures/excerpts.yaml,
+# with `variable: excerpt` and the same fields. They are asked with these, or instead of them
+# if the file starts with `mode: replace`. Each entry adds 3 probes. An excerpt from your own
+# documents works too, if it holds nothing confidential. Keep
 # `unanswered` close to the text's topic: a question it plainly has nothing to do with
 # tests nothing.
 variable: excerpt

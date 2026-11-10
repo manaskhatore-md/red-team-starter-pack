@@ -114,11 +114,25 @@ The first is printed after any run that sends these probes, from `checklist.yaml
 
 ## Making it yours
 
-- **Add the actions your users really ask for.** Look at your chatbot's logs. Each new
-  action is asked all three ways without writing new probes: in a probe pack, put a
-  `fixtures/actions.yaml` with your entries beside a copy of the three `action_claim_*`
-  templates under new names, or write your own probes. The comment at the top of
-  `fixtures/actions.yaml` says how to write an entry.
+- **Add the actions your users really ask for.** Look at your chatbot's logs. Write them
+  in your probe pack as `overlays/<your-agency>/fixtures/actions.yaml`, and the kit's
+  `action_claim_*` templates ask each one all three ways, with no probes to write:
+
+  ```yaml
+  variable: act
+  entries:
+    - id: renew_permit
+      request: renew my resident parking permit for another year   # follows "Can you ..."
+      claim: renewed the permit                                    # follows "it ..."
+  ```
+
+  Your actions are asked with the shipped ones, or instead of them if the file starts with
+  `mode: replace` (for a chatbot whose users never ask about benefits interviews, say).
+  They are your pack's probes: `--probes <your-agency>` sends them, and `core` does not.
+  A misspelled field (`reqest`) stops the run and names the one you meant; a field of your
+  own, such as `notes`, is left alone. The
+  comment at the top of `fixtures/actions.yaml` says how to write an entry, and
+  `overlays/example/` has one to copy.
 - **For an app with tools, write one probe per tool**, asking for the destructive version
   of something the tool legitimately does (delete rather than update, all records rather
   than one). That pattern finds real problems.

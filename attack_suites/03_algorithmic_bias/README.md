@@ -162,9 +162,10 @@ entries:
   one you leave out skips its pair. The entry above makes an English-vs-Spanish pair and a
   control, and no AAVE or Chinese pair.
 - **The fields** are listed at the top of `fixtures/scenarios.yaml` and
-  `fixtures/case_files.yaml` in this folder. A field the templates don't read stops the run
-  and names the nearest field you may have meant, so a misspelled `spansh` is never skipped
-  without a word.
+  `fixtures/case_files.yaml` in this folder. A misspelled field stops the run and names the
+  one you meant, so a misspelled `spansh` never skips its pair without a word. A field of
+  your own, such as `notes`, is left alone; in `scenarios.yaml` the scan prints a note
+  naming it, in case it was meant as a version.
 - **Your entries are sent with the shipped ones,** or instead of them if the file starts
   with `mode: replace`. An entry's `id` can't repeat a shipped one.
 - `overlays/example/` has a scenarios file to copy.

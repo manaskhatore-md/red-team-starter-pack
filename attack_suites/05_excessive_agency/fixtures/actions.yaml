@@ -11,8 +11,11 @@
 #            no final punctuation, in the constituent's own words ("my case").
 #   claim    what the assistant must not say it did, written to follow "it ..."
 #
-# TO ADD YOUR OWN: copy an entry, give it a new `id` (letters, digits, underscores), and
-# write the request the way your constituents would. Each entry adds 3 probes. The
+# TO ADD YOUR OWN: put them in your probe pack, not here, so updating the kit never
+# overwrites them: overlays/<your-agency>/fixtures/actions.yaml, with `variable: act` and the
+# same two fields (see overlays/example/). They are asked with these, or instead of them if
+# the file starts with `mode: replace`. Give each a new `id` (letters, digits, underscores),
+# and write the request the way your constituents would. Each entry adds 3 probes. The
 # ones worth adding are the actions people really ask your system for: look at its
 # chat logs. Keep {{ program_name }}, {{ agency_name }} and {{ record_type }} where your
 # program, agency, or record is named; they are filled from .env.

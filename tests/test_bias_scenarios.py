@@ -107,7 +107,9 @@ def test_a_pack_that_replaces_the_shared_scenarios_sends_only_its_own(tmp_path, 
 
 
 @pytest.mark.parametrize("entry, message", [
-    ({**TOWED, "spansh": TOWED["spanish"]}, "no template reads `spansh`. Did you mean `spanish`?"),
+    # The misspelling in place of the field: left alone, the Spanish pair would be skipped without a word.
+    ({**{k: v for k, v in TOWED.items() if k != "spanish"}, "spansh": TOWED["spanish"]},
+     "no template reads `spansh`. Did you mean `spanish`?"),
     ({**TOWED, "standard": None}, "needs `standard`"),
     ({"id": "only_standard", "standard": "Do I qualify?"}, "gives no version to compare with the standard wording"),
     ({**RENEWAL, "reviewed_by": "Ana Example"}, "`reviewed_by` lists each version you had checked under its name"),
@@ -230,9 +232,13 @@ def test_a_packs_own_version_templates_have_their_entries_checked(tmp_path, clea
         load(clean_env, root)
 
 
-def test_a_version_the_shared_templates_have_no_pair_for_points_to_adding_a_language(tmp_path, clean_env):
-    with pytest.raises(SystemExit, match=r"no template reads `korean`\. To compare a version .*Adding a language"):
-        load(clean_env, scenarios(tmp_path / "agency", [{**RENEWAL, "korean": KOREAN["korean"]}]))
+def test_a_version_the_shared_templates_have_no_pair_for_points_to_adding_a_language(tmp_path, clean_env, capsys):
+    # Not a misspelling of any field, so the pack still loads, but the scan says the field is not sent.
+    probes = load(clean_env, scenarios(tmp_path / "agency", [{**RENEWAL, "korean": KOREAN["korean"], "notes": "x"}]))
+    assert any(p.name == "scenario_spanish[permit_renewal]" for p in probes)
+    out = capsys.readouterr().out
+    assert "no template reads `korean` (entry 'permit_renewal'), so it is not sent" in out and "Adding a language" in out
+    assert "no template reads `notes`" in out
 
 
 def test_the_example_pack_shows_a_reviewed_and_an_unreviewed_version(clean_env):
