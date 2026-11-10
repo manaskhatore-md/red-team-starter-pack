@@ -388,6 +388,31 @@ APP_RESPONSE_PATH=reply
 If the sign-in lapses mid-run, the page is reloaded once so you can sign in again. Every
 setting is documented in `BrowserApiTarget`, in `browser_target.py`.
 
+**Streaming responses and expiring bearer tokens.** If your app streams its reply as
+Server-Sent Events (`text/event-stream`), newline-delimited JSON (`NDJSON`), or AWS Lambda
+response streaming chunks, `AppChatTarget` (and `BrowserApiTarget`) detects the stream
+automatically, reads `APP_RESPONSE_PATH` from each event, and joins the text pieces. An app
+that resends the whole reply so far in each event is recognized, and its last event is the
+reply; `APP_STREAM_MODE=last` always takes the last event's text. Trace and control fields
+(`APP_TRACE_PATH`, `APP_CONTROL_PATH`) are collected across the events. A stream that ends
+in an error event fails that request, like an HTTP error, so a cut-off reply is never
+graded as the app's answer.
+
+If the app takes a short-lived bearer token over HTTP, set `APP_TOKEN_COMMAND` to a command
+that prints a fresh token and nothing else. The kit runs it before the first request and
+again if the app answers `401`, then retries the request once. It runs in `cmd.exe` on
+Windows (for a PowerShell script, use `powershell -NoProfile -File C:\path\get-token.ps1`)
+and must finish without asking for anything, within `APP_TIMEOUT`. Don't put a password in
+the command: `.env` is plain text on disk. Have the command use your own CLI sign-in, or a
+script that reads the secret from your system's credential store. `APP_TOKEN_COMMAND` is
+for `APP_TRANSPORT=http`; with `browser-api` the signed-in page handles the sign-in.
+
+```bash
+APP_RESPONSE_PATH=choices.0.delta.content
+APP_STREAM_MODE=concat                           # default; last takes the final event's text
+APP_TOKEN_COMMAND=python C:/tokens/get_app_token.py   # your own script; prints only the token
+```
+
 **Tool calls and retrieved sources (`APP_TRACE_PATH`).** If the app's JSON response
 includes what happened behind the scenes alongside the reply — such as an agent's per-turn
 rounds and tool calls (`trace.rounds` or `trace.rounds.tool_calls`) or a RAG pipeline's

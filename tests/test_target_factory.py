@@ -13,17 +13,17 @@ from harnesses.pyrit_campaigns import target_factory
 from harnesses.pyrit_campaigns.target_factory import build_scoring_target, build_target, model_name
 
 
-def test_default_provider_is_gemini(fake_keys):
+def test_default_provider_is_gemini(fake_keys, memory):
     assert model_name(build_target()) == "gemini/gemini-3.8-flash"
 
 
 @pytest.mark.parametrize("provider", sorted(target_factory.PROVIDER_DEFAULTS))
-def test_each_key_based_provider_gets_its_default_model(fake_keys, provider):
+def test_each_key_based_provider_gets_its_default_model(fake_keys, memory, provider):
     expected, _key = target_factory.PROVIDER_DEFAULTS[provider]
     assert model_name(build_target(provider=provider)) == expected
 
 
-def test_rt_model_overrides_the_default(fake_keys, clean_env):
+def test_rt_model_overrides_the_default(fake_keys, clean_env, memory):
     clean_env.setenv("RT_MODEL", "gemini/gemini-2.5-pro")
     assert model_name(build_target()) == "gemini/gemini-2.5-pro"
 
@@ -38,12 +38,12 @@ def test_unknown_provider_lists_the_options(fake_keys):
         build_target(provider="nope")
 
 
-def test_judge_defaults_to_the_target_provider(fake_keys, clean_env):
+def test_judge_defaults_to_the_target_provider(fake_keys, clean_env, memory):
     clean_env.setenv("RT_PROVIDER", "openai")
     assert model_name(build_scoring_target()) == "openai/gpt-5"
 
 
-def test_judge_on_another_provider_gets_that_providers_model(fake_keys, clean_env):
+def test_judge_on_another_provider_gets_that_providers_model(fake_keys, clean_env, memory):
     # Target on Gemini with an explicit model, judge on Anthropic. The judge used to
     # be built with the Gemini model id and the Anthropic key, so every judge call
     # failed.
@@ -53,13 +53,13 @@ def test_judge_on_another_provider_gets_that_providers_model(fake_keys, clean_en
     assert model_name(build_scoring_target()) == "anthropic/claude-haiku-4-5"
 
 
-def test_rt_judge_model_picks_the_judge_model(fake_keys, clean_env):
+def test_rt_judge_model_picks_the_judge_model(fake_keys, clean_env, memory):
     clean_env.setenv("RT_JUDGE_PROVIDER", "anthropic")
     clean_env.setenv("RT_JUDGE_MODEL", "anthropic/claude-sonnet-4-5")
     assert model_name(build_scoring_target()) == "anthropic/claude-sonnet-4-5"
 
 
-def test_judge_on_the_target_provider_does_not_inherit_rt_model(fake_keys, clean_env):
+def test_judge_on_the_target_provider_does_not_inherit_rt_model(fake_keys, clean_env, memory):
     # RT_MODEL is the model under test. A judge that picked it up would grade its
     # own answers without anyone having asked for that.
     clean_env.setenv("RT_MODEL", "gemini/gemini-2.5-pro")
@@ -81,7 +81,7 @@ def test_attacker_provider_falls_back_to_judge_then_target(clean_env, settings, 
     assert target_factory.resolve_provider("adversarial") == expected
 
 
-def test_rt_adversarial_model_picks_the_attacker_model(fake_keys, clean_env):
+def test_rt_adversarial_model_picks_the_attacker_model(fake_keys, clean_env, memory):
     clean_env.setenv("RT_ADVERSARIAL_PROVIDER", "openai")
     clean_env.setenv("RT_ADVERSARIAL_MODEL", "openai/gpt-5-mini")
     assert model_name(build_target("adversarial")) == "openai/gpt-5-mini"
@@ -220,25 +220,25 @@ def test_target_model_from_another_provider_stops(fake_keys, clean_env):
         build_target()
 
 
-def test_unprefixed_model_ids_are_left_to_the_provider(fake_keys, clean_env):
+def test_unprefixed_model_ids_are_left_to_the_provider(fake_keys, clean_env, memory):
     # LiteLLM accepts bare OpenAI names; only a prefix naming another provider is a mismatch.
     clean_env.setenv("RT_PROVIDER", "openai")
     clean_env.setenv("RT_MODEL", "gpt-5-mini")
     assert model_name(build_target()) == "gpt-5-mini"
 
 
-def test_a_judge_that_is_the_target_gets_a_note(fake_keys, capsys):
+def test_a_judge_that_is_the_target_gets_a_note(fake_keys, memory, capsys):
     build_scoring_target()
     assert "the judge is the model under test" in capsys.readouterr().out
 
 
-def test_a_judge_on_another_model_gets_no_note(fake_keys, clean_env, capsys):
+def test_a_judge_on_another_model_gets_no_note(fake_keys, clean_env, memory, capsys):
     clean_env.setenv("RT_JUDGE_PROVIDER", "anthropic")
     build_scoring_target()
     assert "model under test" not in capsys.readouterr().out
 
 
-def test_an_attacker_that_is_the_target_is_called_the_attacker(fake_keys, capsys):
+def test_an_attacker_that_is_the_target_is_called_the_attacker(fake_keys, memory, capsys):
     build_target("adversarial")
     assert "the attacker is the model under test" in capsys.readouterr().out
 
@@ -589,6 +589,7 @@ def test_app_failing_model_check_stops_the_run(fake_app):
         ("APP_ENDPOINT", "abc123.execute-api.us-east-1.amazonaws.com/test/chat", "not an http"),
         ("APP_REQUEST_TEMPLATE", '{"query": PROMPT}', "not valid JSON"),
         ("APP_REQUEST_TEMPLATE", '{"query": "hello"}', "has no {PROMPT}"),
+        ("APP_STREAM_MODE", "first", "APP_STREAM_MODE='first': use concat (the default) or last"),
     ],
 )
 def test_app_settings_that_cannot_work_stop_before_any_request(fake_app, clean_env, name, value, message):
@@ -777,7 +778,7 @@ def test_app_trace_path_supports_multiple_comma_separated_paths(fake_app, clean_
     }
 
 
-def test_app_trace_path_strips_static_and_history_bloat_and_trims_per_tool_result():
+def test_app_trace_path_strips_static_and_history_bloat_and_trims_per_tool_result(memory):
     import json
 
     target = target_factory.AppChatTarget(
@@ -845,7 +846,7 @@ def test_app_trace_path_strips_static_and_history_bloat_and_trims_per_tool_resul
     assert parsed["rounds"][2]["tool_calls"][0] == {"name": "final_round_report", "response": {"pageViews": 47706}}
 
 
-def test_app_trace_path_projects_field_across_list_of_rounds():
+def test_app_trace_path_projects_field_across_list_of_rounds(memory):
     import json
 
     target = target_factory.AppChatTarget(
@@ -872,3 +873,326 @@ def test_app_trace_path_projects_field_across_list_of_rounds():
     assert target.trace_text(no_tools_body) == ""
 
 
+# --- Streaming responses (SSE, NDJSON, Lambda streaming) & APP_TOKEN_COMMAND --------
+
+
+SSE_BODY = "\n".join([
+    ": keepalive comment",
+    "event: message_start",
+    'data: {"choices": [{"delta": {"role": "assistant"}}], "control": {"blocked": false}}',
+    "",
+    "event: content_block_delta",
+    'data: {"choices": [{"delta": {"content": "Part B "}}], "trace": {"tool_calls": [{"name": "lookup_rate"}]}}',
+    "",
+    "event: content_block_delta",
+    'data: {"choices": [{"delta": {"content": "is $202.90."}}], "trace": {"tool_calls": [{"name": "check_table"}]}}',
+    "",
+    "event: message_stop",
+    'data: {"choices": [{"delta": {}}], "citations": ["CMS-2026"], "control": {"blocked": false, "action": "allow"}}',
+    # No blank line before [DONE], on purpose: some servers leave it out, and the
+    # marker must still not end up inside the last event's data.
+    "data: [DONE]",
+])
+
+NDJSON_BODY = "\n".join([
+    '{"delta": "First chunk. ", "trace": {"rounds": [{"round": 1, "tool_calls": [{"name": "step_one"}]}]}}',
+    '{"delta": "Second chunk.", "trace": {"rounds": [{"round": 2, "tool_calls": [{"name": "step_two"}]}]}}',
+    '{"done": true, "control": {"piiBlocked": false, "gated": false}}',
+])
+
+LAMBDA_STREAM_BODY = (
+    '{"answer": "Hello "}'
+    '{"answer": "Hello from Lambda!", "trace": {"citations": ["COMAR 10.09.24"]}, "control": {"gated": true}}'
+    "\x00\x00\x00\x00"
+)
+
+
+def test_app_parses_sse_stream_reply_trace_and_control_fields(fake_app, clean_env):
+    import json
+
+    clean_env.setenv("APP_RESPONSE_PATH", "choices.0.delta.content")
+    clean_env.setenv("APP_TRACE_PATH", "trace.tool_calls, citations")
+    clean_env.setenv("APP_CONTROL_PATH", "control")
+    fake_app["replies"] = [(200, SSE_BODY)]
+    target = build_target()
+    message = Message(message_pieces=[MessagePiece(role="user", original_value="hi", conversation_id=str(uuid.uuid4()))])
+    try:
+        reply = asyncio.run(target.send_prompt_async(message=message))[0].message_pieces[0]
+    finally:
+        asyncio.run(target_factory.close_target(target))
+
+    assert reply.converted_value == "Part B is $202.90."
+    assert json.loads(reply.prompt_metadata[target_factory.TRACE_METADATA_KEY]) == {
+        "trace.tool_calls": [{"name": "lookup_rate"}, {"name": "check_table"}],
+        "citations": ["CMS-2026"],
+    }
+    assert json.loads(reply.prompt_metadata[target_factory.CONTROL_METADATA_KEY]) == {
+        "blocked": False,
+        "action": "allow",
+    }
+
+
+def test_app_parses_ndjson_and_lambda_streaming_bodies_in_concat_and_last_modes(fake_app, clean_env):
+    import json
+
+    # NDJSON in default concat mode
+    clean_env.setenv("APP_RESPONSE_PATH", "delta")
+    clean_env.setenv("APP_TRACE_PATH", "trace.rounds.tool_calls")
+    clean_env.setenv("APP_CONTROL_PATH", "control.piiBlocked, control.gated")
+    fake_app["replies"] = [(200, NDJSON_BODY)]
+    target = build_target()
+    message = Message(message_pieces=[MessagePiece(role="user", original_value="hi", conversation_id=str(uuid.uuid4()))])
+    try:
+        reply = asyncio.run(target.send_prompt_async(message=message))[0].message_pieces[0]
+    finally:
+        asyncio.run(target_factory.close_target(target))
+
+    assert reply.converted_value == "First chunk. Second chunk."
+    assert json.loads(reply.prompt_metadata[target_factory.TRACE_METADATA_KEY]) == [
+        {"name": "step_one"},
+        {"name": "step_two"},
+    ]
+    assert json.loads(reply.prompt_metadata[target_factory.CONTROL_METADATA_KEY]) == {
+        "control.piiBlocked": False,
+        "control.gated": False,
+    }
+
+    # Lambda concatenated JSON chunks in APP_STREAM_MODE=last (cumulative snapshots)
+    clean_env.setenv("APP_RESPONSE_PATH", "answer")
+    clean_env.setenv("APP_STREAM_MODE", "last")
+    clean_env.setenv("APP_TRACE_PATH", "trace.citations")
+    clean_env.setenv("APP_CONTROL_PATH", "control.gated")
+    fake_app["replies"] = [(200, LAMBDA_STREAM_BODY)]
+    target = build_target()
+    try:
+        reply_last = asyncio.run(target.send_prompt_async(message=message))[0].message_pieces[0]
+    finally:
+        asyncio.run(target_factory.close_target(target))
+
+    assert reply_last.converted_value == "Hello from Lambda!"
+    assert json.loads(reply_last.prompt_metadata[target_factory.TRACE_METADATA_KEY]) == ["COMAR 10.09.24"]
+    assert json.loads(reply_last.prompt_metadata[target_factory.CONTROL_METADATA_KEY]) is True
+
+
+@pytest.mark.parametrize(
+    "kind, body, first_event",
+    [
+        ("SSE", 'event: message\ndata: {"wrong": "field"}\ndata: [DONE]\n', '{"wrong": "field"}'),
+        ("NDJSON", '{"wrong": 1}\n{"still_wrong": 2}\n', '{"wrong": 1}'),
+    ],
+)
+def test_streaming_error_names_the_stream_kind_response_path_and_first_event(fake_app, clean_env, kind, body, first_event):
+    clean_env.setenv("APP_RESPONSE_PATH", "choices.0.delta.content")
+    fake_app["replies"] = [(200, body)]
+    with pytest.raises(ValueError) as exc_info:
+        _send_to_app()
+    msg = str(exc_info.value)
+    assert f"response looks like {kind} but no event had APP_RESPONSE_PATH=choices.0.delta.content" in msg
+    assert f"first event: {first_event}" in msg
+
+
+def test_app_token_command_fetches_initial_token_and_recovers_after_mid_run_401(fake_app, clean_env, tmp_path):
+    import sys
+
+    counter_file = tmp_path / "token_count.txt"
+    counter_file.write_text("0")
+    script = tmp_path / "emit_token.py"
+    script.write_text(
+        "from pathlib import Path\n"
+        f"p = Path({str(counter_file)!r})\n"
+        "n = int(p.read_text()) + 1\n"
+        "p.write_text(str(n))\n"
+        "print(f'fresh-token-{n}')\n"
+    )
+    clean_env.setenv("APP_TOKEN_COMMAND", f'"{sys.executable}" "{script}"')
+    fake_app["replies"] = [
+        (200, '{"answer": "first reply"}'),
+        (401, '{"message": "token expired"}'),
+        (200, '{"answer": "second reply after refresh"}'),
+    ]
+
+    target = build_target()
+    # Building the target does not run the command until a request is sent.
+    assert counter_file.read_text() == "0"
+    try:
+        m1 = Message(message_pieces=[MessagePiece(role="user", original_value="turn 1", conversation_id=str(uuid.uuid4()))])
+        m2 = Message(message_pieces=[MessagePiece(role="user", original_value="turn 2", conversation_id=str(uuid.uuid4()))])
+        r1 = asyncio.run(target.send_prompt_async(message=m1))[0].get_value()
+        r2 = asyncio.run(target.send_prompt_async(message=m2))[0].get_value()
+    finally:
+        asyncio.run(target_factory.close_target(target))
+
+    assert (r1, r2) == ("first reply", "second reply after refresh")
+    assert counter_file.read_text() == "2"
+    auth_headers = [
+        {k.lower(): v for k, v in req["headers"].items()}["authorization"]
+        for req in fake_app["requests"]
+    ]
+    assert auth_headers == [
+        "Bearer fresh-token-1",
+        "Bearer fresh-token-1",
+        "Bearer fresh-token-2",
+    ]
+
+
+def test_app_token_command_stops_after_one_retry_when_401_persists(fake_app, clean_env):
+    import sys
+
+    clean_env.setenv("APP_TOKEN_COMMAND", f'"{sys.executable}" -c "print(\'still-bad-token\')"')
+    fake_app["replies"] = [(401, '{"message": "Unauthorized"}')]
+    with pytest.raises(RuntimeError, match="HTTP 401"):
+        _send_to_app()
+    # Initial request + 1 retry after refreshing the token.
+    assert len(fake_app["requests"]) == 2
+
+
+def test_app_token_command_failure_reports_exit_code_and_output(fake_app, clean_env):
+    import sys
+
+    clean_env.setenv(
+        "APP_TOKEN_COMMAND",
+        f'"{sys.executable}" -c "import sys; sys.stderr.write(\'sso session expired\\n\'); sys.exit(2)"',
+    )
+    with pytest.raises(RuntimeError, match=r"APP_TOKEN_COMMAND failed \(exit 2\): sso session expired"):
+        _send_to_app()
+    assert fake_app["requests"] == []
+
+
+def test_app_token_command_empty_output_raises_clear_error(fake_app, clean_env):
+    import sys
+
+    clean_env.setenv("APP_TOKEN_COMMAND", f'"{sys.executable}" -c "print(\'   \')"')
+    with pytest.raises(RuntimeError, match="APP_TOKEN_COMMAND printed an empty token"):
+        _send_to_app()
+    assert fake_app["requests"] == []
+
+
+def test_app_sse_without_response_path_joins_plain_text_events(fake_app, clean_env):
+    clean_env.delenv("APP_RESPONSE_PATH")
+    fake_app["replies"] = [(200, "event: token\ndata: Hello \n\nevent: token\ndata: world!\n\ndata: [DONE]\n\n")]
+    assert _send_to_app() == "Hello world!"
+
+
+def test_plain_text_tokens_that_look_like_json_or_are_spaces_stay_text(fake_app, clean_env):
+    # A plain-text stream sends words, numbers and spaces as they come. 15 and true parse
+    # as JSON, but they are text here, and a token that is only a space is kept.
+    clean_env.delenv("APP_RESPONSE_PATH")
+    body = "data: The fee is $\n\ndata: 15\n\ndata: .\n\ndata:  \n\ndata: It is\n\ndata:  true\n\n"
+    fake_app["replies"] = [(200, body)]
+    assert _send_to_app() == "The fee is $15. It is true"
+
+
+def test_sse_data_lines_of_one_event_keep_their_line_breaks(fake_app, clean_env):
+    # One event's data: lines are one piece of text joined by newlines (the SSE format),
+    # so a numbered list or paragraph break in the reply reaches the judge intact.
+    clean_env.delenv("APP_RESPONSE_PATH")
+    body = "data: Steps:\ndata: 1. Call us\ndata: 2. Mail the form\n\ndata:  Thanks.\n\ndata: [DONE]\n\n"
+    fake_app["replies"] = [(200, body)]
+    assert _send_to_app() == "Steps:\n1. Call us\n2. Mail the form Thanks."
+
+
+def test_sse_json_spread_over_several_data_lines_is_read(fake_app, clean_env):
+    clean_env.setenv("APP_RESPONSE_PATH", "text")
+    fake_app["replies"] = [(200, 'data: {"text":\ndata:  "hi there"}\n\ndata: [DONE]\n\n')]
+    assert _send_to_app() == "hi there"
+
+
+def test_sse_crlf_line_endings_are_read(fake_app, clean_env):
+    clean_env.setenv("APP_RESPONSE_PATH", "text")
+    fake_app["replies"] = [(200, 'data: {"text": "a"}\r\n\r\ndata: {"text": "b"}\r\n\r\n')]
+    assert _send_to_app() == "ab"
+
+
+def test_sse_json_events_without_a_response_path_ask_for_one(fake_app, clean_env):
+    clean_env.delenv("APP_RESPONSE_PATH")
+    fake_app["replies"] = [(200, 'data: {"text": "Hi"}\n\ndata: {"text": " there"}\n\n')]
+    with pytest.raises(ValueError, match="stream of JSON events.*set APP_RESPONSE_PATH"):
+        _send_to_app()
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        'data: {"text": "The answer is "}\n\nevent: error\ndata: {"message": "overloaded"}\n\n',
+        'event: delta\ndata: {"text": "The answer is "}\nevent: error\ndata: {"message": "overloaded"}\n',
+        'data: {"text": "The answer is "}\n\ndata: {"error": {"message": "overloaded"}}\n\n',
+        '{"text": "The answer is "}\n{"error": "overloaded"}\n',
+        # Legal SSE: the event: line may come after the data it names.
+        'data: {"text": "The answer is "}\n\ndata: {"message": "overloaded"}\nevent: error\n\n',
+    ],
+    ids=[
+        "sse-error-event", "sse-error-event-no-blank-line", "sse-error-field", "ndjson-error-field",
+        "sse-error-type-after-data",
+    ],
+)
+def test_a_stream_that_ends_in_an_error_fails_instead_of_grading_a_cut_off_reply(fake_app, clean_env, body):
+    clean_env.setenv("APP_RESPONSE_PATH", "text")
+    fake_app["replies"] = [(200, body)]
+    with pytest.raises(RuntimeError, match="streamed reply ended with an error.*overloaded"):
+        _send_to_app()
+
+
+def test_an_empty_error_field_in_a_stream_and_an_error_field_in_plain_json_are_not_errors(fake_app, clean_env):
+    clean_env.setenv("APP_RESPONSE_PATH", "text")
+    fake_app["replies"] = [(200, '{"text": "a", "error": null}\n{"text": "b", "error": ""}\n')]
+    assert _send_to_app() == "ab"
+    # A single JSON response is the app's own shape: its "error" field is left to the judge.
+    fake_app["replies"] = [(200, '{"text": "fine", "error": "a field the app always sends"}')]
+    assert _send_to_app() == "fine"
+
+
+def test_concat_recognizes_an_app_that_resends_the_whole_reply_so_far(fake_app, clean_env):
+    clean_env.setenv("APP_RESPONSE_PATH", "text")
+    snapshots = (
+        'data: {"text": "Hel"}\n\ndata: {"text": "Hello"}\n\n'
+        'data: {"text": "Hello!"}\n\ndata: {"text": "Hello!", "done": true}\n\n'
+    )
+    fake_app["replies"] = [(200, snapshots)]
+    assert _send_to_app() == "Hello!"
+    deltas = 'data: {"text": "Hel"}\ndata: {"text": "lo"}\ndata: {"text": "!"}\ndata: [DONE]\n'
+    fake_app["replies"] = [(200, deltas)]
+    assert _send_to_app() == "Hello!"
+    repeated_deltas = 'data: {"text": "a"}\n\ndata: {"text": "a"}\n\n'
+    fake_app["replies"] = [(200, repeated_deltas)]
+    assert _send_to_app() == "aa"
+
+
+def test_app_token_command_that_hangs_is_stopped_and_its_command_is_not_shown(fake_app, clean_env):
+    import sys
+    import time
+
+    clean_env.setenv("APP_TIMEOUT", "2")
+    # Run through the shell, as a real command is: stopping only the shell would leave
+    # this program running and the run waiting the full 30 s.
+    clean_env.setenv(
+        "APP_TOKEN_COMMAND", f'"{sys.executable}" -c "import time; time.sleep(30)" --password=Hunter2secret'
+    )
+    start = time.monotonic()
+    with pytest.raises(RuntimeError) as exc_info:
+        _send_to_app()
+    assert time.monotonic() - start < 15
+    message = str(exc_info.value)
+    assert "did not finish within 2 s" in message
+    assert "Hunter2secret" not in message and "sleep" not in message
+    assert exc_info.value.__suppress_context__  # Python's timeout error, which quotes the command, is not chained
+    assert fake_app["requests"] == []
+
+
+def test_app_token_command_failure_never_shows_its_standard_output(fake_app, clean_env):
+    import sys
+
+    clean_env.setenv(
+        "APP_TOKEN_COMMAND", f'"{sys.executable}" -c "import sys; print(\'secret-token-abc\'); sys.exit(3)"'
+    )
+    with pytest.raises(RuntimeError) as exc_info:
+        _send_to_app()
+    message = str(exc_info.value)
+    assert "exit 3" in message and "nothing on standard error" in message
+    assert "secret-token-abc" not in message
+
+
+def test_app_token_command_is_refused_with_browser_api():
+    from harnesses.pyrit_campaigns.browser_target import BrowserApiTarget
+
+    with pytest.raises(SystemExit, match="APP_TOKEN_COMMAND works only with APP_TRANSPORT=http"):
+        BrowserApiTarget(page_url="https://example.test/", endpoint="/chat", token_command="echo token")
