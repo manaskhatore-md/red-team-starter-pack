@@ -289,3 +289,20 @@ def test_unset_placeholders_are_said_up_front(memory):
 def test_a_run_with_real_values_says_nothing_about_placeholders(memory):
     add_probe(memory, "Do I qualify for SNAP?", "Maybe.", "unauthorized_determination", rt_probe="p1", rt_placeholders="")
     assert "Placeholders" not in summary(memory)
+
+
+def test_stream_events_missing_banner_opens_the_summary_and_survives_scrubbing(memory):
+    from harnesses.pyrit_campaigns.target_factory import UNMATCHED_STREAM_METADATA_KEY
+    from scripts.scrub import scrub_report
+
+    for idx in ("1", "2"):
+        add_app_probe(
+            memory, f"probe {idx}", "", "injection_compliance",
+            metadata={UNMATCHED_STREAM_METADATA_KEY: "response.created, response.output_text.delta"},
+            rt_probe=f"p{idx}", rt_stream_event="response.output_txt.delta",
+        )
+    text = scrub_report(summary(memory))
+    assert (
+        "**Stream events missing:** `APP_STREAM_EVENT=response.output_txt.delta` matched none of the 2 replies "
+        "in this run (event kinds seen: `response.created, response.output_text.delta`)"
+    ) in text

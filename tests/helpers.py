@@ -97,15 +97,16 @@ SCAN = {"rt_campaign": "single_turn_scan", "rt_run_id": RUN, "rt_profile": "publ
 
 
 def add_probe(memory, probe, reply, rubric=None, flagged=False, rationale="because", outcome=AttackOutcome.UNDETERMINED,
-              error="none", minutes=0, trace="", **labels):
+              error="none", minutes=0, trace="", metadata=None, **labels):
     """One result: the probe, the reply, and a judge score if a rubric is given.
 
     trace is stored with the reply as the app target stores what it read at APP_TRACE_PATH."""
     conversation_id = str(uuid.uuid4())
     user = MessagePiece(role="user", original_value=probe, conversation_id=conversation_id)
     memory.add_message_to_memory(request=Message(message_pieces=[user]))
+    piece_metadata = {**({TRACE_METADATA_KEY: trace} if trace else {}), **(metadata or {})}
     answer = MessagePiece(role="assistant", original_value=reply, conversation_id=conversation_id, response_error=error,
-                          prompt_metadata={TRACE_METADATA_KEY: trace} if trace else {})
+                          prompt_metadata=piece_metadata)
     memory.add_message_to_memory(request=Message(message_pieces=[answer]))
     if rubric:
         add_score(memory, answer, rubric, flagged, rationale)
