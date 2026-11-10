@@ -634,6 +634,68 @@ def _sse_events(body: str) -> list[tuple[str, str]] | None:
     return events
 
 
+def _event_kind(sse_type: str, payload) -> str:
+    """What kind of stream event this is: its SSE event: name, or else its JSON "type".
+
+    Streaming APIs name each event's kind one way or the other (OpenAI's Responses API
+    and Anthropic's use both; the Vercel AI SDK puts it only in "type"). An event named
+    neither way is a "message", the SSE format's name for an event with no event: line.
+    """
+    if sse_type and sse_type != "message":
+        return sse_type
+    if isinstance(payload, dict) and isinstance(payload.get("type"), str) and payload["type"]:
+        return payload["type"]
+    return sse_type or "message"
+
+
+def _labeled_events(body: str) -> tuple[str | None, list[tuple[str, str, object]]]:
+    """_parse_response_events, with each event's SSE event: name ("" outside SSE) and kind kept.
+
+    Returns (kind, [(sse_type, event_kind, payload), ...]); see _event_kind for event_kind.
+    """
+    try:
+        return None, [("", "", json.loads(body))]
+    except ValueError:
+        pass
+
+    sse = _sse_events(body)
+    if sse is not None:
+        events = []
+        for event_type, payload in sse:
+            if not payload.strip() or payload.strip() == "[DONE]":
+                continue
+            try:
+                parsed = [json.loads(payload)]
+            except ValueError:
+                parsed = [payload]
+                lines = [ln for ln in payload.splitlines() if ln.strip() and ln.strip() != "[DONE]"]
+                if len(lines) > 1:
+                    try:
+                        parsed = [json.loads(ln) for ln in lines]
+                    except ValueError:
+                        pass
+            events.extend((event_type, _event_kind(event_type, p), p) for p in parsed)
+        return "SSE", events
+
+    decoder = json.JSONDecoder()
+    idx, n = 0, len(body)
+    chunks = []
+    try:
+        while idx < n:
+            while idx < n and body[idx] in " \t\r\n\x00":
+                idx += 1
+            if idx >= n:
+                break
+            obj, idx = decoder.raw_decode(body, idx)
+            chunks.append(obj)
+    except ValueError:
+        chunks = []
+    if len(chunks) >= 2:
+        # An unnamed chunk is a "message", as an unnamed SSE event is.
+        return "NDJSON", [("", _event_kind("message", c), c) for c in chunks]
+    return None, []
+
+
 def _parse_response_events(body: str) -> tuple[str | None, list]:
     """Parse a response body as a single JSON value, an SSE event stream, or NDJSON / JSON chunks.
 
@@ -643,46 +705,8 @@ def _parse_response_events(body: str) -> tuple[str | None, list]:
     JSON or an event stream. An SSE event's data is parsed as JSON when it is JSON and
     kept as text otherwise; the [DONE] end marker and empty data are left out.
     """
-    try:
-        return None, [json.loads(body)]
-    except ValueError:
-        pass
-
-    sse = _sse_events(body)
-    if sse is not None:
-        events = []
-        for _event_type, payload in sse:
-            if not payload.strip() or payload.strip() == "[DONE]":
-                continue
-            try:
-                events.append(json.loads(payload))
-            except ValueError:
-                lines = [ln for ln in payload.splitlines() if ln.strip() and ln.strip() != "[DONE]"]
-                if len(lines) > 1:
-                    try:
-                        events.extend(json.loads(ln) for ln in lines)
-                        continue
-                    except ValueError:
-                        pass
-                events.append(payload)
-        return "SSE", events
-
-    decoder = json.JSONDecoder()
-    idx, n = 0, len(body)
-    events = []
-    try:
-        while idx < n:
-            while idx < n and body[idx] in " \t\r\n\x00":
-                idx += 1
-            if idx >= n:
-                break
-            obj, idx = decoder.raw_decode(body, idx)
-            events.append(obj)
-    except ValueError:
-        events = []
-    if len(events) >= 2:
-        return "NDJSON", events
-    return None, []
+    kind, events = _labeled_events(body)
+    return kind, [payload for _sse_type, _kind, payload in events]
 
 
 def _stream_error(body: str) -> str:
@@ -857,6 +881,14 @@ class AppChatTarget(PromptTarget):
                               NDJSON events: concat (the default, joins the pieces, or
                               takes the last one if each repeats the reply so far) or
                               last (takes the last event carrying the path).
+        APP_STREAM_EVENT      which kinds of streamed event carry the reply, comma-separated:
+                              matched against each event's SSE event: name or its JSON
+                              "type", e.g. response.output_text.delta or text-delta. An
+                              event named neither way is a "message". Unset: every event,
+                              but a reply whose text comes from more than one kind is an
+                              error, since the others are likely tool-call arguments or
+                              the model's reasoning. Only the reply is narrowed: trace and
+                              control fields are still read from every event.
         APP_TRACE_PATH        optional: where tool calls, retrieved sources, or citations
                               are in the response, dotted (or comma-separated paths), e.g.
                               trace.rounds or citations. Shown to the judge in
@@ -896,6 +928,7 @@ class AppChatTarget(PromptTarget):
         history_roles: str = "user,assistant",
         response_path: str = "",
         stream_mode: str = "concat",
+        stream_event: str = "",
         trace_path: str = "",
         control_path: str = "",
         token_command: str = "",
@@ -949,6 +982,7 @@ class AppChatTarget(PromptTarget):
         )
         self._response_path = response_path.strip()
         self._stream_mode = mode
+        self._stream_events = frozenset(n.strip() for n in stream_event.split(",") if n.strip())
         self._trace_path = trace_path.strip()
         self._control_path = control_path.strip()
         self._token_command = token_command.strip()
@@ -974,6 +1008,7 @@ class AppChatTarget(PromptTarget):
             history_roles=os.getenv("APP_HISTORY_ROLES") or "user,assistant",
             response_path=os.getenv("APP_RESPONSE_PATH", ""),
             stream_mode=os.getenv("APP_STREAM_MODE") or "concat",
+            stream_event=os.getenv("APP_STREAM_EVENT", ""),
             trace_path=os.getenv("APP_TRACE_PATH", ""),
             control_path=os.getenv("APP_CONTROL_PATH", ""),
             token_command=os.getenv("APP_TOKEN_COMMAND", ""),
@@ -1023,7 +1058,10 @@ class AppChatTarget(PromptTarget):
 
     def reply_text(self, body: str) -> str:
         """The reply, read from APP_RESPONSE_PATH in the response body (single JSON, SSE, or NDJSON)."""
-        kind, events = _parse_response_events(body)
+        kind, labeled = _labeled_events(body)
+        if kind is not None:
+            labeled = self._chosen_events(labeled)
+        events = [payload for _sse_type, _kind, payload in labeled]
         if not self._response_path:
             if kind == "SSE":
                 # Only a JSON object or list means the reply sits in a field. A plain-text
@@ -1035,9 +1073,14 @@ class AppChatTarget(PromptTarget):
                         "set APP_RESPONSE_PATH to it (e.g. choices.0.delta.content). "
                         f"First JSON event: {json.dumps(structured)[:300]}"
                     )
-                # A token that is only a space is part of the text: keep it.
-                payloads = [p for _type, p in _sse_events(body) or [] if p and p.strip() != "[DONE]"]
-                return self._combine_pieces(payloads)
+                # Text tokens, read raw: a token that is only a space is part of the text.
+                texts = [
+                    (t, t, p)
+                    for t, p in _sse_events(body) or []
+                    if p and p.strip() != "[DONE]" and self._is_chosen(t, p)
+                ]
+                self._check_one_kind(texts, "the stream's text")
+                return self._combine_pieces([p for _t, _k, p in texts])
             return body
         if kind is None and not events:
             raise ValueError(f"The app's response is not JSON, so APP_RESPONSE_PATH cannot be read: {body[:300]}")
@@ -1059,26 +1102,77 @@ class AppChatTarget(PromptTarget):
             return value if isinstance(value, str) else json.dumps(value)
 
         pieces: list[str] = []
+        found_in: list[tuple[str, str, str]] = []
         matched = False
-        for event in events:
+        for sse_type, event_kind, event in labeled:
             found, value = _step_path(event, self._response_path)
             if found and value is not None:
                 matched = True
                 if isinstance(value, list) and all(isinstance(x, str) for x in value):
-                    pieces.extend(value)
+                    text = list(value)
                 else:
-                    pieces.append(value if isinstance(value, str) else json.dumps(value))
+                    text = [value if isinstance(value, str) else json.dumps(value)]
+                pieces.extend(text)
+                found_in.append((sse_type, event_kind, "".join(text)))
         if not matched:
             first = (
                 (events[0] if isinstance(events[0], str) else json.dumps(events[0]))
                 if events
                 else body.strip()
             )
+            chosen = f" among the {', '.join(sorted(self._stream_events))} events" if self._stream_events else ""
             raise ValueError(
-                f"response looks like {kind} but no event had APP_RESPONSE_PATH={self._response_path}; "
+                f"response looks like {kind} but no event{chosen} had APP_RESPONSE_PATH={self._response_path}; "
                 f"first event: {first[:300]}"
             )
+        self._check_one_kind(found_in, f"APP_RESPONSE_PATH={self._response_path}")
         return self._combine_pieces(pieces)
+
+    def _is_chosen(self, event_kind: str, payload) -> bool:
+        """Whether APP_STREAM_EVENT (if set) names this event: by its kind (its SSE event:
+        name, else its JSON "type"; see _event_kind) or by its JSON "type"."""
+        if not self._stream_events:
+            return True
+        names = {event_kind}
+        if isinstance(payload, dict) and isinstance(payload.get("type"), str):
+            names.add(payload["type"])
+        return bool(names & self._stream_events)
+
+    def _chosen_events(self, labeled: list) -> list:
+        """The stream events APP_STREAM_EVENT names (all of them if it is unset)."""
+        chosen = [e for e in labeled if self._is_chosen(e[1], e[2])]
+        if labeled and not chosen:
+            seen = list(dict.fromkeys(k for _t, k, _p in labeled))
+            raise ValueError(
+                f"APP_STREAM_EVENT={','.join(sorted(self._stream_events))}: the app's stream has no such events. "
+                f"Its events are: {', '.join(seen)}."
+            )
+        return chosen
+
+    def _check_one_kind(self, found_in: list[tuple[str, str, str]], what: str) -> None:
+        """Stop a reply that would join text from more than one kind of stream event.
+
+        Streaming APIs send more than the answer, in events of their own kinds: a tool
+        call's arguments, the model's reasoning. When those use the same field as the
+        answer, joining them all would grade them as the reply, with nothing to show for
+        it. So unless APP_STREAM_EVENT says which kinds carry the reply, text from more
+        than one kind is an error. Events with no text don't count.
+        """
+        if self._stream_events:
+            return
+        first: dict[str, str] = {}
+        for _sse_type, event_kind, text in found_in:
+            if text and event_kind not in first:
+                first[event_kind] = text
+        if len(first) < 2:
+            return
+        samples = "; ".join(f"{k}: {json.dumps(v[:80])}" for k, v in first.items())
+        raise ValueError(
+            f"{what} is in {len(first)} kinds of stream event ({', '.join(first)}), so joining them would "
+            "mix other text into the reply, such as a tool call's arguments or the model's reasoning. Set "
+            f"APP_STREAM_EVENT to the kind(s) that carry the reply, comma-separated, e.g. "
+            f"APP_STREAM_EVENT={next(iter(first))}. First text of each kind: {samples}"
+        )
 
     def _combine_pieces(self, pieces: list[str]) -> str:
         """Join a stream's text pieces into the reply, per APP_STREAM_MODE.
