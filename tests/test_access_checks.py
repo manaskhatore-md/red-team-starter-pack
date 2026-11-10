@@ -412,13 +412,50 @@ def test_exposed_response_fields_passes_a_clean_stream_and_its_framing_fields():
     assert "SSE stream of plain text" in res.summary
 
 
-def test_exposed_response_fields_reads_a_plain_text_reply_as_text_even_if_it_looks_like_a_stream():
+@pytest.mark.parametrize("content_type", ["application/json", "text/plain", ""])
+def test_exposed_response_fields_reads_a_stream_whatever_its_content_type_says(content_type):
+    # API Gateway and Express proxies often relabel a stream. The check sends "Hello", so
+    # no probe steers the body, and the fields an app sends are there whatever the label.
     cfg = make_config(response_path="reply")
     session = SignedInSession(headers={"Cookie": "sid=1"})
-    body = 'data: {"reply": "x", "trace": {"system_prompt": "from the model, not the app"}}\n\n'
-    res = asyncio.run(check_exposed_response_fields(_streamed(body, "text/plain"), cfg, session))
+    body = 'data: {"reply": "Hel", "trace": {"system_prompt": "SECRET"}}\n\ndata: {"reply": "lo"}\n\ndata: [DONE]\n\n'
+    res = asyncio.run(check_exposed_response_fields(_streamed(body, content_type), cfg, session))
+    assert res.verdict == "REVIEW"
+    assert "trace" in res.summary
+    assert "plain text" not in res.summary
+
+
+@pytest.mark.parametrize(
+    "content_type, body",
+    [
+        ("application/json", ")]}'\n{\"reply\": \"Hi\", \"trace\": {\"system_prompt\": \"SECRET\"}}"),
+        ("application/json; charset=utf-8", "not valid json"),
+        ("text/event-stream", '0:"Hello"\nd:{"finishReason":"stop"}\n'),
+        ("application/octet-stream", "\x82\xa5reply\xa2Hi"),
+        ("application/json", ""),
+        ("text/plain", "   "),
+        ("text/event-stream", "data: [DONE]\n\n"),
+    ],
+    ids=[
+        "xssi-prefixed-json", "malformed-json", "unparsed-event-stream", "binary-body",
+        "empty-json", "empty-text", "empty-sse-done-only",
+    ],
+)
+def test_exposed_response_fields_never_passes_an_unreadable_or_empty_body_as_plain_text(content_type, body):
+    cfg = make_config(response_path="reply")
+    session = SignedInSession(headers={"Cookie": "sid=1"})
+    res = asyncio.run(check_exposed_response_fields(_streamed(body, content_type), cfg, session))
+    assert res.verdict == "NOT TESTED"
+    assert "plain text" not in res.summary
+
+
+@pytest.mark.parametrize("content_type", ["text/plain; charset=utf-8", ""])
+def test_exposed_response_fields_passes_genuine_plain_text_body(content_type):
+    cfg = make_config(response_path="reply")
+    session = SignedInSession(headers={"Cookie": "sid=1"})
+    res = asyncio.run(check_exposed_response_fields(_streamed("Hello! How can I help?", content_type), cfg, session))
     assert res.verdict == "PASS"
-    assert res.summary == "Chat response is plain text (no hidden debug fields)."
+    assert "plain text" in res.summary
 
 
 def test_openapi_docs_exposed_reviews_signed_in_docs_and_fails_on_unauth_route():

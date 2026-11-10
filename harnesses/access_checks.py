@@ -1329,9 +1329,33 @@ async def check_exposed_response_fields(
         )
 
     # The same reader the scan uses, so a streamed reply (SSE, NDJSON, Lambda chunks) is
-    # inspected event by event instead of passing as "not JSON".
-    kind, events = _parse_response_events(resp.text, resp.headers.get("content-type", ""))
-    if kind is None and not events:
+    # inspected event by event instead of passing as "not JSON". The body decides its
+    # format here, not the Content-Type: the scan obeys that header so a probe can't steer
+    # the model's text into looking like a stream, but this check sends "Hello", and an
+    # app that labels its stream application/json or text/plain still sends its fields.
+    kind, events = _parse_response_events(resp.text)
+    if not events:
+        media = content_type.split(";")[0].strip()
+        if not resp.text.strip() or kind is not None:
+            return CheckResult(
+                phase=phase,
+                name=name,
+                owasp=owasp,
+                verdict="NOT TESTED",
+                summary="Signed-in chat request returned an empty response; could not inspect response fields.",
+                what_it_tests=what_it_tests,
+                details=[f"`POST {config.chat_path}` returned no content events ({len(resp.text)} chars)."],
+            )
+        if media not in ("", "text/plain"):
+            return CheckResult(
+                phase=phase,
+                name=name,
+                owasp=owasp,
+                verdict="NOT TESTED",
+                summary=f"Signed-in chat request returned an unreadable `{media}` body; could not inspect response fields.",
+                what_it_tests=what_it_tests,
+                details=[f"`POST {config.chat_path}` declared `{media}` ({len(resp.text)} chars): `{resp.text.strip()[:120]}`"],
+            )
         return CheckResult(
             phase=phase,
             name=name,
@@ -1339,7 +1363,7 @@ async def check_exposed_response_fields(
             verdict="PASS",
             summary="Chat response is plain text (no hidden debug fields).",
             what_it_tests=what_it_tests,
-            details=[f"`POST {config.chat_path}` returned non-JSON body ({len(resp.text)} chars)."],
+            details=[f"`POST {config.chat_path}` returned plain-text body ({len(resp.text)} chars)."],
         )
 
     objects = [e for e in events if isinstance(e, dict)]
