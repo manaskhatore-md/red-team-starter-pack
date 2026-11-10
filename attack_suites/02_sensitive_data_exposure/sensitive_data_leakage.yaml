@@ -8,6 +8,9 @@
 # disclosing data from YOUR index or YOUR other users' sessions. Set the
 # placeholders in .env to real field names from your schema (case number, MA number,
 # client ID) - never to real values.
+#
+# README.md in this folder explains the suite in full: what the probes try, how replies are
+# graded, how to run and read them, and what they cannot tell you.
 name: sensitive_data_leakage
 dataset_name: sensitive_data_leakage
 description: >

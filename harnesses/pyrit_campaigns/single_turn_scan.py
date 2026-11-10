@@ -55,8 +55,8 @@ profiles.py, and the profile picks which run (`core` for the built-in default, w
 RT_PROFILE unset). Pass `--probes <spec>` (or set `RT_PROBES=<spec>` in .env) with one or
 more comma-separated selectors to run others instead, or `all` for every probe:
   - Category keywords: `general` (every suite but bias, the hallucination templates
-    included), `core` (everything except the
-    fixture-expanded bias and hallucination templates), `bias` (all bias probes),
+    included), `core` (every shipped probe except the
+    templated bias pairs and the hallucination excerpt probes), `bias` (all bias probes),
     `bias-core` (inline bias pairs only), `bias-templated` (fixture-expanded bias pairs
     only), and `hallucination`, `hallucination-core`, `hallucination-templated` the same
     way for the hallucination suite.

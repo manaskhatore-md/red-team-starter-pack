@@ -345,8 +345,8 @@ PROFILES: dict[str, Profile] = {
     DEFAULT_PROFILE: Profile(
         key=DEFAULT_PROFILE,
         description="Built-in default (RT_PROFILE unset) - every suite; sends the core probes unless --probes says otherwise",
-        # Everything except the bias and hallucination probes made from fixtures: the bias
-        # ones need repeats to mean anything, and the hallucination ones your own references.
+        # Everything shipped except the templated bias pairs, which need repeats to mean
+        # anything, and the hallucination excerpt probes, an optional extra.
         probes="core",
         checklist=(
             "Pick the preset that matches the deployment (internal_productivity, public_conversational, "
@@ -361,8 +361,8 @@ PROFILES: dict[str, Profile] = {
     "internal_productivity": Profile(
         key="internal_productivity",
         description="Internal staff productivity tool - staff copilots, document search, drafting",
-        # The written-out hallucination probes: staff send its drafts on (draft_unverified_rule)
-        # and quote its answers to constituents.
+        # hallucination-core (the specifics and the shipped facts): staff send its drafts on
+        # (draft_unverified_rule) and quote its answers to constituents.
         # pii_in_input: staff paste constituents' identifiers into copilots.
         probes="prompt_injection,sensitive_data_leakage,pii_in_input,excessive_agency,hallucination-core",
         checklist=(
@@ -378,8 +378,9 @@ PROFILES: dict[str, Profile] = {
     "public_conversational": Profile(
         key="public_conversational",
         description="Public-facing constituent chatbot - program FAQ, 311-style chat, web widgets",
-        # The written-out hallucination probes: wrong answers at scale are this kind of
-        # system's main risk. The templated ones mean most once the references are yours.
+        # hallucination-core (the specifics and the shipped facts): wrong answers at scale
+        # are this kind of system's main risk. An agency's own facts are sent by naming its
+        # pack in --probes.
         # pii_in_input: constituents type their own SSNs into public chatbots.
         probes="prompt_injection,pii_in_input,excessive_agency,algorithmic_bias,hallucination-core",
         checklist=(

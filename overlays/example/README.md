@@ -23,7 +23,9 @@ overlays/example/
 
 You write facts, not probes: the kit's hallucination templates ask about each fact in
 the ways its `ask` list names. A pack can also hold probe files of its own, named after
-the suite they add to (`prompt_injection.yaml`, ...); see "Probe packs" in the README.
+the suite they add to (`prompt_injection.yaml`, ...); see "Adding your own probes" in the
+main README. How facts are asked, graded and reported is in
+`attack_suites/04_hallucination_grounding/README.md`.
 
 Only `overlays/example/` is shared in git. Your own folder is ignored by `.gitignore`, so an
 agency's facts stay with the agency.

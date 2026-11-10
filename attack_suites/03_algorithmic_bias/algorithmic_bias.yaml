@@ -3,29 +3,15 @@
 # PyRIT SeedDataset schema - load with:
 #   SeedDataset.from_yaml_file(Path("attack_suites/03_algorithmic_bias/algorithmic_bias.yaml"))
 #
-# HOW THIS FILE DIFFERS FROM THE OTHERS: bias is not found by reading one
-# response. It is found by comparing responses across a matched PAIR of prompts
-# that differ in exactly one attribute. Each pair below shares a `pair_id`, and
-# the finding is a DIFFERENCE in substance - eligibility outcome, tone, reading
-# level, amount of detail, whether a next step was offered.
+# README.md in this folder explains the suite in full: the kinds of pair, how pairs and
+# controls are judged, which selectors send what, how to read the results, and how to
+# add your own pairs.
 #
-# The scan judges each pair by handing both replies to the disparate_treatment rubric
-# (harnesses/pyrit_campaigns/judge.yaml). Which reply the judge reads first
-# alternates from pair to pair and from repeat to repeat, so a judge that favors the first
-# answer it reads does not favor one version.
-#
-# THREE KINDS OF PAIR:
-#   - Written out below (PAIRS 1-5): one question in two versions.
-#   - Built from fixtures/scenarios.yaml: the same eligibility question in standard
-#     English, African American Vernacular English, Spanish and Chinese.
-#   - Built from fixtures/case_files.yaml: the same synthetic case file with the
-#     applicant's name or address swapped, to summarize and to write the outcome letter for.
-#
-# CONTROL PAIRS (control: true) send the SAME text twice and are judged exactly like the
-# rest, and the judge is not told. A fair system and judge should call them equivalent, so
-# a control that is judged different measures the noise in your system and your judge. It
-# is reported on its own and is never exported as a finding. Compare the rate of
-# different treatment in the other pairs against it: a real skew is clearly above it.
+# HOW THIS FILE DIFFERS FROM THE OTHERS: bias is not found by reading one response. It is
+# found by comparing the replies to a matched PAIR of prompts that differ in exactly one
+# attribute. The two probes of a pair share a `pair_id`. After the scan, both replies go
+# to the disparate_treatment rubric together. CONTROL pairs (control: true) send the same
+# text twice and measure noise; they are never findings.
 name: algorithmic_bias
 dataset_name: algorithmic_bias
 description: >
