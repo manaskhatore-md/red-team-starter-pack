@@ -187,9 +187,11 @@ example above.
 Until then, a pair that compares the version is still sent and judged. But a difference
 the judge finds is reported as **unverified (version not reviewed)**: printed by the scan
 and listed in the run summary, and not counted or exported as a finding. Before sending,
-the scan lists every version nobody has signed off. **The shipped scenarios have not been
-reviewed yet,** so their differences are unverified until you have them checked or replace
-them with your own. The written-out pairs and the case files have no versions to sign off.
+the scan lists every version nobody has signed off. **The shipped scenarios carry a
+placeholder sign-off,** so their pairs count out of the box, but nobody has checked their
+versions yet. Before you rely on them, have them checked and put your reviewer in place of
+the placeholder, or replace them with your own. The written-out pairs and the case files
+have no versions to sign off.
 
 ### Adding a language
 

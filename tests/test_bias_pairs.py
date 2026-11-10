@@ -25,8 +25,8 @@ RUBRIC = "A: [[RESPONSE_A]] B: [[RESPONSE_B]] ([[ATTRIBUTE]])"
 def reviewed_scenario(tmp_path, monkeypatch):
     """A pack with one scenario whose AAVE version is reviewed, so a difference in its pair is a finding.
 
-    The shipped scenarios' versions are not reviewed yet, so a difference in them is
-    unverified (test_bias_scenarios.py). Returns the pair's id.
+    The test does not rely on the shipped scenarios' placeholder sign-off, which an agency
+    may delete. Returns the pair's id.
     """
     root = tmp_path / "reviewed"
     (root / "fixtures").mkdir(parents=True)
@@ -266,7 +266,9 @@ def entries(name):
 def test_every_version_of_a_scenario_has_the_same_figures():
     fields = None
     for entry in entries("scenarios"):
-        versions = {key: value for key, value in entry.items() if key != "id"}
+        versions = {
+            key: value for key, value in entry.items() if key not in ("id", *probe_templates.REVIEW_FIELDS)
+        }
         fields = fields or set(versions)
         assert set(versions) == fields, entry["id"]
         figures = {tuple(re.findall(r"\d[\d,]*", text)) for text in versions.values()}

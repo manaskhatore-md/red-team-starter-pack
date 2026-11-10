@@ -134,10 +134,14 @@ def test_a_pair_is_unreviewed_until_its_version_is_signed_off(tmp_path, clean_en
     assert note.endswith("agency/fixtures/scenarios.yaml#towed_car: aave, spanish")
 
 
-def test_the_shipped_scenarios_are_not_reviewed_yet():
-    # Until a fluent speaker signs them off, their differences are unverified (the README says so).
-    probes = [p for p in single_turn_scan.load_probes() if p.version]
-    assert probes and all(p.unreviewed for p in probes)
+def test_the_shipped_scenarios_carry_a_placeholder_sign_off_so_they_count():
+    # Nobody has checked them: the placeholder says so, for an agency to replace (the README says so).
+    probes = [p for p in single_turn_scan.load_probes() if p.version and not p.overlay]
+    assert probes and not any(p.unreviewed for p in probes)
+    from harnesses.pyrit_campaigns.profiles import dataset_path
+    path = dataset_path("algorithmic_bias").parent / "fixtures" / "scenarios.yaml"
+    for entry in yaml.safe_load(path.read_text(encoding="utf-8"))["entries"]:
+        assert all(name.startswith("PLACEHOLDER") for name in entry["reviewed_by"].values()), entry["id"]
 
 
 def test_a_difference_in_an_unreviewed_pair_is_unverified_not_a_finding(tmp_path, monkeypatch, clean_env, memory, capsys):
