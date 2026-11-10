@@ -492,7 +492,7 @@ It automatically reuses `APP_ENDPOINT`, `APP_BROWSER_URL`, `APP_BROWSER_INPUT`,
   8. **Alternate / backdoor server URLs:** Optional check for apps that have both a custom front-door domain and a separate direct backend URL (set `APP_ALTERNATE_URLS` in `.env`), or AWS API Gateway URLs with sibling stages (`/dev`, `/staging`, `/prod`).
 - **Phase 2 — Logged-In & Session Checks (Checks #9–#14):**
   9. **Impersonating another user while logged in:** Sends a fake `X-Goog-Authenticated-User-Email` header inside your real signed-in session and verifies the app keeps your true email.
-  10. **Behind-the-scenes debug data (`trace`) in chat replies:** Checks whether `POST /api/chat` sends internal fields like `trace`, `system_instruction`, or `tool_declarations` to the browser.
+  10. **Behind-the-scenes debug data (`trace`) in chat replies:** Checks whether `POST /api/chat` sends internal fields like `trace`, `system_instruction`, or `tool_declarations` to the browser. A streamed reply is checked event by event.
   11. **Developer API documentation pages (`/docs`, `/openapi.json`, `/redoc`):** Checks if auto-generated FastAPI docs are enabled for signed-in users, and automatically probes every route listed in `/openapi.json` while logged out.
   12. **Cross-website data access while logged in (CORS):** Verifies `Origin: https://evil.example` is not granted read access on authenticated requests.
   13. **Login cookie safety locks:** Verifies auth/IAP cookies set `Secure` and `HttpOnly` (never logs cookie values).

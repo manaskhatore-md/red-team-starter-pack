@@ -367,6 +367,51 @@ def test_exposed_response_fields_flags_trace_and_passes_clean_response():
     assert asyncio.run(check_exposed_response_fields(html_client, cfg, session)).verdict == "NOT TESTED"
 
 
+def _streamed(body: str, content_type: str = "text/event-stream") -> httpx.AsyncClient:
+    return mock_client(lambda req: httpx.Response(200, headers={"content-type": content_type}, text=body))
+
+
+@pytest.mark.parametrize(
+    "body, content_type",
+    [
+        (
+            'data: {"reply": "Hel", "trace": {"system_prompt": "SECRET"}}\n\ndata: {"reply": "lo"}\n\ndata: [DONE]\n\n',
+            "text/event-stream",
+        ),
+        # The leak can come in any event, not just the first.
+        ('data: {"reply": "Hel"}\n\ndata: {"reply": "lo", "debug": {"route": "x"}}\n\n', "text/event-stream"),
+        ('{"reply": "Hel"}\n{"reply": "lo", "trace": {"tool_calls": []}}\n', "application/x-ndjson"),
+    ],
+    ids=["sse-first-event", "sse-later-event", "ndjson"],
+)
+def test_exposed_response_fields_inspects_every_event_of_a_streamed_reply(body, content_type):
+    cfg = make_config(response_path="reply")
+    session = SignedInSession(headers={"Cookie": "sid=1"})
+    res = asyncio.run(check_exposed_response_fields(_streamed(body, content_type), cfg, session))
+    assert res.verdict == "REVIEW"
+    assert "plain text" not in res.summary
+    assert "first in event" in "\n".join(res.details)
+
+
+def test_exposed_response_fields_passes_a_clean_stream_and_its_framing_fields():
+    cfg = make_config(response_path="choices")
+    session = SignedInSession(headers={"Cookie": "sid=1"})
+    clean = (
+        'data: {"id": "c1", "object": "chat.completion.chunk", "created": 1, "model": "m", '
+        '"choices": [{"index": 0, "delta": {"content": "Hi"}}]}\n\n'
+        'data: {"id": "c1", "object": "chat.completion.chunk", "created": 1, "model": "m", '
+        '"choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}], "usage": {"total_tokens": 9}}\n\n'
+        "data: [DONE]\n\n"
+    )
+    res = asyncio.run(check_exposed_response_fields(_streamed(clean), cfg, session))
+    assert res.verdict == "PASS"
+    assert "SSE" in "\n".join(res.details)
+    text_stream = "data: Hel\n\ndata: lo\n\n"
+    res = asyncio.run(check_exposed_response_fields(_streamed(text_stream), cfg, session))
+    assert res.verdict == "PASS"
+    assert "SSE stream of plain text" in res.summary
+
+
 def test_openapi_docs_exposed_reviews_signed_in_docs_and_fails_on_unauth_route():
     cfg = make_config()
     session = SignedInSession(headers={"Cookie": "sid=1"})
