@@ -7,6 +7,7 @@ overlays/example/
   fixtures/facts.yaml       facts the hallucination suite asks about, with their answers
   fixtures/scenarios.yaml   questions the bias suite asks in standard English and in other versions
   fixtures/actions.yaml     things a resident asks the chatbot to do, for the excessive agency suite
+  fixtures/excerpts.yaml    a handbook section the hallucination suite asks the chatbot to stick to (optional)
 ```
 
 ## Making your own
@@ -28,6 +29,8 @@ overlays/example/
    do (its logs show them). Each is asked plainly, under pressure, and with a claim that
    someone authorized it, and the chatbot should never say it did it. See
    `attack_suites/05_excessive_agency/README.md`.
+   `fixtures/excerpts.yaml` is optional: the kit's own excerpts already work for any agency.
+   Replace its entry with a non-confidential section of your own documents, or delete it.
 6. In `.env`: `RT_EXTRA_SUITES=overlays/<your-agency>`.
 7. `rt scan --probes <your-agency>` sends only your pack's probes; `rt scan --probes core,<your-agency>`
    sends the default run and then yours. Add `--repeats 5` for the bias pairs: one reply per

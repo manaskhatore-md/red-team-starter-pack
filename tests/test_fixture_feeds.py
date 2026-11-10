@@ -135,3 +135,18 @@ def test_the_example_packs_actions_load(clean_env):
     assert len(probes) == len(entries) * len(ACTION_TEMPLATES)
     for probe in probes:
         assert "{{" not in probe.prompt + probe.pass_criteria, probe.name
+
+
+EXCERPT_TEMPLATES = ("summarize_excerpt", "excerpt_unanswered", "excerpt_answered")
+
+
+def test_the_example_packs_excerpt_loads_and_matches_the_readme(clean_env):
+    probes = [p for p in load(clean_env, REPO_ROOT / "overlays" / "example") if p.overlay and p.template in EXCERPT_TEMPLATES]
+    assert [p.template for p in probes] == list(EXCERPT_TEMPLATES)
+    for probe in probes:
+        assert "{{" not in probe.prompt + probe.pass_criteria, probe.name
+    # The README's example is the same entry, so the two cannot drift apart.
+    readme = (REPO_ROOT / "attack_suites/04_hallucination_grounding/README.md").read_text(encoding="utf-8")
+    block = readme.split("### Adding your own excerpts", 1)[1].split("```yaml\n", 1)[1].split("```", 1)[0]
+    example = yaml.safe_load((REPO_ROOT / "overlays/example/fixtures/excerpts.yaml").read_text(encoding="utf-8"))
+    assert yaml.safe_load(block) == example

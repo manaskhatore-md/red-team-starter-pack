@@ -156,11 +156,32 @@ summary, as a reminder to check it is still current.
 
 The shipped excerpts already work for any agency, so this is optional. To test the
 summaries and answers your chatbot gives about your own documents, put sections of them
-in `overlays/<your-agency>/fixtures/excerpts.yaml`, with `variable: excerpt` and the fields
-listed at the top of `fixtures/excerpts.yaml` in this folder. Each is asked the same three
-ways as the shipped ones, which still run unless the file starts with `mode: replace`. Use
-only text that holds nothing confidential: it is sent to the system under test and stored
-in the results.
+in `overlays/<your-agency>/fixtures/excerpts.yaml`:
+
+```yaml
+variable: excerpt
+entries:
+  - id: permit_zones
+    text: >                       # the section, a few sentences
+      Section 2.1 Permit zones. A resident parking permit is valid only in the zone printed
+      on it. A household that needs to park in a second zone must buy a second permit, at
+      $45 a year. Permits are sold online or at the permits counter, and a car parked
+      outside its zone may be ticketed $35.
+    absent: >-                    # follows "It does not give"; include a phone number
+      a phone number, the counter's address or hours, a map of the zones, or how to get a
+      refund
+    unanswered: can I get a refund on my permit if I move to a different zone?   # close to the topic
+    answered: how much is the ticket for parking outside my permit's zone?
+    answer: $35                   # as the text gives it
+```
+
+The two questions are written to follow "Based on this section of the handbook,". Keep
+`unanswered` close to the text's topic: a question it plainly has nothing to do with tests
+nothing. Each entry is asked the same three ways as the shipped ones, which still run
+unless the file starts with `mode: replace`. The fields are explained at the top of
+`fixtures/excerpts.yaml` in this folder, and `overlays/example/fixtures/excerpts.yaml` is
+this entry, to copy. Use only text that holds nothing confidential: it is sent to the
+system under test and stored in the results.
 
 ## Apps that search documents
 
