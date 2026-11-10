@@ -155,6 +155,7 @@ from harnesses.pyrit_campaigns.probes import (
     RANGE_TOKEN,
     STALE_LABEL,
     UNCONFIRMED_LABEL,
+    UNREVIEWED_LABEL,
     get_probes_spec,
     graded_by,
     judge_context,
@@ -163,6 +164,7 @@ from harnesses.pyrit_campaigns.probes import (
     select_probes,
     stale_facts,
     stale_facts_note,
+    unreviewed_note,
     unselected_packs_note,
 )
 from harnesses.pyrit_campaigns.profiles import (
@@ -228,9 +230,19 @@ MAX_CONCURRENCY = int(os.getenv("RT_MAX_CONCURRENCY", "3"))
 FAIL_ON_FINDING = os.getenv("RT_FAIL_ON_FINDING") == "1"
 
 
+# Why a judge flag is unverified (unverified_reason()).
+NO_TRACE_REASON = "no trace"
+UNCONFIRMED_REASON = "fact not confirmed"
+UNREVIEWED_REASON = "version not reviewed"
+
+
 def unverified_reason(labels: dict) -> str:
-    """Why a result's judge flag is unverified: its real fact is not confirmed yet, or the run had no trace."""
-    return "fact not confirmed" if (labels or {}).get(UNCONFIRMED_LABEL) == "true" else "no trace"
+    """Why a result's judge flag is unverified: its pair compares a version nobody has reviewed,
+    its real fact is not confirmed yet, or the run had no trace."""
+    labels = labels or {}
+    if labels.get(UNREVIEWED_LABEL) == "true":
+        return UNREVIEWED_REASON
+    return UNCONFIRMED_REASON if labels.get(UNCONFIRMED_LABEL) == "true" else NO_TRACE_REASON
 
 
 class ProgressAttack(PromptSendingAttack):
@@ -961,6 +973,11 @@ class PairVerdict(NamedTuple):
     def control(self) -> bool:
         return self.a.control and self.b.control
 
+    @property
+    def unreviewed(self) -> bool:
+        """The pair compares a version nobody has reviewed: a difference in it is unverified, not a finding."""
+        return self.a.unreviewed or self.b.unreviewed
+
 
 def reading_order(a: Probe, b: Probe, index: int, repeat: int) -> tuple[Probe, Probe]:
     """(first, second): which half's reply the judge reads first, for the pair at `index` in this repeat."""
@@ -1028,10 +1045,13 @@ async def compare_pairs(
                 rubric_prompt, a, b, first,
                 reply_first.last_response.converted_value or "", reply_second.last_response.converted_value or "",
             )
+            unreviewed = a.unreviewed or b.unreviewed
             scorer = PairScorer(
                 system_prompt_format_string=_escape_braces(filled),
                 chat_target=judge,
-                category="disparate_treatment",
+                # Stored as unverified, like a flag on an unconfirmed fact: a clumsy translation
+                # reads as different treatment until someone who speaks it has checked it.
+                category=unverified_category("disparate_treatment") if unreviewed else "disparate_treatment",
                 pair_metadata={"first": first.variant, "second": second.variant},
             )
             reply_b = memory.get_conversation_messages(conversation_id=result_b.conversation_id)[-1]
@@ -1069,6 +1089,7 @@ def expand_repeats(
                     "rt_template_file": probe.template_file,
                     "rt_fixture": probe.fixture,
                     UNCONFIRMED_LABEL: "true" if probe.unconfirmed else "",
+                    UNREVIEWED_LABEL: "true" if probe.unreviewed else "",
                     STALE_LABEL: "true" if probe in stale else "",
                     FACT_SOURCE_LABEL: probe.fact_source,
                     "rt_repeat": str(repeat),
@@ -1288,7 +1309,9 @@ def list_probes(
         print(f"\n[{num}] {probe.dataset} / {probe.name}  [{grading}]{pair_info}{pack_info}")
         if probe.fixture:
             print(f"    template {probe.template!r}, filled from {probe.fixture}")
-        print("    " + probe.prompt.strip().replace("\n", "\n    "))
+        # Through _console_safe: a Chinese or Korean probe cannot be printed to a console, or to a
+        # file or pipe on Windows, whose encoding has no such characters.
+        print(_console_safe("    " + probe.prompt.strip().replace("\n", "\n    ")))
         if probe in converted:
             for enc_name, enc_chain in converter_passes:
                 if _key(probe) not in {_key(p) for p in by_pass[enc_name]}:
@@ -1307,8 +1330,9 @@ def list_probes(
         provider, trace_path = resolve_provider("target"), os.getenv("APP_TRACE_PATH", "").strip()
         print("\n" + judging_mode(provider, trace_path, app_has_no_retrieval(), needs_trace))
     listed = [probe for group in groups.values() for probe in group]
-    if stale_facts_note(listed):
-        print("\n" + stale_facts_note(listed))
+    for note in (stale_facts_note(listed), unreviewed_note(listed)):
+        if note:
+            print("\n" + note)
     return 0
 
 
@@ -1422,8 +1446,9 @@ async def main(
     if needs_trace:
         # Before any call, so whoever runs it can stop and set APP_TRACE_PATH first.
         print("\n" + judging_mode(provider, trace_path, no_retrieval, needs_trace))
-    if stale_facts_note(sent):
-        print("\n" + stale_facts_note(sent))
+    for note in (stale_facts_note(sent), unreviewed_note(sent if compare else [])):
+        if note:
+            print("\n" + note)
 
     pair_count = len({p.pair_id for p in sent if p.pair_id}) if compare else 0
     graded = [f"{len(group)} graded by {' + '.join(keys)}" for keys, group in groups.items() if keys]
@@ -1622,9 +1647,12 @@ async def main(
                 if verdict.control:
                     # Identical text went in both times, so a difference is noise, not bias.
                     print(f"  {shown}: {'CONTROL DIFFERED (noise)' if flagged else 'control equivalent'}")
+                elif flagged and verdict.unreviewed:
+                    print(f"  {shown}: DIFFERENT TREATMENT, unverified ({UNREVIEWED_REASON})")
+                    unverified.append(("disparate_treatment", label, UNREVIEWED_REASON))
                 else:
                     print(f"  {shown}: {'DIFFERENT TREATMENT' if flagged else 'equivalent'}")
-                if flagged and not verdict.control:
+                if flagged and not verdict.control and not verdict.unreviewed:
                     findings.append(("disparate_treatment", label, verdict.score.score_rationale or ""))
                     by_rubric["disparate_treatment"] += 1
         controls = [v for vs in controls_by_encoding.values() for v in vs]
@@ -1709,8 +1737,9 @@ async def main(
         print(f"  probe:     {probe[:150]}")
         print(f"  rationale: {rationales[0][:300]}")
 
-    no_trace = [(rubric, probe) for rubric, probe, reason in unverified if reason == "no trace"]
-    unconfirmed = [(rubric, probe) for rubric, probe, reason in unverified if reason != "no trace"]
+    no_trace = [(rubric, probe) for rubric, probe, reason in unverified if reason == NO_TRACE_REASON]
+    unconfirmed = [(rubric, probe) for rubric, probe, reason in unverified if reason == UNCONFIRMED_REASON]
+    unreviewed_pairs = [probe for rubric, probe, reason in unverified if reason == UNREVIEWED_REASON]
     if no_trace:
         print(
             f"\n{len(no_trace)} judge flag(s) are UNVERIFIED, not counted as findings: the probe asks for a "
@@ -1728,6 +1757,15 @@ async def main(
         )
         for rubric, probe in dict.fromkeys(unconfirmed):
             print(f"  - [{rubric}] {probe[:120]}")
+    if unreviewed_pairs:
+        print(
+            f"\n{len(unreviewed_pairs)} pair comparison(s) found DIFFERENT TREATMENT but are UNVERIFIED, not counted "
+            "as findings: the pair compares a version nobody has reviewed, and a clumsy translation or dialect "
+            "reads as different treatment. Have a fluent speaker (for a dialect, someone from that community) "
+            "check it, add it to the entry's reviewed_by and reviewed_on, and re-run:"
+        )
+        for label in dict.fromkeys(unreviewed_pairs):
+            print(f"  - {label}")
 
     if ungraded:
         print(f"\n{len(ungraded)} probe(s) were not sent because no rubric grades them (see above).")

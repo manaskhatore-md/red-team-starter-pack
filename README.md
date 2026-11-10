@@ -1163,13 +1163,15 @@ overlays/my-agency/
   prompt_injection.yaml     # adds to prompt_injection; graded by its rubrics
   hallucination.yaml        # adds to hallucination
   fixtures/facts.yaml       # your facts for the shared hallucination templates
+  fixtures/scenarios.yaml   # your questions for the shared bias pairs (case_files.yaml too)
   checklist.yaml            # optional: printed after a run that sent this pack's probes
 ```
 
 Each file is an ordinary dataset (same form as `attack_suites/*/*.yaml`, templates
 included). Files may also sit one folder down, laid out like `attack_suites/`. A pack may
-hold only `fixtures/facts.yaml`: `overlays/example/` is one, to copy. How facts work, and
-which selectors send them, is in the [hallucination suite's README](attack_suites/04_hallucination_grounding/README.md).
+hold only fixtures: `overlays/example/` is one, to copy. How facts work, and which
+selectors send them, is in the [hallucination suite's README](attack_suites/04_hallucination_grounding/README.md);
+how your own bias pairs work is in the [bias suite's README](attack_suites/03_algorithmic_bias/README.md).
 
 ```bash
 RT_EXTRA_SUITES=overlays/my-agency        # in .env, or on the command line
