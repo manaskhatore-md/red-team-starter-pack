@@ -392,12 +392,25 @@ setting is documented in `BrowserApiTarget`, in `browser_target.py`.
 **Streaming responses and expiring bearer tokens.** If your app streams its reply as
 Server-Sent Events (`text/event-stream`), newline-delimited JSON (`NDJSON`), or AWS Lambda
 response streaming chunks, `AppChatTarget` (and `BrowserApiTarget`) detects the stream
-automatically, reads `APP_RESPONSE_PATH` from each event, and joins the text pieces. An app
+automatically, reads `APP_RESPONSE_PATH` from each event, and joins the text pieces. The
+response's `Content-Type` decides what it may be: SSE only under `text/event-stream`, NDJSON
+or chunks only under that or a JSON type (`application/json`, `application/x-ndjson`), and
+under any other type (`text/plain`) one JSON document or plain text. So a plain-text app's reply is
+never misread as a stream, even if a probe gets the model to write `data:` lines. With no
+`Content-Type`, or `application/octet-stream`, the body decides. An app
 that resends the whole reply so far in each event is recognized, and its last event is the
 reply; `APP_STREAM_MODE=last` always takes the last event's text. Trace and control fields
 (`APP_TRACE_PATH`, `APP_CONTROL_PATH`) are collected across the events. A stream that ends
 in an error event fails that request, like an HTTP error, so a cut-off reply is never
 graded as the app's answer.
+
+Some streams send more than the answer in the same field: OpenAI's Responses API streams a
+tool call's arguments in `delta` just like the answer's text, and the Vercel AI SDK streams
+the model's reasoning that way. So when the reply's text comes from more than one kind of
+event, the request fails and the error names the kinds it found. Set `APP_STREAM_EVENT` to
+the kind(s) that carry the answer, comma-separated. It is matched against each event's SSE
+`event:` name or its JSON `type`; an event with neither is a `message`. Only the reply is
+narrowed: trace and control fields are still read from every event.
 
 If the app takes a short-lived bearer token over HTTP, set `APP_TOKEN_COMMAND` to a command
 that prints a fresh token and nothing else. The kit runs it before the first request and
@@ -411,6 +424,7 @@ for `APP_TRANSPORT=http`; with `browser-api` the signed-in page handles the sign
 ```bash
 APP_RESPONSE_PATH=choices.0.delta.content
 APP_STREAM_MODE=concat                           # default; last takes the final event's text
+APP_STREAM_EVENT=response.output_text.delta      # only if the error asks: the events with the answer
 APP_TOKEN_COMMAND=python C:/tokens/get_app_token.py   # your own script; prints only the token
 ```
 
@@ -492,7 +506,7 @@ It automatically reuses `APP_ENDPOINT`, `APP_BROWSER_URL`, `APP_BROWSER_INPUT`,
   8. **Alternate / backdoor server URLs:** Optional check for apps that have both a custom front-door domain and a separate direct backend URL (set `APP_ALTERNATE_URLS` in `.env`), or AWS API Gateway URLs with sibling stages (`/dev`, `/staging`, `/prod`).
 - **Phase 2 — Logged-In & Session Checks (Checks #9–#14):**
   9. **Impersonating another user while logged in:** Sends a fake `X-Goog-Authenticated-User-Email` header inside your real signed-in session and verifies the app keeps your true email.
-  10. **Behind-the-scenes debug data (`trace`) in chat replies:** Checks whether `POST /api/chat` sends internal fields like `trace`, `system_instruction`, or `tool_declarations` to the browser.
+  10. **Behind-the-scenes debug data (`trace`) in chat replies:** Checks whether `POST /api/chat` sends internal fields like `trace`, `system_instruction`, or `tool_declarations` to the browser. A streamed reply is checked event by event.
   11. **Developer API documentation pages (`/docs`, `/openapi.json`, `/redoc`):** Checks if auto-generated FastAPI docs are enabled for signed-in users, and automatically probes every route listed in `/openapi.json` while logged out.
   12. **Cross-website data access while logged in (CORS):** Verifies `Origin: https://evil.example` is not granted read access on authenticated requests.
   13. **Login cookie safety locks:** Verifies auth/IAP cookies set `Secure` and `HttpOnly` (never logs cookie values).

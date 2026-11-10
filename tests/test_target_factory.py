@@ -1141,6 +1141,257 @@ def test_an_empty_error_field_in_a_stream_and_an_error_field_in_plain_json_are_n
     assert _send_to_app() == "fine"
 
 
+# OpenAI's Responses API: the answer and a tool call's arguments both stream in "delta".
+RESPONSES_API_BODY = (
+    'event: response.output_text.delta\ndata: {"type": "response.output_text.delta", "delta": "Hi "}\n\n'
+    'event: response.function_call_arguments.delta\n'
+    'data: {"type": "response.function_call_arguments.delta", "delta": "{\\"q\\":1}"}\n\n'
+    'event: response.output_text.delta\ndata: {"type": "response.output_text.delta", "delta": "there"}\n\n'
+)
+# The Vercel AI SDK (v5): the event kind is only in "type", and reasoning streams in "delta" too.
+VERCEL_BODY = (
+    'data: {"type": "start"}\n\n'
+    'data: {"type": "reasoning-delta", "id": "r1", "delta": "thinking..."}\n\n'
+    'data: {"type": "text-delta", "id": "t1", "delta": "Answer"}\n\n'
+    'data: {"type": "finish"}\n\ndata: [DONE]\n\n'
+)
+
+
+@pytest.mark.parametrize(
+    "body, path, kinds",
+    [
+        (RESPONSES_API_BODY, "delta", "response.output_text.delta, response.function_call_arguments.delta"),
+        (VERCEL_BODY, "delta", "reasoning-delta, text-delta"),
+        ('{"type": "tool", "text": "{\\"q\\":1}"}\n{"type": "answer", "text": "Hi"}\n', "text", "tool, answer"),
+        ("event: thinking\ndata: Hmm\n\nevent: token\ndata: Hi\n\n", "", "thinking, token"),
+    ],
+    ids=["openai-responses", "vercel-v5", "ndjson-type", "plain-text-sse"],
+)
+def test_a_reply_from_more_than_one_kind_of_stream_event_asks_for_app_stream_event(
+    fake_app, clean_env, body, path, kinds
+):
+    if path:
+        clean_env.setenv("APP_RESPONSE_PATH", path)
+    else:
+        clean_env.delenv("APP_RESPONSE_PATH")
+    fake_app["replies"] = [(200, body)]
+    with pytest.raises(ValueError) as e:
+        _send_to_app()
+    assert f"2 kinds of stream event ({kinds})" in str(e.value)
+    assert "Set APP_STREAM_EVENT" in str(e.value)
+
+
+@pytest.mark.parametrize(
+    "body, path, chosen, reply",
+    [
+        (RESPONSES_API_BODY, "delta", "response.output_text.delta", "Hi there"),
+        (VERCEL_BODY, "delta", "text-delta", "Answer"),
+        # Several kinds, comma-separated.
+        (VERCEL_BODY, "delta", "text-delta, reasoning-delta", "thinking...Answer"),
+        ('{"type": "tool", "text": "x"}\n{"type": "answer", "text": "Hi"}\n', "text", "answer", "Hi"),
+        ("event: thinking\ndata: Hmm\n\nevent: token\ndata: Hi\n\n", "", "token", "Hi"),
+        # An event with no event: line or "type" is a "message", as in the SSE format, and
+        # naming "message" leaves out the unnamed SSE events that do have a "type".
+        (
+            'data: {"text": "Hi"}\n\nevent: tool\ndata: {"text": "x"}\n\ndata: {"type": "tool", "text": "y"}\n\n',
+            "text", "message", "Hi",
+        ),
+        # Matched by JSON "type" too, when the SSE event: name says something else.
+        (
+            'event: delta\ndata: {"type": "text", "t": "Hi"}\n\nevent: delta\ndata: {"type": "args", "t": "x"}\n\n',
+            "t", "text", "Hi",
+        ),
+    ],
+    ids=[
+        "openai-responses", "vercel-v5", "two-kinds", "ndjson-type", "plain-text-sse", "unnamed-is-message",
+        "by-json-type",
+    ],
+)
+def test_app_stream_event_reads_the_reply_from_only_the_events_it_names(fake_app, clean_env, body, path, chosen, reply):
+    if path:
+        clean_env.setenv("APP_RESPONSE_PATH", path)
+    else:
+        clean_env.delenv("APP_RESPONSE_PATH")
+    clean_env.setenv("APP_STREAM_EVENT", chosen)
+    fake_app["replies"] = [(200, body)]
+    assert _send_to_app() == reply
+
+
+# A reply with none of the answer's events, as each API streams it: only a tool call
+# (with its trace), or a refusal in an event of its own.
+TOOL_CALL_ONLY_BODY = (
+    'event: response.created\ndata: {"type": "response.created", "response": {"id": "r1"}}\n\n'
+    'event: response.function_call_arguments.delta\ndata: {"type": "response.function_call_arguments.delta", '
+    '"delta": "{\\"order\\":1}", "trace": {"tool_calls": [{"name": "cancel_order"}]}}\n\n'
+    'event: response.completed\ndata: {"type": "response.completed", "response": {"id": "r1"}}\n\n'
+)
+REFUSAL_ONLY_BODY = (
+    'event: response.created\ndata: {"type": "response.created", "response": {"id": "r1"}}\n\n'
+    'event: response.refusal.delta\ndata: {"type": "response.refusal.delta", "delta": "I can\'t help."}\n\n'
+    'event: response.completed\ndata: {"type": "response.completed", "response": {"id": "r1"}}\n\n'
+)
+
+
+@pytest.mark.parametrize("path", ["delta", ""], ids=["with-response-path", "no-response-path"])
+def test_a_reply_with_none_of_the_app_stream_events_is_graded_as_empty_with_its_trace(
+    fake_app, clean_env, capsys, path
+):
+    if path:
+        clean_env.setenv("APP_RESPONSE_PATH", path)
+    else:
+        clean_env.delenv("APP_RESPONSE_PATH")
+    clean_env.setenv("APP_STREAM_EVENT", "response.output_text.delta")
+    clean_env.setenv("APP_TRACE_PATH", "trace.tool_calls")
+    fake_app["replies"] = [(200, TOOL_CALL_ONLY_BODY, "text/event-stream")]
+    target = build_target()
+    message = Message(message_pieces=[MessagePiece(role="user", original_value="hi", conversation_id=str(uuid.uuid4()))])
+    try:
+        reply = asyncio.run(target.send_prompt_async(message=message))[0].message_pieces[0]
+    finally:
+        asyncio.run(target_factory.close_target(target))
+    assert reply.converted_value == ""
+    assert "cancel_order" in reply.prompt_metadata[target_factory.TRACE_METADATA_KEY]
+    note = capsys.readouterr().out
+    assert "reply text was read as empty" in note
+    assert "response.created, response.function_call_arguments.delta, response.completed" in note
+
+
+def test_the_note_about_a_reply_with_none_of_the_app_stream_events_is_printed_once(fake_app, clean_env, capsys):
+    clean_env.setenv("APP_RESPONSE_PATH", "delta")
+    clean_env.setenv("APP_STREAM_EVENT", "response.output_text.delta")
+    fake_app["replies"] = [(200, REFUSAL_ONLY_BODY), (200, TOOL_CALL_ONLY_BODY), (200, RESPONSES_API_BODY)]
+    target = build_target()
+    replies = []
+    try:
+        for _ in range(3):
+            message = Message(
+                message_pieces=[MessagePiece(role="user", original_value="hi", conversation_id=str(uuid.uuid4()))]
+            )
+            replies.append(asyncio.run(target.send_prompt_async(message=message))[0].message_pieces[0].converted_value)
+    finally:
+        asyncio.run(target_factory.close_target(target))
+    assert replies == ["", "", "Hi there"]
+    out = capsys.readouterr().out
+    assert out.count("reply text was read as empty") == 1
+    assert "response.refusal.delta" in out
+
+
+def test_openai_chat_completions_tool_call_only_stream_reads_null_content_as_empty_with_trace(fake_app, clean_env):
+    clean_env.setenv("APP_RESPONSE_PATH", "choices.0.delta.content")
+    clean_env.setenv("APP_TRACE_PATH", "choices.0.delta.tool_calls")
+    body = (
+        'data: {"id": "c1", "choices": [{"index": 0, "delta": {"role": "assistant", "content": null, '
+        '"tool_calls": [{"index": 0, "id": "call_1", "function": {"name": "cancel_order", "arguments": ""}}]}}]}\n\n'
+        'data: {"id": "c1", "choices": [{"index": 0, "delta": {"tool_calls": '
+        '[{"index": 0, "function": {"arguments": "{\\"order\\":1}"}}]}}]}\n\n'
+        'data: {"id": "c1", "choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls"}]}\n\n'
+        "data: [DONE]\n\n"
+    )
+    fake_app["replies"] = [(200, body, "text/event-stream")]
+    target = build_target()
+    message = Message(message_pieces=[MessagePiece(role="user", original_value="hi", conversation_id=str(uuid.uuid4()))])
+    try:
+        reply = asyncio.run(target.send_prompt_async(message=message))[0].message_pieces[0]
+    finally:
+        asyncio.run(target_factory.close_target(target))
+    assert reply.converted_value == ""
+    assert "cancel_order" in reply.prompt_metadata[target_factory.TRACE_METADATA_KEY]
+
+
+def test_app_stream_event_narrows_the_reply_but_not_the_trace(fake_app, clean_env):
+    clean_env.setenv("APP_RESPONSE_PATH", "text")
+    clean_env.setenv("APP_STREAM_EVENT", "answer")
+    clean_env.setenv("APP_TRACE_PATH", "trace.tool_calls")
+    fake_app["replies"] = [(200, (
+        'event: answer\ndata: {"text": "Hi "}\n\n'
+        'event: tool\ndata: {"text": "{}", "trace": {"tool_calls": [{"name": "lookup_rate"}]}}\n\n'
+        'event: answer\ndata: {"text": "there"}\n\n'
+    ))]
+    target = build_target()
+    message = Message(message_pieces=[MessagePiece(role="user", original_value="hi", conversation_id=str(uuid.uuid4()))])
+    try:
+        reply = asyncio.run(target.send_prompt_async(message=message))[0].message_pieces[0]
+    finally:
+        asyncio.run(target_factory.close_target(target))
+    assert reply.converted_value == "Hi there"
+    assert "lookup_rate" in reply.prompt_metadata[target_factory.TRACE_METADATA_KEY]
+
+
+def test_events_of_another_kind_without_text_do_not_count_as_a_second_kind(fake_app, clean_env):
+    # An empty start event, then the deltas: one kind of text, so no APP_STREAM_EVENT needed.
+    clean_env.setenv("APP_RESPONSE_PATH", "text")
+    fake_app["replies"] = [(200, 'data: {"type": "start", "text": ""}\n\ndata: {"type": "delta", "text": "Hi"}\n\n')]
+    assert _send_to_app() == "Hi"
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "data: secret line\ndata: two",
+        "event: error\ndata: pwned",
+        '{"a": 1}\n{"error": "pwned"}\n',
+    ],
+    ids=["sse-data-lines", "sse-error-event", "ndjson-error-field"],
+)
+@pytest.mark.parametrize("content_type", ["text/plain; charset=utf-8", "text/html"])
+def test_a_plain_text_reply_that_looks_like_a_stream_is_read_as_it_came(fake_app, clean_env, capsys, body, content_type):
+    # A plain-text app's body is the model's own words, which a probe can steer into
+    # looking like a stream. Its Content-Type says it isn't one.
+    clean_env.delenv("APP_RESPONSE_PATH")
+    fake_app["replies"] = [(200, body, content_type)]
+    assert _send_to_app() == body
+    note = capsys.readouterr().out
+    assert f"Content-Type is {content_type.split(';')[0]}, so it was read as it came" in note
+
+
+def test_the_note_about_a_stream_like_plain_reply_is_shown_once_per_run(fake_app, clean_env, capsys):
+    clean_env.delenv("APP_RESPONSE_PATH")
+    fake_app["replies"] = [(200, "data: a\n\ndata: b\n\n", "text/plain")]
+    target = build_target()
+    try:
+        for _ in range(2):
+            message = Message(
+                message_pieces=[MessagePiece(role="user", original_value="hi", conversation_id=str(uuid.uuid4()))]
+            )
+            asyncio.run(target.send_prompt_async(message=message))
+    finally:
+        asyncio.run(target_factory.close_target(target))
+    assert capsys.readouterr().out.count("looked like SSE") == 1
+
+
+@pytest.mark.parametrize(
+    "body, content_type, path, reply",
+    [
+        (SSE_BODY, "text/event-stream; charset=utf-8", "choices.0.delta.content", "Part B is $202.90."),
+        (NDJSON_BODY, "application/x-ndjson", "delta", "First chunk. Second chunk."),
+        # Lambda response streaming often keeps the function's application/json.
+        (LAMBDA_STREAM_BODY, "application/json", "answer", "Hello from Lambda!"),
+        # A generic type leaves the format to the body, as no Content-Type does.
+        (SSE_BODY, "application/octet-stream", "choices.0.delta.content", "Part B is $202.90."),
+        (SSE_BODY, None, "choices.0.delta.content", "Part B is $202.90."),
+    ],
+    ids=["sse", "ndjson", "lambda-json", "octet-stream", "no-content-type"],
+)
+def test_a_stream_is_read_when_its_content_type_allows_it(fake_app, clean_env, body, content_type, path, reply):
+    clean_env.setenv("APP_RESPONSE_PATH", path)
+    fake_app["replies"] = [(200, body) if content_type is None else (200, body, content_type)]
+    assert _send_to_app() == reply
+
+
+def test_a_stream_sent_under_a_json_content_type_is_not_read_as_sse_and_says_why(fake_app, clean_env):
+    clean_env.setenv("APP_RESPONSE_PATH", "text")
+    fake_app["replies"] = [(200, 'data: {"text": "Hi"}\n\n', "application/json")]
+    with pytest.raises(ValueError, match=r"looks like SSE, but its Content-Type is application/json.*text/event-stream"):
+        _send_to_app()
+
+
+def test_an_error_event_in_a_stream_still_fails_under_its_own_content_type(fake_app, clean_env):
+    clean_env.setenv("APP_RESPONSE_PATH", "text")
+    fake_app["replies"] = [(200, 'data: {"text": "The answer is "}\n\nevent: error\ndata: overloaded\n\n', "text/event-stream")]
+    with pytest.raises(RuntimeError, match="streamed reply ended with an error: overloaded"):
+        _send_to_app()
+
+
 def test_concat_recognizes_an_app_that_resends_the_whole_reply_so_far(fake_app, clean_env):
     clean_env.setenv("APP_RESPONSE_PATH", "text")
     snapshots = (

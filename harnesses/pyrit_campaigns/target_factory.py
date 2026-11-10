@@ -634,42 +634,75 @@ def _sse_events(body: str) -> list[tuple[str, str]] | None:
     return events
 
 
-def _parse_response_events(body: str) -> tuple[str | None, list]:
-    """Parse a response body as a single JSON value, an SSE event stream, or NDJSON / JSON chunks.
+def _event_kind(sse_type: str, payload) -> str:
+    """What kind of stream event this is: its SSE event: name, or else its JSON "type".
 
-    Returns (kind, events) where kind is None for a single JSON document, "SSE" for
-    text/event-stream, or "NDJSON" for newline-delimited or concatenated JSON chunks
-    (such as AWS Lambda response streaming). Returns (None, []) when the body is not
-    JSON or an event stream. An SSE event's data is parsed as JSON when it is JSON and
-    kept as text otherwise; the [DONE] end marker and empty data are left out.
+    Streaming APIs name each event's kind one way or the other (OpenAI's Responses API
+    and Anthropic's use both; the Vercel AI SDK puts it only in "type"). An event named
+    neither way is a "message", the SSE format's name for an event with no event: line.
     """
-    try:
-        return None, [json.loads(body)]
-    except ValueError:
-        pass
+    if sse_type and sse_type != "message":
+        return sse_type
+    if isinstance(payload, dict) and isinstance(payload.get("type"), str) and payload["type"]:
+        return payload["type"]
+    return sse_type or "message"
 
-    sse = _sse_events(body)
+
+def _body_formats(content_type: str | None) -> frozenset[str] | None:
+    """The formats a response's Content-Type header lets its body be read as; None for any.
+
+    A body is read as SSE only when the header says text/event-stream, and as NDJSON or
+    JSON chunks only under text/event-stream or a JSON type (application/json,
+    application/x-ndjson, ...). Any other type (text/plain, text/html) is a single JSON
+    document or plain text. That matters because a plain-text app's body is the model's
+    own words, which a probe can steer into looking like a stream (data: lines, an
+    event: error) and so change the reply or fail the request. With no header, a
+    generic one, or text/event-stream, the body decides.
+    """
+    media = (content_type or "").split(";")[0].strip().lower()
+    if media in ("", "application/octet-stream", "*/*", "text/event-stream"):
+        return None
+    if "json" in media:
+        return frozenset({"json", "ndjson"})
+    return frozenset({"json"})
+
+
+def _labeled_events(body: str, content_type: str | None = None) -> tuple[str | None, list[tuple[str, str, object]]]:
+    """_parse_response_events, with each event's SSE event: name ("" outside SSE) and kind kept.
+
+    Returns (kind, [(sse_type, event_kind, payload), ...]); see _event_kind for event_kind.
+    """
+    formats = _body_formats(content_type)
+    if formats is None or "json" in formats:
+        try:
+            return None, [("", "", json.loads(body))]
+        except ValueError:
+            pass
+
+    sse = _sse_events(body) if formats is None or "sse" in formats else None
     if sse is not None:
         events = []
-        for _event_type, payload in sse:
+        for event_type, payload in sse:
             if not payload.strip() or payload.strip() == "[DONE]":
                 continue
             try:
-                events.append(json.loads(payload))
+                parsed = [json.loads(payload)]
             except ValueError:
+                parsed = [payload]
                 lines = [ln for ln in payload.splitlines() if ln.strip() and ln.strip() != "[DONE]"]
                 if len(lines) > 1:
                     try:
-                        events.extend(json.loads(ln) for ln in lines)
-                        continue
+                        parsed = [json.loads(ln) for ln in lines]
                     except ValueError:
                         pass
-                events.append(payload)
+            events.extend((event_type, _event_kind(event_type, p), p) for p in parsed)
         return "SSE", events
 
+    if formats is not None and "ndjson" not in formats:
+        return None, []
     decoder = json.JSONDecoder()
     idx, n = 0, len(body)
-    events = []
+    chunks = []
     try:
         while idx < n:
             while idx < n and body[idx] in " \t\r\n\x00":
@@ -677,15 +710,44 @@ def _parse_response_events(body: str) -> tuple[str | None, list]:
             if idx >= n:
                 break
             obj, idx = decoder.raw_decode(body, idx)
-            events.append(obj)
+            chunks.append(obj)
     except ValueError:
-        events = []
-    if len(events) >= 2:
-        return "NDJSON", events
+        chunks = []
+    if len(chunks) >= 2:
+        # An unnamed chunk is a "message", as an unnamed SSE event is.
+        return "NDJSON", [("", _event_kind("message", c), c) for c in chunks]
     return None, []
 
 
-def _stream_error(body: str) -> str:
+def _parse_response_events(body: str, content_type: str | None = None) -> tuple[str | None, list]:
+    """Parse a response body as a single JSON value, an SSE event stream, or NDJSON / JSON chunks.
+
+    Returns (kind, events) where kind is None for a single JSON document, "SSE" for
+    text/event-stream, or "NDJSON" for newline-delimited or concatenated JSON chunks
+    (such as AWS Lambda response streaming). Returns (None, []) when the body is not
+    JSON or an event stream. An SSE event's data is parsed as JSON when it is JSON and
+    kept as text otherwise; the [DONE] end marker and empty data are left out. The
+    response's Content-Type, if given, limits the formats tried: see _body_formats.
+    """
+    kind, events = _labeled_events(body, content_type)
+    return kind, [payload for _sse_type, _kind, payload in events]
+
+
+def _unread_stream(body: str, content_type: str | None) -> tuple[str, str] | None:
+    """(the stream kind the body looks like, its Content-Type) when that header kept the
+    body from being read as that stream; None otherwise."""
+    if _body_formats(content_type) is None or _labeled_events(body, content_type)[0] is not None:
+        return None
+    guessed = _labeled_events(body)[0]
+    if guessed is None:
+        return None
+    return guessed, (content_type or "").split(";")[0].strip()
+
+
+STREAM_TYPES_HINT = "a streaming app sends Content-Type text/event-stream (SSE) or application/x-ndjson"
+
+
+def _stream_error(body: str, content_type: str | None = None) -> str:
     """The error a streamed response ended with, or "" if it has none.
 
     A stream can start a reply and then fail (the model was overloaded, the connection
@@ -694,12 +756,13 @@ def _stream_error(body: str) -> str:
     streamed JSON event with a non-empty top-level "error" field. A single JSON response
     is left alone, since its "error" field (if any) is the app's own business.
     """
-    sse = _sse_events(body)
+    formats = _body_formats(content_type)
+    sse = _sse_events(body) if formats is None or "sse" in formats else None
     if sse is not None:
         for event_type, payload in sse:
             if event_type == "error":
                 return payload.strip() or "(no details)"
-    kind, events = _parse_response_events(body)
+    kind, events = _parse_response_events(body, content_type)
     if kind is None:
         return ""
     for event in events:
@@ -857,6 +920,14 @@ class AppChatTarget(PromptTarget):
                               NDJSON events: concat (the default, joins the pieces, or
                               takes the last one if each repeats the reply so far) or
                               last (takes the last event carrying the path).
+        APP_STREAM_EVENT      which kinds of streamed event carry the reply, comma-separated:
+                              matched against each event's SSE event: name or its JSON
+                              "type", e.g. response.output_text.delta or text-delta. An
+                              event named neither way is a "message". Unset: every event,
+                              but a reply whose text comes from more than one kind is an
+                              error, since the others are likely tool-call arguments or
+                              the model's reasoning. Only the reply is narrowed: trace and
+                              control fields are still read from every event.
         APP_TRACE_PATH        optional: where tool calls, retrieved sources, or citations
                               are in the response, dotted (or comma-separated paths), e.g.
                               trace.rounds or citations. Shown to the judge in
@@ -896,6 +967,7 @@ class AppChatTarget(PromptTarget):
         history_roles: str = "user,assistant",
         response_path: str = "",
         stream_mode: str = "concat",
+        stream_event: str = "",
         trace_path: str = "",
         control_path: str = "",
         token_command: str = "",
@@ -949,6 +1021,7 @@ class AppChatTarget(PromptTarget):
         )
         self._response_path = response_path.strip()
         self._stream_mode = mode
+        self._stream_events = frozenset(n.strip() for n in stream_event.split(",") if n.strip())
         self._trace_path = trace_path.strip()
         self._control_path = control_path.strip()
         self._token_command = token_command.strip()
@@ -957,6 +1030,8 @@ class AppChatTarget(PromptTarget):
         self._headers = {"Content-Type": "application/json", **(headers or {})}
         self._timeout = timeout
         self._client = None
+        self._noted_unread_stream = False
+        self._noted_no_chosen_events = False
 
     @staticmethod
     def settings_from_env() -> dict:
@@ -974,6 +1049,7 @@ class AppChatTarget(PromptTarget):
             history_roles=os.getenv("APP_HISTORY_ROLES") or "user,assistant",
             response_path=os.getenv("APP_RESPONSE_PATH", ""),
             stream_mode=os.getenv("APP_STREAM_MODE") or "concat",
+            stream_event=os.getenv("APP_STREAM_EVENT", ""),
             trace_path=os.getenv("APP_TRACE_PATH", ""),
             control_path=os.getenv("APP_CONTROL_PATH", ""),
             token_command=os.getenv("APP_TOKEN_COMMAND", ""),
@@ -1021,9 +1097,22 @@ class AppChatTarget(PromptTarget):
             turns.append((piece.api_role, piece.converted_value))
         return turns
 
-    def reply_text(self, body: str) -> str:
-        """The reply, read from APP_RESPONSE_PATH in the response body (single JSON, SSE, or NDJSON)."""
-        kind, events = _parse_response_events(body)
+    def reply_text(self, body: str, content_type: str | None = None) -> str:
+        """The reply, read from APP_RESPONSE_PATH in the response body (single JSON, SSE, or NDJSON).
+
+        content_type is the response's Content-Type header, which decides whether the body
+        may be read as a stream (see _body_formats); None or "" lets the body decide.
+        """
+        kind, labeled = _labeled_events(body, content_type)
+        if kind is not None:
+            chosen = self._chosen_events(labeled)
+            if labeled and not chosen:
+                # A reply that is only a tool call or a refusal has none of the answer's
+                # events. It is still the app's reply, so it is graded (as empty text,
+                # with its trace) instead of failing the request.
+                return ""
+            labeled = chosen
+        events = [payload for _sse_type, _kind, payload in labeled]
         if not self._response_path:
             if kind == "SSE":
                 # Only a JSON object or list means the reply sits in a field. A plain-text
@@ -1035,12 +1124,24 @@ class AppChatTarget(PromptTarget):
                         "set APP_RESPONSE_PATH to it (e.g. choices.0.delta.content). "
                         f"First JSON event: {json.dumps(structured)[:300]}"
                     )
-                # A token that is only a space is part of the text: keep it.
-                payloads = [p for _type, p in _sse_events(body) or [] if p and p.strip() != "[DONE]"]
-                return self._combine_pieces(payloads)
+                # Text tokens, read raw: a token that is only a space is part of the text.
+                texts = [
+                    (t, t, p)
+                    for t, p in _sse_events(body) or []
+                    if p and p.strip() != "[DONE]" and self._is_chosen(t, p)
+                ]
+                self._check_one_kind(texts, "the stream's text")
+                return self._combine_pieces([p for _t, _k, p in texts])
             return body
         if kind is None and not events:
-            raise ValueError(f"The app's response is not JSON, so APP_RESPONSE_PATH cannot be read: {body[:300]}")
+            unread = _unread_stream(body, content_type)
+            why = (
+                f" (it looks like {unread[0]}, but its Content-Type is {unread[1]}, so it is not read as a "
+                f"stream; {STREAM_TYPES_HINT})"
+                if unread
+                else ""
+            )
+            raise ValueError(f"The app's response is not JSON, so APP_RESPONSE_PATH cannot be read{why}: {body[:300]}")
         if kind is None:
             value = events[0]
             for step in self._response_path.split("."):
@@ -1059,26 +1160,86 @@ class AppChatTarget(PromptTarget):
             return value if isinstance(value, str) else json.dumps(value)
 
         pieces: list[str] = []
+        found_in: list[tuple[str, str, str]] = []
         matched = False
-        for event in events:
+        for sse_type, event_kind, event in labeled:
             found, value = _step_path(event, self._response_path)
-            if found and value is not None:
+            if found:
                 matched = True
+            if found and value is not None:
                 if isinstance(value, list) and all(isinstance(x, str) for x in value):
-                    pieces.extend(value)
+                    text = list(value)
                 else:
-                    pieces.append(value if isinstance(value, str) else json.dumps(value))
+                    text = [value if isinstance(value, str) else json.dumps(value)]
+                pieces.extend(text)
+                found_in.append((sse_type, event_kind, "".join(text)))
         if not matched:
             first = (
                 (events[0] if isinstance(events[0], str) else json.dumps(events[0]))
                 if events
                 else body.strip()
             )
+            chosen = f" among the {', '.join(sorted(self._stream_events))} events" if self._stream_events else ""
             raise ValueError(
-                f"response looks like {kind} but no event had APP_RESPONSE_PATH={self._response_path}; "
+                f"response looks like {kind} but no event{chosen} had APP_RESPONSE_PATH={self._response_path}; "
                 f"first event: {first[:300]}"
             )
+        self._check_one_kind(found_in, f"APP_RESPONSE_PATH={self._response_path}")
         return self._combine_pieces(pieces)
+
+    def _is_chosen(self, event_kind: str, payload) -> bool:
+        """Whether APP_STREAM_EVENT (if set) names this event: by its kind (its SSE event:
+        name, else its JSON "type"; see _event_kind) or by its JSON "type"."""
+        if not self._stream_events:
+            return True
+        names = {event_kind}
+        if isinstance(payload, dict) and isinstance(payload.get("type"), str):
+            names.add(payload["type"])
+        return bool(names & self._stream_events)
+
+    def _chosen_events(self, labeled: list) -> list:
+        """The stream events APP_STREAM_EVENT names (all of them if it is unset).
+
+        A stream with none of them is normal for one reply (a tool call, a refusal), so
+        it gives no events, not an error; but every reply having none is a typo in the
+        setting, so the first time it happens, a note lists the kinds the stream had.
+        """
+        chosen = [e for e in labeled if self._is_chosen(e[1], e[2])]
+        if labeled and not chosen and not self._noted_no_chosen_events:
+            self._noted_no_chosen_events = True
+            seen = list(dict.fromkeys(k for _t, k, _p in labeled))
+            print(
+                f"\nNote: a reply from the app had no APP_STREAM_EVENT={','.join(sorted(self._stream_events))} "
+                f"events, so its reply text was read as empty. Its events were: {', '.join(seen)}. That is normal "
+                "for a reply that is only a tool call or a refusal; if every reply comes back empty, check "
+                "APP_STREAM_EVENT for a typo."
+            )
+        return chosen
+
+    def _check_one_kind(self, found_in: list[tuple[str, str, str]], what: str) -> None:
+        """Stop a reply that would join text from more than one kind of stream event.
+
+        Streaming APIs send more than the answer, in events of their own kinds: a tool
+        call's arguments, the model's reasoning. When those use the same field as the
+        answer, joining them all would grade them as the reply, with nothing to show for
+        it. So unless APP_STREAM_EVENT says which kinds carry the reply, text from more
+        than one kind is an error. Events with no text don't count.
+        """
+        if self._stream_events:
+            return
+        first: dict[str, str] = {}
+        for _sse_type, event_kind, text in found_in:
+            if text and event_kind not in first:
+                first[event_kind] = text
+        if len(first) < 2:
+            return
+        samples = "; ".join(f"{k}: {json.dumps(v[:80])}" for k, v in first.items())
+        raise ValueError(
+            f"{what} is in {len(first)} kinds of stream event ({', '.join(first)}), so joining them would "
+            "mix other text into the reply, such as a tool call's arguments or the model's reasoning. Set "
+            f"APP_STREAM_EVENT to the kind(s) that carry the reply, comma-separated, e.g. "
+            f"APP_STREAM_EVENT={next(iter(first))}. First text of each kind: {samples}"
+        )
 
     def _combine_pieces(self, pieces: list[str]) -> str:
         """Join a stream's text pieces into the reply, per APP_STREAM_MODE.
@@ -1101,7 +1262,7 @@ class AppChatTarget(PromptTarget):
         )
         return non_empty[-1] if snapshots else "".join(non_empty)
 
-    def trace_text(self, body: str) -> str:
+    def trace_text(self, body: str, content_type: str | None = None) -> str:
         """The response trace, read from APP_TRACE_PATH in the response body ("" if unset or absent).
 
         Supports one dotted path (e.g. trace.rounds or citations) or several
@@ -1113,7 +1274,7 @@ class AppChatTarget(PromptTarget):
         """
         if not self._trace_path:
             return ""
-        _kind, events = _parse_response_events(body)
+        _kind, events = _parse_response_events(body, content_type)
         text = _extract_paths(events, self._trace_path, clean_trace=True)
         if not text:
             return ""
@@ -1124,11 +1285,11 @@ class AppChatTarget(PromptTarget):
             return text[:head] + " ... [truncated] ... " + text[-tail:]
         return text
 
-    def control_text(self, body: str) -> str:
+    def control_text(self, body: str, content_type: str | None = None) -> str:
         """The guardrail/control fields, read from APP_CONTROL_PATH in the response body ("" if unset or absent)."""
         if not self._control_path:
             return ""
-        _kind, events = _parse_response_events(body)
+        _kind, events = _parse_response_events(body, content_type)
         return _extract_paths(events, self._control_path, clean_trace=False)
 
     async def _refresh_token(self) -> None:
@@ -1141,35 +1302,37 @@ class AppChatTarget(PromptTarget):
         self._headers["Authorization"] = f"Bearer {token}"
         self._token_loads += 1
 
-    async def _send_http(self, body: str) -> tuple[int, str]:
+    async def _send_http(self, body: str) -> tuple[int, str, str]:
         import httpx
 
         if self._client is None:
             self._client = httpx.AsyncClient(timeout=self._timeout)
         response = await self._client.post(self._endpoint, content=body, headers=self._headers)
-        return response.status_code, response.text
+        return response.status_code, response.text, response.headers.get("content-type", "")
 
-    async def _post(self, body: str) -> tuple[int, str]:
-        """Send one request body to APP_ENDPOINT; return the status and the response body."""
+    async def _post(self, body: str) -> tuple[int, str, str]:
+        """Send one request body to APP_ENDPOINT; return the status, the response body, and its Content-Type."""
         if self._token_command and self._token_loads == 0:
             async with self._token_lock:
                 if self._token_loads == 0:
                     await self._refresh_token()
         loads = self._token_loads
-        status, response_body = await self._send_http(body)
+        status, response_body, content_type = await self._send_http(body)
         if status == 401 and self._token_command:
             async with self._token_lock:
                 if self._token_loads == loads:
                     await self._refresh_token()
-            status, response_body = await self._send_http(body)
-        return status, response_body
+            status, response_body, content_type = await self._send_http(body)
+        return status, response_body, content_type
 
     @limit_requests_per_minute
     @pyrit_target_retry
     async def _send_prompt_to_target_async(self, *, normalized_conversation: list[Message]) -> list[Message]:
         request = normalized_conversation[-1].message_pieces[0]
         history = self.history_of(normalized_conversation) if self.sends_history else []
-        status, body = await self._post(self.request_body(request.converted_value, history, request.conversation_id))
+        status, body, content_type = await self._post(
+            self.request_body(request.converted_value, history, request.conversation_id)
+        )
         if status in APP_RETRY_STATUSES:
             raise RateLimitException(status_code=status, message=body[:300])
         if not 200 <= status < 300:
@@ -1177,15 +1340,26 @@ class AppChatTarget(PromptTarget):
             # Token" is a wrong URL, 403 "Forbidden" a missing or wrong API key, and 502
             # a Lambda that crashed or returned the wrong shape. The body says which.
             raise RuntimeError(f"The app returned HTTP {status}: {body[:300]}")
-        error = _stream_error(body)
+        error = _stream_error(body, content_type)
         if error:
             # Whatever text came before the error is a cut-off reply: fail the request
             # like an HTTP error, rather than grade part of an answer as the whole one.
             raise RuntimeError(f"The app's streamed reply ended with an error: {error[:300]}")
 
-        text = self.reply_text(body)
-        trace = self.trace_text(body)
-        control = self.control_text(body)
+        # Without APP_RESPONSE_PATH, a stream-like reply under a plain type is read as
+        # plain text with no error, so say once that it happened. (With the path set,
+        # reply_text's error says it.)
+        unread = None if self._response_path or self._noted_unread_stream else _unread_stream(body, content_type)
+        if unread:
+            self._noted_unread_stream = True
+            print(
+                f"\nNote: a reply from the app looked like {unread[0]}, but its Content-Type is {unread[1]}, so it "
+                f"was read as it came. If the app streams its replies, {STREAM_TYPES_HINT}; if it doesn't, the "
+                "model's reply only looked like a stream."
+            )
+        text = self.reply_text(body, content_type)
+        trace = self.trace_text(body, content_type)
+        control = self.control_text(body, content_type)
         metadata = {}
         if trace:
             metadata[TRACE_METADATA_KEY] = trace

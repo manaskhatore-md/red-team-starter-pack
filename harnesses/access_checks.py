@@ -77,6 +77,7 @@ from harnesses.pyrit_campaigns.target_factory import (
     HISTORY_SLOT,
     PROMPT_SLOT,
     _fill_slots,
+    _parse_response_events,
 )
 from scripts.scrub import MIN_PROTECTED_PATH, default_exempt, finish_report, scrub_enabled, scrub_texts
 
@@ -149,6 +150,20 @@ EVIL_ORIGIN = "https://evil.example"
 # Expected benign top-level keys besides APP_RESPONSE_PATH that do not indicate
 # internal prompt/tool trace exposure.
 BENIGN_RESPONSE_KEYS = {"session_id", "conversation_id", "id", "status", "timestamp"}
+# Also expected in a streamed reply's events: the fields that frame each piece (its kind,
+# position, and the end of the stream), which streaming APIs send with every event.
+BENIGN_STREAM_KEYS = {
+    "type",
+    "event",
+    "index",
+    "sequence_number",
+    "object",
+    "created",
+    "model",
+    "done",
+    "finish_reason",
+    "usage",
+}
 SENSITIVE_RESPONSE_KEYS = {
     "trace",
     "system_prompt",
@@ -1313,9 +1328,34 @@ async def check_exposed_response_fields(
             details=[f"`POST {config.chat_path}` returned HTML (`{resp.text.strip()[:120]}`)."],
         )
 
-    try:
-        data = json.loads(resp.text)
-    except ValueError:
+    # The same reader the scan uses, so a streamed reply (SSE, NDJSON, Lambda chunks) is
+    # inspected event by event instead of passing as "not JSON". The body decides its
+    # format here, not the Content-Type: the scan obeys that header so a probe can't steer
+    # the model's text into looking like a stream, but this check sends "Hello", and an
+    # app that labels its stream application/json or text/plain still sends its fields.
+    kind, events = _parse_response_events(resp.text)
+    if not events:
+        media = content_type.split(";")[0].strip()
+        if not resp.text.strip() or kind is not None:
+            return CheckResult(
+                phase=phase,
+                name=name,
+                owasp=owasp,
+                verdict="NOT TESTED",
+                summary="Signed-in chat request returned an empty response; could not inspect response fields.",
+                what_it_tests=what_it_tests,
+                details=[f"`POST {config.chat_path}` returned no content events ({len(resp.text)} chars)."],
+            )
+        if media not in ("", "text/plain"):
+            return CheckResult(
+                phase=phase,
+                name=name,
+                owasp=owasp,
+                verdict="NOT TESTED",
+                summary=f"Signed-in chat request returned an unreadable `{media}` body; could not inspect response fields.",
+                what_it_tests=what_it_tests,
+                details=[f"`POST {config.chat_path}` declared `{media}` ({len(resp.text)} chars): `{resp.text.strip()[:120]}`"],
+            )
         return CheckResult(
             phase=phase,
             name=name,
@@ -1323,26 +1363,46 @@ async def check_exposed_response_fields(
             verdict="PASS",
             summary="Chat response is plain text (no hidden debug fields).",
             what_it_tests=what_it_tests,
-            details=[f"`POST {config.chat_path}` returned non-JSON body ({len(resp.text)} chars)."],
+            details=[f"`POST {config.chat_path}` returned plain-text body ({len(resp.text)} chars)."],
         )
 
-    if not isinstance(data, dict):
+    objects = [e for e in events if isinstance(e, dict)]
+    if not objects:
+        shape = f"a JSON {type(events[0]).__name__}" if kind is None else f"a {kind} stream of plain text"
         return CheckResult(
             phase=phase,
             name=name,
             owasp=owasp,
             verdict="PASS",
-            summary=f"Chat response is a JSON {type(data).__name__} with no extra debug fields.",
+            summary=f"Chat response is {shape} with no extra debug fields.",
             what_it_tests=what_it_tests,
+            details=[] if kind is None else [f"`POST {config.chat_path}` streamed {len(events)} {kind} event(s)."],
         )
 
     expected_top_key = (config.response_path.split(".")[0] if config.response_path else "reply") or "reply"
     allowed_keys = {expected_top_key} | BENIGN_RESPONSE_KEYS
+    if kind is not None:
+        allowed_keys |= BENIGN_STREAM_KEYS
+
+    # Every event's fields, in the order they first appear, each with its first value.
+    data: dict = {}
+    first_event: dict[str, int] = {}
+    for number, event in enumerate(objects, 1):
+        for key, val in event.items():
+            if key not in data:
+                data[key] = val
+                first_event[key] = number
 
     extra_keys = [k for k in data.keys() if k not in allowed_keys]
     sensitive_found = [k for k in data.keys() if k.lower() in SENSITIVE_RESPONSE_KEYS]
 
-    details = [f"Top-level JSON fields returned by `POST {config.chat_path}`: `{', '.join(data.keys())}`"]
+    if kind is None:
+        details = [f"Top-level JSON fields returned by `POST {config.chat_path}`: `{', '.join(data.keys())}`"]
+    else:
+        details = [
+            f"`POST {config.chat_path}` streamed {len(events)} {kind} event(s). Top-level fields across all "
+            f"of them: `{', '.join(data.keys())}`"
+        ]
     for key in extra_keys:
         val = data[key]
         serialized = json.dumps(val) if not isinstance(val, str) else val
@@ -1351,7 +1411,8 @@ async def check_exposed_response_fields(
             if isinstance(val, dict) and val
             else ""
         )
-        details.append(f"Extra field `{key}` ({type(val).__name__}, {len(serialized)} chars{subkeys})")
+        where = f", first in event {first_event[key]}" if kind is not None else ""
+        details.append(f"Extra field `{key}` ({type(val).__name__}, {len(serialized)} chars{subkeys}{where})")
 
     if sensitive_found or extra_keys:
         flagged = sensitive_found or extra_keys
