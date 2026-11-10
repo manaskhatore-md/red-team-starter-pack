@@ -1187,7 +1187,8 @@ included). Files may also sit one folder down, laid out like `attack_suites/`. A
 hold only fixtures: `overlays/example/` is one, to copy. A file in a pack's `fixtures/` named
 like one a shipped template reads (`facts.yaml`, `excerpts.yaml`, `scenarios.yaml`,
 `case_files.yaml`, `actions.yaml`) feeds that template: its entries are sent with the
-shipped ones, or instead of them if the file starts with `mode: replace`. How facts work, and which
+shipped ones, or instead of them if the file starts with `mode: replace` (a file with no
+entries yet replaces nothing). How facts work, and which
 selectors send them, is in the [hallucination suite's README](attack_suites/04_hallucination_grounding/README.md);
 how your own bias pairs work is in the [bias suite's README](attack_suites/03_algorithmic_bias/README.md).
 
