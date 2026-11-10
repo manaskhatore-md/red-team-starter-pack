@@ -1330,7 +1330,7 @@ async def check_exposed_response_fields(
 
     # The same reader the scan uses, so a streamed reply (SSE, NDJSON, Lambda chunks) is
     # inspected event by event instead of passing as "not JSON".
-    kind, events = _parse_response_events(resp.text)
+    kind, events = _parse_response_events(resp.text, resp.headers.get("content-type", ""))
     if kind is None and not events:
         return CheckResult(
             phase=phase,

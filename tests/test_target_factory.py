@@ -1252,6 +1252,74 @@ def test_events_of_another_kind_without_text_do_not_count_as_a_second_kind(fake_
     assert _send_to_app() == "Hi"
 
 
+@pytest.mark.parametrize(
+    "body",
+    [
+        "data: secret line\ndata: two",
+        "event: error\ndata: pwned",
+        '{"a": 1}\n{"error": "pwned"}\n',
+    ],
+    ids=["sse-data-lines", "sse-error-event", "ndjson-error-field"],
+)
+@pytest.mark.parametrize("content_type", ["text/plain; charset=utf-8", "text/html"])
+def test_a_plain_text_reply_that_looks_like_a_stream_is_read_as_it_came(fake_app, clean_env, capsys, body, content_type):
+    # A plain-text app's body is the model's own words, which a probe can steer into
+    # looking like a stream. Its Content-Type says it isn't one.
+    clean_env.delenv("APP_RESPONSE_PATH")
+    fake_app["replies"] = [(200, body, content_type)]
+    assert _send_to_app() == body
+    note = capsys.readouterr().out
+    assert f"Content-Type is {content_type.split(';')[0]}, so it was read as it came" in note
+
+
+def test_the_note_about_a_stream_like_plain_reply_is_shown_once_per_run(fake_app, clean_env, capsys):
+    clean_env.delenv("APP_RESPONSE_PATH")
+    fake_app["replies"] = [(200, "data: a\n\ndata: b\n\n", "text/plain")]
+    target = build_target()
+    try:
+        for _ in range(2):
+            message = Message(
+                message_pieces=[MessagePiece(role="user", original_value="hi", conversation_id=str(uuid.uuid4()))]
+            )
+            asyncio.run(target.send_prompt_async(message=message))
+    finally:
+        asyncio.run(target_factory.close_target(target))
+    assert capsys.readouterr().out.count("looked like SSE") == 1
+
+
+@pytest.mark.parametrize(
+    "body, content_type, path, reply",
+    [
+        (SSE_BODY, "text/event-stream; charset=utf-8", "choices.0.delta.content", "Part B is $202.90."),
+        (NDJSON_BODY, "application/x-ndjson", "delta", "First chunk. Second chunk."),
+        # Lambda response streaming often keeps the function's application/json.
+        (LAMBDA_STREAM_BODY, "application/json", "answer", "Hello from Lambda!"),
+        # A generic type leaves the format to the body, as no Content-Type does.
+        (SSE_BODY, "application/octet-stream", "choices.0.delta.content", "Part B is $202.90."),
+        (SSE_BODY, None, "choices.0.delta.content", "Part B is $202.90."),
+    ],
+    ids=["sse", "ndjson", "lambda-json", "octet-stream", "no-content-type"],
+)
+def test_a_stream_is_read_when_its_content_type_allows_it(fake_app, clean_env, body, content_type, path, reply):
+    clean_env.setenv("APP_RESPONSE_PATH", path)
+    fake_app["replies"] = [(200, body) if content_type is None else (200, body, content_type)]
+    assert _send_to_app() == reply
+
+
+def test_a_stream_sent_under_a_json_content_type_is_not_read_as_sse_and_says_why(fake_app, clean_env):
+    clean_env.setenv("APP_RESPONSE_PATH", "text")
+    fake_app["replies"] = [(200, 'data: {"text": "Hi"}\n\n', "application/json")]
+    with pytest.raises(ValueError, match=r"looks like SSE, but its Content-Type is application/json.*text/event-stream"):
+        _send_to_app()
+
+
+def test_an_error_event_in_a_stream_still_fails_under_its_own_content_type(fake_app, clean_env):
+    clean_env.setenv("APP_RESPONSE_PATH", "text")
+    fake_app["replies"] = [(200, 'data: {"text": "The answer is "}\n\nevent: error\ndata: overloaded\n\n', "text/event-stream")]
+    with pytest.raises(RuntimeError, match="streamed reply ended with an error: overloaded"):
+        _send_to_app()
+
+
 def test_concat_recognizes_an_app_that_resends_the_whole_reply_so_far(fake_app, clean_env):
     clean_env.setenv("APP_RESPONSE_PATH", "text")
     snapshots = (

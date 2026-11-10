@@ -309,10 +309,11 @@ async ({url, body, headers, timeoutMs}) => {
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
     const r = await fetch(url, {method: "POST", headers, body, redirect: "manual", signal: controller.signal});
-    if (r.type === "opaqueredirect") return {status: 0, body: "", problem: "redirect"};
-    return {status: r.status, body: await r.text(), problem: ""};
+    if (r.type === "opaqueredirect") return {status: 0, body: "", contentType: "", problem: "redirect"};
+    const contentType = r.headers.get("content-type") || "";
+    return {status: r.status, body: await r.text(), contentType, problem: ""};
   } catch (e) {
-    return {status: 0, body: String(e), problem: e.name === "AbortError" ? "timeout" : "network"};
+    return {status: 0, body: String(e), contentType: "", problem: e.name === "AbortError" ? "timeout" : "network"};
   } finally {
     clearTimeout(timer);
   }
@@ -442,7 +443,7 @@ class BrowserApiTarget(AppChatTarget):
             {"url": self._endpoint, "body": body, "headers": self._headers, "timeoutMs": self._timeout * 1000},
         )
 
-    async def _post(self, body: str) -> tuple[int, str]:
+    async def _post(self, body: str) -> tuple[int, str, str]:
         async with self._lock:
             if self._page is None:
                 await self._load()
@@ -468,7 +469,7 @@ class BrowserApiTarget(AppChatTarget):
                 f"The browser could not send the request to {self._endpoint}: {result['body']}. An APP_ENDPOINT "
                 "on another site than APP_BROWSER_URL must allow requests from it (CORS)."
             )
-        return result["status"], result["body"]
+        return result["status"], result["body"], result.get("contentType", "")
 
     async def cleanup_target_async(self) -> None:
         if self._context is not None:

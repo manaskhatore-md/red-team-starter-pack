@@ -412,6 +412,15 @@ def test_exposed_response_fields_passes_a_clean_stream_and_its_framing_fields():
     assert "SSE stream of plain text" in res.summary
 
 
+def test_exposed_response_fields_reads_a_plain_text_reply_as_text_even_if_it_looks_like_a_stream():
+    cfg = make_config(response_path="reply")
+    session = SignedInSession(headers={"Cookie": "sid=1"})
+    body = 'data: {"reply": "x", "trace": {"system_prompt": "from the model, not the app"}}\n\n'
+    res = asyncio.run(check_exposed_response_fields(_streamed(body, "text/plain"), cfg, session))
+    assert res.verdict == "PASS"
+    assert res.summary == "Chat response is plain text (no hidden debug fields)."
+
+
 def test_openapi_docs_exposed_reviews_signed_in_docs_and_fails_on_unauth_route():
     cfg = make_config()
     session = SignedInSession(headers={"Cookie": "sid=1"})

@@ -155,7 +155,9 @@ def fake_app(clean_env, memory):
     """A local chat app: records each request, and answers with a status and body you set.
 
     Returns the server's state dict. Set state["replies"] to a list of (status, body)
-    to answer requests in turn; the last one repeats.
+    to answer requests in turn; the last one repeats. A reply may add a third item, its
+    Content-Type header (e.g. text/event-stream); without one the reply has no
+    Content-Type, so the kit reads the body's format from the body itself.
     """
     state = {"replies": [(200, json.dumps({"answer": "hello from the app"}))], "requests": []}
 
@@ -163,10 +165,11 @@ def fake_app(clean_env, memory):
         def do_POST(self):
             body = self.rfile.read(int(self.headers.get("Content-Length", 0))).decode()
             state["requests"].append({"path": self.path, "headers": dict(self.headers), "body": body})
-            status, reply = state["replies"][min(len(state["requests"]), len(state["replies"])) - 1]
+            status, reply, *content_type = state["replies"][min(len(state["requests"]), len(state["replies"])) - 1]
             reply = reply.encode()
             self.send_response(status)
-            self.send_header("Content-Type", "application/json")
+            if content_type:
+                self.send_header("Content-Type", content_type[0])
             self.send_header("Content-Length", str(len(reply)))
             self.end_headers()
             self.wfile.write(reply)

@@ -392,7 +392,12 @@ setting is documented in `BrowserApiTarget`, in `browser_target.py`.
 **Streaming responses and expiring bearer tokens.** If your app streams its reply as
 Server-Sent Events (`text/event-stream`), newline-delimited JSON (`NDJSON`), or AWS Lambda
 response streaming chunks, `AppChatTarget` (and `BrowserApiTarget`) detects the stream
-automatically, reads `APP_RESPONSE_PATH` from each event, and joins the text pieces. An app
+automatically, reads `APP_RESPONSE_PATH` from each event, and joins the text pieces. The
+response's `Content-Type` decides what it may be: SSE only under `text/event-stream`, NDJSON
+or chunks only under that or a JSON type (`application/json`, `application/x-ndjson`), and
+under any other type (`text/plain`) one JSON document or plain text. So a plain-text app's reply is
+never misread as a stream, even if a probe gets the model to write `data:` lines. With no
+`Content-Type`, or `application/octet-stream`, the body decides. An app
 that resends the whole reply so far in each event is recognized, and its last event is the
 reply; `APP_STREAM_MODE=last` always takes the last event's text. Trace and control fields
 (`APP_TRACE_PATH`, `APP_CONTROL_PATH`) are collected across the events. A stream that ends
