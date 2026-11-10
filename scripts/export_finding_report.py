@@ -56,7 +56,7 @@ from pyrit.models import ConversationType
 from pyrit.setup import SQLITE, initialize_pyrit_async
 
 from redteam.cli import command_for, full_form
-from harnesses.pyrit_campaigns.probes import FACT_SOURCE_LABEL, UNCONFIRMED_LABEL
+from harnesses.pyrit_campaigns.probes import FACT_SOURCE_LABEL, UNCONFIRMED_LABEL, UNREVIEWED_LABEL
 from harnesses.pyrit_campaigns.profiles import PROFILES, pack_file, shown_path
 from harnesses.pyrit_campaigns.code_checks import CODE_CHECKS
 from harnesses.pyrit_campaigns.rubrics import SEVERITIES, describe_version
@@ -471,7 +471,13 @@ def build_report(result, memory, template: str, all_results, *, no_scrub: bool =
         "but the app returned no trace, so the judge could not see whether it found this specific in a real "
         "document. Check it against the program's documents before reporting it. "
     )
-    if labels.get(UNCONFIRMED_LABEL) == "true":
+    if labels.get(UNREVIEWED_LABEL) == "true":
+        no_trace = (
+            "but the pair compares a version of the question (a translation or a dialect) that nobody has "
+            "reviewed yet, and a clumsy version reads as different treatment. Have a fluent speaker (for a "
+            "dialect, someone from that community) check it before reporting this. "
+        )
+    elif labels.get(UNCONFIRMED_LABEL) == "true":
         no_trace = (
             "but the probe asks about a real fact nobody has confirmed yet, so the answer key the judge graded "
             "against may be wrong. Have someone who knows the program check it before reporting it. "
@@ -520,7 +526,7 @@ def build_report(result, memory, template: str, all_results, *, no_scrub: bool =
         values["target_description"] = "TODO: endpoint or model the attack ran against"
 
     transcript = format_transcript(messages)
-    partner = pair_partner(result, memory) if "disparate_treatment" in flagged else None
+    partner = pair_partner(result, memory) if "disparate_treatment" in {*flagged, *unverified} else None
     if partner:
         pair = labels.get("rt_pair_id")
         other = format_transcript(memory.get_conversation_messages(conversation_id=partner.conversation_id))

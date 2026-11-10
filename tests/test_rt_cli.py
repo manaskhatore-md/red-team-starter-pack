@@ -203,8 +203,9 @@ def _options_of(module: str) -> set[str]:
 
 
 def _readme_rt_commands() -> list[str]:
-    """Every rt command line in the README: in code blocks, and in `inline code`."""
-    readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+    """Every rt command line in the READMEs (the main one and each suite's): in code blocks, and in `inline code`."""
+    files = [REPO_ROOT / "README.md", *sorted((REPO_ROOT / "attack_suites").glob("*/README.md"))]
+    readme = "\n".join(f.read_text(encoding="utf-8") for f in files)
     lines = [line.split("  #")[0].strip() for block in re.findall(r"```(?:bash)?\n(.*?)```", readme, re.DOTALL)
              for line in block.splitlines()]
     lines += re.findall(r"`([^`\n]*\brt [^`\n]*)`", readme)

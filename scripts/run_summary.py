@@ -57,7 +57,12 @@ from harnesses.pyrit_campaigns.probes import (
 )
 from harnesses.pyrit_campaigns.rubrics import describe_version
 from harnesses.pyrit_campaigns.system_prompt import CANARY_CHECK
-from harnesses.pyrit_campaigns.target_factory import NEEDS_TRACE_LABEL, TRACE_METADATA_KEY, judging_mode
+from harnesses.pyrit_campaigns.target_factory import (
+    NEEDS_TRACE_LABEL,
+    TRACE_METADATA_KEY,
+    judging_mode,
+    unverified_category,
+)
 from scripts.export_finding_report import (
     encoding_label,
     flagged_rubrics,
@@ -77,6 +82,9 @@ PAIR_RUBRIC = "disparate_treatment"
 # A control pair sends the same text twice, so a difference is noise, never a finding.
 DIFFERENT_TREATMENT = "DIFFERENT TREATMENT"
 CONTROL_DIFFERED = "CONTROL DIFFERED (noise)"
+# A difference in a pair that compares a version nobody has reviewed (Probe.unreviewed):
+# no verdict, since a clumsy translation reads as different treatment.
+UNREVIEWED_PAIR = "DIFFERENT TREATMENT, unverified (version not reviewed)"
 PAIR_FLAGS = (DIFFERENT_TREATMENT, CONTROL_DIFFERED)
 
 # The repo's findings/ folder, wherever the command is run from.
@@ -144,13 +152,18 @@ def classify(result, messages, scores, graded_by: list[str]) -> str:
         return result.outcome.value
     if [r for r in flagged_rubrics(scores) if r != PAIR_RUBRIC]:
         return FLAGGED
-    if unverified_flags(scores):
+    if reply_unverified_flags(scores):
         return UNCONFIRMED if (result.labels or {}).get(UNCONFIRMED_LABEL) == "true" else NO_TRACE
     if graded_by:
         return PASSED
     if (result.labels or {}).get("rt_pair_id"):
         return PAIR_ONLY
     return NOT_SCORED
+
+
+def reply_unverified_flags(scores) -> list[str]:
+    """unverified_flags() but the pair rubric's, whose verdict belongs to the pair, not this reply."""
+    return [r for r in unverified_flags(scores) if r != PAIR_RUBRIC]
 
 
 def rubrics_scored(scores) -> list[str]:
@@ -507,9 +520,13 @@ def pair_verdicts(entries, fixed_texts: set[str] = frozenset()) -> list[dict]:
     out = []
     for (pair_id, repeat), members in sorted(pairs.items()):
         score = next(
-            (s for m in members for s in m["scores"] if PAIR_RUBRIC in (s.score_category or [])),
+            (
+                s for m in members for s in m["scores"]
+                if {PAIR_RUBRIC, unverified_category(PAIR_RUBRIC)} & set(s.score_category or [])
+            ),
             None,
         )
+        unverified = score is not None and unverified_category(PAIR_RUBRIC) in (score.score_category or [])
         replies = {last_reply(m["messages"]) for m in members}
         control = all((m["result"].labels or {}).get("rt_control") for m in members)
         if score is not None and len(replies) == 1 and replies <= fixed_texts:
@@ -517,6 +534,8 @@ def pair_verdicts(entries, fixed_texts: set[str] = frozenset()) -> list[dict]:
             verdict = "not tested (both halves got the same fixed message)"
         elif score is None:
             verdict = "not compared (a reply was missing, or the profile does not compare pairs)"
+        elif score.get_value() is True and unverified and not control:
+            verdict = UNREVIEWED_PAIR
         elif score.get_value() is True:
             verdict = CONTROL_DIFFERED if control else DIFFERENT_TREATMENT
         else:
@@ -525,6 +544,8 @@ def pair_verdicts(entries, fixed_texts: set[str] = frozenset()) -> list[dict]:
         first = (score.score_metadata or {}).get("first") if score is not None else None
         out.append({
             "pair_id": pair_id, "repeat": repeat, "members": members, "score": score, "verdict": verdict,
+            # Compared, with a verdict to count: not a difference nobody can stand behind yet.
+            "counted": score is not None and verdict != UNREVIEWED_PAIR,
             "control": control, "first": first, "encoding": encoding_of(members[0]["result"]),
         })
     return out
@@ -543,7 +564,7 @@ def pair_rates_by_encoding(pairs) -> list[dict]:
             "encoding": enc,
             "controls_compared": sum(p["score"] is not None and p["control"] for p in mine),
             "controls_differed": sum(p["verdict"] == CONTROL_DIFFERED for p in mine),
-            "pairs_compared": sum(p["score"] is not None and not p["control"] for p in mine),
+            "pairs_compared": sum(p["counted"] and not p["control"] for p in mine),
             "pairs_flagged": sum(p["verdict"] == DIFFERENT_TREATMENT for p in mine),
         })
     return out
@@ -610,7 +631,7 @@ def build_summary(results, memory, run_id: str) -> str:
 
     def pair_shown(p) -> bool:
         # With repeats, one entry per pair per repeat buries the flags; the failure rates count the rest.
-        return repeats == 1 or p["verdict"] in PAIR_FLAGS
+        return repeats == 1 or p["verdict"] in (*PAIR_FLAGS, UNREVIEWED_PAIR)
 
     def pair_anchor(p) -> str:
         return re.sub(r"[^a-zA-Z0-9_-]+", "-", f"pair-{p['pair_id']}-{p['repeat']}").strip("-")
@@ -619,7 +640,8 @@ def build_summary(results, memory, run_id: str) -> str:
     flagged = counts[FLAGGED] + counts[ACHIEVED]
     # Control pairs are counted apart: a control that differs is noise, not a finding.
     pairs_flagged = sum(p["verdict"] == DIFFERENT_TREATMENT for p in pairs)
-    pairs_compared = sum(p["score"] is not None and not p["control"] for p in pairs)
+    pairs_compared = sum(p["counted"] and not p["control"] for p in pairs)
+    pairs_unreviewed = sum(p["verdict"] == UNREVIEWED_PAIR for p in pairs)
     controls_differed = sum(p["verdict"] == CONTROL_DIFFERED for p in pairs)
     controls_compared = sum(p["score"] is not None and p["control"] for p in pairs)
     started = min((r.timestamp for r in results if r.timestamp), default=None)
@@ -903,6 +925,14 @@ def build_summary(results, memory, run_id: str) -> str:
             "counted as flags. Have someone who knows the program check each entry's facts, set its "
             "`confirmed_by` and `confirmed_on`, and re-run."
         )
+    if pairs_unreviewed:
+        lines.append(
+            f"- **{pairs_unreviewed} pair comparison(s) found different treatment but are unverified.** The pair "
+            "compares a version of the question (a translation or a dialect) that nobody has reviewed yet, and a "
+            "clumsy version reads as different treatment. They are not counted as flags or as compared. Have a "
+            "fluent speaker (for a dialect, someone from that community) check the version, add it to the "
+            "entry's `reviewed_by` and `reviewed_on`, and re-run."
+        )
     stale = dict.fromkeys(
         (e["result"].labels or {}).get("rt_fixture", "")
         for e in entries
@@ -940,7 +970,7 @@ def build_summary(results, memory, run_id: str) -> str:
     # A pass on a fixed message is not a grading of the model, so it is not counted as one.
     graded = Counter(r for e in entries if e["verdict"] != FIXED_REPLY for r in e["graded_by"])
     # A rubric whose every flag was unverified still ran: its row says it graded none.
-    rubrics_run = {r for e in entries for r in (*e["graded_by"], *unverified_flags(e["scores"]))}
+    rubrics_run = {r for e in entries for r in (*e["graded_by"], *reply_unverified_flags(e["scores"]))}
     if rubrics_run or pairs_compared or canary_checked or records_checked or any(other_checked.values()):
         lines += ["## By rubric", "", "| Rubric | Flagged | Graded | What it checks |", "|---|---|---|---|"]
         for rubric in sorted(rubrics_run):
@@ -1030,7 +1060,7 @@ def build_summary(results, memory, run_id: str) -> str:
         if pairs:
             by_pair = defaultdict(lambda: [0, 0])
             for p in pairs:
-                if p["score"] is not None:
+                if p["counted"]:
                     by_pair[p["pair_id"]][1] += 1
                     by_pair[p["pair_id"]][0] += p["verdict"] in PAIR_FLAGS
             lines += ["", "| Pair | Different treatment | Compared |", "|---|---|---|"]

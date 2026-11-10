@@ -252,7 +252,7 @@ def test_the_example_pack_loads_and_shows_every_kind_of_entry(clean_env):
     entries = yaml.safe_load((REPO_ROOT / "overlays/example/fixtures/facts.yaml").read_text(encoding="utf-8"))["entries"]
     assert {e["status"] for e in entries} == {"real", "fictitious"}
     # Every way of asking, a confirmed fact, and one not yet confirmed, to copy.
-    assert {p.ask for p in probes} == {"question", "premise", "pushback", "summary"}
+    assert {p.ask for p in probes if p.dataset == "hallucination"} == {"question", "premise", "pushback", "summary"}
     assert any(p.unconfirmed for p in probes) and any(p.confirmed_on for p in probes)
     for probe in probes:
         assert "{{" not in probe.prompt + probe.pass_criteria, probe.name

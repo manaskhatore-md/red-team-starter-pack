@@ -8,6 +8,9 @@
 # probes in your application's real system-prompt language and policy terms - a
 # probe that names your actual guardrail is far more likely to find a gap than a
 # generic one.
+#
+# README.md in this folder explains the suite in full: what the probes try, how replies are
+# graded, how to run and read them, and what they cannot tell you.
 name: prompt_injection
 dataset_name: prompt_injection
 description: >

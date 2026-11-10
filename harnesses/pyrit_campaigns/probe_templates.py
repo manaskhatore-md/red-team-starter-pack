@@ -43,6 +43,16 @@ whose `pair_id` uses the entry, e.g. `pair_id: "casefile_{{ case.id }}"`, and wh
 `variant` differs. Each entry then gives one pair, and the entry's fields are what
 changes between the halves.
 
+VERSION. A pair's two templates may both name, as `version: spanish`, the entry field
+the pair compares with the standard wording. An entry that leaves that field out skips
+the pair, both halves together, so an agency writes only the languages it serves. Such
+a fixture's entries are checked (check_versions): a field no template reads stops the
+run, naming the nearest field it may have meant, so a misspelled `spansh` is not skipped
+in silence. An entry says who checked each version in `reviewed_by` and `reviewed_on`
+(each maps a version to a name, or to a YYYY-MM-DD date). A pair whose version nobody
+has reviewed is sent, but a difference in it is reported as unverified: a clumsy
+translation reads as different treatment.
+
 Two kinds of blank, filled at two different times:
   - {{ ref.citation }}: from the fixture entry, when the dataset is loaded.
   - {{ program_name }}: from the profile and .env, as in every other probe. A fixture
@@ -60,6 +70,7 @@ caller passes it to expand() as `source`.
 """
 
 import datetime
+import difflib
 import logging
 import re
 from dataclasses import dataclass, field
@@ -79,6 +90,8 @@ FACT_STATUSES = ("real", "fictitious")
 DEFAULT_ASK = ("question",)
 # A fixture file that replaces the attack_suites/ one of its name, rather than adding to it.
 FIXTURE_MODES = ("add", "replace")
+# Who checked each version of an entry (VERSION above), and when.
+REVIEW_FIELDS = ("reviewed_by", "reviewed_on")
 
 
 @dataclass(frozen=True)
@@ -96,6 +109,8 @@ class Expanded:
     # The template's `ask` (see ASK above), and the fixture entry as written.
     ask: str = ""
     entry: dict = field(default_factory=dict)
+    # The template's `version` (see VERSION above): the entry field its pair compares.
+    version: str = ""
 
 
 @dataclass(frozen=True)
@@ -254,6 +269,108 @@ def check_facts(fixture: FixtureFile, asks: set[str]) -> None:
             raise SystemExit(f"{where}: `confirmed_on` must be a date written YYYY-MM-DD, not {entry['confirmed_on']!r}")
 
 
+def template_version(seed) -> str:
+    """A template seed's `version` (see VERSION above), or "" for one sent for every entry."""
+    version = (seed.metadata or {}).get("version")
+    if version in (None, ""):
+        return ""
+    if not isinstance(version, str) or not IDENTIFIER.fullmatch(version):
+        raise SystemExit(
+            f"Template {seed.name!r}: `version` must be the one entry field the pair compares, such as spanish, "
+            f"not {version!r}"
+        )
+    if not (seed.metadata or {}).get("expand_with"):
+        raise SystemExit(f"Probe {seed.name!r} has `version` but no `expand_with`: only a template has versions")
+    return version
+
+
+def has_version(entry: dict, version: str) -> bool:
+    """Whether a fixture entry gives this version. Left out or left blank, its pair is skipped."""
+    return bool(str(entry.get(version) or "").strip())
+
+
+def unreviewed(entry: dict, version: str) -> bool:
+    """Whether the entry's `version` has no review sign-off (see VERSION above)."""
+    return bool(version) and not str((entry.get("reviewed_by") or {}).get(version) or "").strip()
+
+
+def fields_used(seed, variable: str) -> set[str]:
+    """The entry fields a template seed fills in, in its text and its metadata."""
+    return {
+        match
+        for text in [seed.value, *_strings(seed.metadata or {})]
+        for match in re.findall(rf"\b{variable}\.(\w+)", text)
+    }
+
+
+def check_versions(fixture: FixtureFile, templates) -> None:
+    """Stop the run on an entry that would not be sent as its writer meant, naming the entry.
+
+    `templates`: the template seeds that read this fixture. Catches a field none of them
+    reads (most often a misspelled version, which would otherwise skip its pair in silence),
+    a field they all need that is missing, and, when the templates have versions (VERSION
+    above), an entry with no version to compare and a review sign-off that is half set or
+    names a version the entry does not give.
+    """
+    shown = _shown(fixture.path)
+    versions = {template_version(seed) for seed in templates} - {""}
+    used = set().union(*(fields_used(seed, fixture.variable) for seed in templates))
+    known = used | {"id"} | (set(REVIEW_FIELDS) if versions else set())
+    for entry in fixture.entries:
+        where = f"{shown}, entry {entry['id']!r}"
+        for name in sorted(map(str, set(entry) - known)):
+            close = difflib.get_close_matches(name, sorted(known - {"id"}), n=1)
+            if close:
+                hint = f" Did you mean `{close[0]}`?"
+            elif versions:
+                # Most likely a version the templates have no pair for, such as a language.
+                hint = (
+                    " To compare a version these templates have no pair for, write a pair of templates for it "
+                    "(see \"Adding a language\" in attack_suites/03_algorithmic_bias/README.md)."
+                )
+            else:
+                hint = ""
+            raise SystemExit(
+                f"{where}: no template reads `{name}`.{hint} An entry's fields are: {', '.join(sorted(known))}."
+            )
+        missing = [name for name in sorted(used - versions - {"id"}) if not str(entry.get(name) or "").strip()]
+        if missing:
+            raise SystemExit(f"{where}: needs {', '.join(f'`{m}`' for m in missing)}")
+        if not versions:
+            continue
+        given = sorted(v for v in versions if has_version(entry, v))
+        if not given:
+            raise SystemExit(
+                f"{where}: gives no version to compare with the standard wording. Add at least one of: "
+                f"{', '.join(sorted(versions))}."
+            )
+        signed = {}
+        for name, example in zip(REVIEW_FIELDS, ("Ana Example", "2026-11-03")):
+            value = entry.get(name)
+            if value is None:
+                value = {}
+            if not isinstance(value, dict):
+                raise SystemExit(
+                    f"{where}: `{name}` lists each version you had checked under its name, e.g.\n"
+                    f"    {name}:\n      {given[0]}: {example}"
+                )
+            for version in value:
+                if not has_version(entry, version):
+                    raise SystemExit(
+                        f"{where}: `{name}` names {version!r}, which the entry does not give. Its versions are: "
+                        f"{', '.join(given)}."
+                    )
+            signed[name] = value
+        by, on = signed["reviewed_by"], signed["reviewed_on"]
+        for version in sorted(set(by) | set(on)):
+            if not str(by.get(version) or "").strip() or on.get(version) is None:
+                raise SystemExit(f"{where}: set `reviewed_by` and `reviewed_on` together for {version}, or neither")
+            if confirmed_date(on[version]) is None:
+                raise SystemExit(
+                    f"{where}: `reviewed_on` for {version} must be a date written YYYY-MM-DD, not {on[version]!r}"
+                )
+
+
 def _strings(value):
     """Every string inside a metadata value."""
     if isinstance(value, str):
@@ -298,7 +415,9 @@ def expand(seed, dataset_file: Path, source: FixtureFile | None = None) -> list[
     metadata = dict(seed.metadata or {})
     name = seed.name or ""
     ask = template_ask(seed)
+    version = template_version(seed)
     metadata.pop("ask", None)
+    metadata.pop("version", None)
     fixtures = metadata.pop("expand_with", None)
     if not fixtures:
         return [Expanded(name=name, value=seed.value, metadata=metadata)]
@@ -308,6 +427,8 @@ def expand(seed, dataset_file: Path, source: FixtureFile | None = None) -> list[
     path, variable, entries = source.path, source.variable, source.entries
     if ask:
         entries = [entry for entry in entries if ask in entry_asks(entry)]
+    if version:
+        entries = [entry for entry in entries if has_version(entry, version)]
 
     # A fixed pair_id would be shared by every probe made from the template, and a pair
     # is two probes: the bias judge would compare whichever two it found. A pair_id that
@@ -361,6 +482,7 @@ def expand(seed, dataset_file: Path, source: FixtureFile | None = None) -> list[
                 fixture=f"{_shown(path)}#{entry['id']}",
                 ask=ask,
                 entry=entry,
+                version=version,
             )
         )
     return expanded

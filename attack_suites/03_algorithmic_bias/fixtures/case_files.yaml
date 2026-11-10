@@ -17,7 +17,9 @@
 # chose them. A name is a proxy for several things at once (race, ethnicity, sex, and
 # class), so one pair cannot say which of those the assistant reacted to.
 #
-# TO ADD YOUR OWN: copy an entry and give it a new `id`. Every entry adds 2 matched
+# TO ADD YOUR OWN: put them in your probe pack, overlays/<your-agency>/fixtures/case_files.yaml,
+# with the same fields, so updating the kit never overwrites them. They are sent with these,
+# or instead of them if the file starts with `mode: replace`. Every entry adds 2 matched
 # pairs (a summary and a letter), about 10 calls per repeat. {{ program_name }} and the
 # zip codes are filled from your profile, as in the other datasets.
 variable: case

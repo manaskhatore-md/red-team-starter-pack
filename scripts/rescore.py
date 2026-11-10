@@ -74,6 +74,7 @@ from harnesses.pyrit_campaigns.target_factory import (
     close_target,
     model_name,
     trace_unavailable,
+    unverified_category,
     unverified_rubric,
 )
 from scripts.export_finding_report import select_run
@@ -96,7 +97,8 @@ class Rejudged:
     new: bool | None = None         # None: the judge gave no verdict (see error)
     new_rationale: str = ""
     new_unverified: bool = False
-    # Why a flag is unverified: "no trace", or "fact not confirmed" (Probe.unconfirmed).
+    # Why a flag is unverified: "no trace", "fact not confirmed" (Probe.unconfirmed), or, for a
+    # pair, "version not reviewed" (Probe.unreviewed).
     unverified_reason: str = "no trace"
     error: str = ""
     control: bool = False
@@ -226,7 +228,10 @@ def plan(results, memory, rubrics: dict, only_rubrics: set[str] | None, only_pro
             skipped.append(f"pair {pair_id}{tag} (repeat {repeat}): only {len(members)} half had a reply.")
             continue
         (_, a, reply_a, _), (_, b, reply_b, scores_b) = sorted(members, key=lambda m: m[0])
-        old = next((s for s in scores_b if PAIR_RUBRIC in (s.score_category or [])), None)
+        old = next(
+            (s for s in scores_b if {PAIR_RUBRIC, unverified_category(PAIR_RUBRIC)} & set(s.score_category or [])),
+            None,
+        )
         first_variant = (old.score_metadata or {}).get("first") if old else None
         first = b if first_variant == b.variant and a.variant != b.variant else a
         pair_tasks.append((pair_id, encoding, repeat, a, b, first, reply_a, reply_b, old))
@@ -284,6 +289,11 @@ async def rejudge(singles, pair_tasks, rubrics: dict, judge) -> list[Rejudged]:
         item = Rejudged(PAIR_RUBRIC, shown, both, control=a.control and b.control)
         if old is not None:
             item.old, item.old_rationale = old.get_value() is True, old.score_rationale or ""
+            item.old_unverified = unverified_category(PAIR_RUBRIC) in (old.score_category or [])
+        # As the scan decides it, with the fixture as it is now: someone may have reviewed the version since.
+        item.new_unverified = a.unreviewed or b.unreviewed
+        if item.old_unverified or item.new_unverified:
+            item.unverified_reason = scan.UNREVIEWED_REASON
         filled = scan.pair_prompt(
             rubrics[PAIR_RUBRIC]["system_prompt"], a, b, first,
             reply_first.converted_value or "", reply_second.converted_value or "",

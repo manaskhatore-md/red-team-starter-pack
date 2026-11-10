@@ -13,6 +13,7 @@ from harnesses.pyrit_campaigns import profiles
 from harnesses.pyrit_campaigns.probe_templates import (
     FixtureFile,
     check_facts,
+    check_versions,
     confirmed_date,
     expand,
     fill,
@@ -20,6 +21,8 @@ from harnesses.pyrit_campaigns.probe_templates import (
     load_dataset,
     read_fixture,
     template_ask,
+    template_version,
+    unreviewed,
 )
 from harnesses.pyrit_campaigns.profiles import Pack, Profile, placeholders, shown_path
 
@@ -85,6 +88,12 @@ class Probe:
     # A real fact nobody has confirmed yet: the judge's flag on it is reported as unverified,
     # not as a finding, until someone sets the entry's confirmed_by and confirmed_on.
     unconfirmed: bool = False
+    # Set only for half of a pair whose templates have a `version` (see VERSION in
+    # probe_templates.py): the entry field the pair compares with the standard wording, e.g.
+    # spanish. Unreviewed: nobody has signed off that version in the entry's reviewed_by, so
+    # a difference the judge finds in the pair is reported as unverified, not as a finding.
+    version: str = ""
+    unreviewed: bool = False
 
     def judge_slots(self) -> dict[str, str]:
         """Every [[SLOT]] this probe fills in its rubrics, pass criteria included."""
@@ -98,6 +107,8 @@ class Probe:
 UNCONFIRMED_LABEL = "rt_unconfirmed"
 STALE_LABEL = "rt_stale_fact"
 FACT_SOURCE_LABEL = "rt_fact_source"
+# Result label for half of a pair whose version nobody has reviewed (see Probe.unreviewed).
+UNREVIEWED_LABEL = "rt_unreviewed"
 # How old a fact's confirmed_on may be before the run lists it to re-check.
 FACT_MAX_AGE_SETTING = "RT_FACT_MAX_AGE_DAYS"
 DEFAULT_FACT_MAX_AGE_DAYS = 365
@@ -139,6 +150,24 @@ def stale_facts_note(probes, today: datetime.date | None = None) -> str:
     return "\n".join(lines)
 
 
+def unreviewed_note(probes) -> str:
+    """A paragraph listing each fixture entry with a version nobody has reviewed, or ""."""
+    entries: dict[str, set[str]] = {}
+    for probe in probes:
+        if probe.unreviewed:
+            entries.setdefault(probe.fixture, set()).add(probe.version)
+    if not entries:
+        return ""
+    pairs = len({p.pair_id for p in probes if p.unreviewed})
+    lines = [
+        f"{pairs} matched pair(s) compare a version nobody has reviewed yet, so a difference the judge finds in "
+        "one is reported as unverified, not as a finding. Have a fluent speaker (for a dialect, someone from "
+        "that community) check each, then add it to the entry's reviewed_by and reviewed_on:"
+    ]
+    lines += [f"  - {fixture}: {', '.join(sorted(versions))}" for fixture, versions in entries.items()]
+    return "\n".join(lines)
+
+
 def judge_context(raw, where: str, placeholders: dict[str, str]) -> tuple[tuple[str, str], ...]:
     """A seed's judge_context metadata as (SLOT, text) pairs, or SystemExit saying what is wrong."""
     if not raw:
@@ -173,12 +202,14 @@ def graded_by(probe: Probe, key: str, rubric: dict) -> bool:
     return probe.dataset in (rubric.get("grades") or []) or key in probe.rubrics
 
 
-# FIXTURE FEEDS. An attack_suites/ fact template (one with `ask`, see probe_templates.py) is
-# sent once per entry of the fact fixture beside it, and once per entry of each RT_EXTRA_SUITES
-# pack's file of the same name (see profiles._pack_feeds): overlays/my-agency/fixtures/facts.yaml
-# feeds the hallucination templates that read fixtures/facts.yaml. So an agency adds its own facts without copying
-# a template. A pack's file adds to attack_suites/'s, or, with `mode: replace` at its top,
-# is used instead of it. The probes its entries make are the pack's: listed after every
+# FIXTURE FEEDS. An attack_suites/ template is sent once per entry of the fixture beside it
+# and, for a fed fixture (profiles.fed_fixtures: the hallucination facts and the bias
+# scenarios and case files), once per entry of each RT_EXTRA_SUITES pack's file of the same
+# name (see profiles._pack_feeds): overlays/my-agency/fixtures/facts.yaml feeds the
+# hallucination templates that read fixtures/facts.yaml, and fixtures/scenarios.yaml the bias
+# templates that read scenarios.yaml. So an agency adds its own entries without copying a
+# template. A pack's file adds to attack_suites/'s, or, with `mode: replace` at its top, is
+# used instead of it. The probes its entries make are the pack's: listed after every
 # attack_suites/ probe, so they renumber none, and picked by --probes <pack>.
 
 
@@ -194,11 +225,11 @@ class Feed:
 
 
 def fixture_feeds(dataset: str, seeds, shipped_file: Path, extras) -> dict[str, Feed]:
-    """Fixture name -> Feed, for each fact fixture (one an `ask` template reads) of `dataset`.
+    """Fixture name -> Feed, for each fed fixture of `dataset` (see profiles.fed_fixtures).
 
-    Checks each (see probe_templates.check_facts), and stops the run on two entries of one
-    id across the files a template is filled from: results and --probes find a probe by its
-    name, which is the template and the entry id.
+    Checks each (probe_templates.check_facts for a fact fixture, check_versions for the
+    rest), and stops the run on two entries of one id across the files a template is filled
+    from: results and --probes find a probe by its name, which is the template and the entry id.
     """
     templates: dict[str, list] = {}
     for seed in seeds:
@@ -206,12 +237,13 @@ def fixture_feeds(dataset: str, seeds, shipped_file: Path, extras) -> dict[str, 
         if name:
             templates.setdefault(str(name), []).append(seed)
     feeds = {}
+    fed = profiles.fed_fixtures(dataset)
     for name, users in templates.items():
-        asks = {template_ask(seed) for seed in users} - {""}
-        if not asks:
+        if name not in fed:
             continue
+        asks = {template_ask(seed) for seed in users} - {""}
         shipped = read_fixture(fixture_path(shipped_file, name))
-        check_facts(shipped, asks)
+        _check_fed(shipped, asks, users)
         packs, replacing = {}, []
         for pack in extras:
             path = (pack.feeds or {}).get(dataset, {}).get(name)
@@ -234,7 +266,7 @@ def fixture_feeds(dataset: str, seeds, shipped_file: Path, extras) -> dict[str, 
             if not own.entries:
                 print(f"Note: {shown_path(path)} has no entries yet, so it adds no probes.")
                 continue
-            check_facts(own, asks)
+            _check_fed(own, asks, users)
             packs[pack.name] = own
         if len(replacing) > 1:
             raise SystemExit(
@@ -255,6 +287,14 @@ def fixture_feeds(dataset: str, seeds, shipped_file: Path, extras) -> dict[str, 
     return feeds
 
 
+def _check_fed(fixture: FixtureFile, asks: set[str], templates) -> None:
+    """check_facts() on a fact fixture (one `ask` templates read), check_versions() on any other."""
+    if asks:
+        check_facts(fixture, asks)
+    else:
+        check_versions(fixture, templates)
+
+
 def _fixtures_read(path: Path) -> set[str]:
     """The fixtures the templates in a probe file name in `expand_with`."""
     data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
@@ -266,19 +306,24 @@ def _fixtures_read(path: Path) -> set[str]:
     }
 
 
-def _check_own_facts(seeds, path: Path) -> None:
-    """check_facts() on each fact fixture a pack's own `ask` templates read, against their own `ask` names.
+def _check_own_fixtures(seeds, path: Path) -> None:
+    """Check each fixture a pack's own `ask` or `version` templates read, against those templates.
 
-    The shared templates' fixtures are checked in fixture_feeds(); a pack's own templates
-    read the file beside the pack's file, which fixture_feeds() leaves to them.
+    check_facts() for a fact fixture, check_versions() for one with versions. The shared
+    templates' fixtures are checked in fixture_feeds(); a pack's own templates read the file
+    beside the pack's file, which fixture_feeds() leaves to them.
     """
-    asks: dict[str, set[str]] = {}
+    readers: dict[str, list] = {}
     for seed in seeds:
-        ask = template_ask(seed)
-        if ask:
-            asks.setdefault(str(seed.metadata["expand_with"]), set()).add(ask)
-    for name, names in asks.items():
-        check_facts(read_fixture(fixture_path(path, name)), names)
+        name = (seed.metadata or {}).get("expand_with")
+        if name:
+            readers.setdefault(str(name), []).append(seed)
+    for name, users in readers.items():
+        asks = {template_ask(seed) for seed in users} - {""}
+        if asks:
+            check_facts(read_fixture(fixture_path(path, name)), asks)
+        elif any(template_version(seed) for seed in users):
+            check_versions(read_fixture(fixture_path(path, name)), users)
 
 
 def _probe(seed, expanded, dataset: str, pack: Pack, values: dict[str, str], template_file: Path) -> Probe:
@@ -313,6 +358,8 @@ def _probe(seed, expanded, dataset: str, pack: Pack, values: dict[str, str], tem
         fact_source=" ".join(str(entry.get("source") or "").split()),
         confirmed_on=confirmed.isoformat() if confirmed else "",
         unconfirmed=entry.get("status") == "real" and not str(entry.get("confirmed_by") or "").strip(),
+        version=expanded.version,
+        unreviewed=unreviewed(expanded.entry, expanded.version),
     )
 
 
@@ -331,7 +378,7 @@ def load_pack(
     if path is not None:
         seeds = shared[1] if (shared and not pack.name) else load_dataset(path).seeds
         if pack.name:
-            _check_own_facts(seeds, path)
+            _check_own_fixtures(seeds, path)
         for seed in seeds:
             fixture = str((seed.metadata or {}).get("expand_with") or "")
             if not pack.name and fixture in feeds and not feeds[fixture].include_shipped:

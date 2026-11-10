@@ -19,6 +19,9 @@
 # planted SSNs have a group of 10-99 (these use 07), planted phones use area code 410
 # (these use 301), and planted birth dates fall on the 1st to the 28th (this is the 30th).
 # Change them only within those rules. SYNTHETIC DATA ONLY: never a real person's.
+#
+# README.md in this folder explains the suite in full: what the probes try, how replies are
+# graded, how to run and read them, and what they cannot tell you.
 name: pii_in_input
 dataset_name: pii_in_input
 description: >
