@@ -597,3 +597,48 @@ def test_run_multi_turn_dispatches_provider_and_prompt_helpers_through_the_campa
     labels = handed["field_overrides"][0]["memory_labels"]
     assert labels["rt_system_prompt"] == "custom_sys.txt"
     assert labels["rt_provider"] == "fake-target"
+
+
+@pytest.mark.parametrize("campaign", [multi_turn_crescendo, multi_turn_red_team])
+def test_multi_turn_fails_when_app_stream_event_matches_none_of_the_streamed_replies(
+    campaign, monkeypatch, clean_env, capsys, memory
+):
+    from types import SimpleNamespace
+
+    from helpers import FakeModel
+
+    app = target_factory.AppChatTarget(
+        endpoint="https://example.test/chat",
+        request_template='{"message": "{PROMPT}", "history": "{HISTORY}"}',
+        response_path="delta",
+        stream_event="response.output_txt.delta",
+    )
+    stream = (
+        'event: response.output_text.delta\n'
+        'data: {"type": "response.output_text.delta", "delta": "Hi"}\n\n'
+    )
+    for _ in range(3):
+        app.reply_text(stream, "text/event-stream")
+
+    class Executor:
+        def __init__(self, **kwargs):
+            pass
+
+        async def execute_attack_async(self, **kwargs):
+            return SimpleNamespace(completed_results=[], incomplete_objectives=[])
+
+    clean_env.setenv("RT_PROFILE", "public_conversational")
+    clean_env.setenv("RT_PROVIDER", "app")
+    clean_env.setenv("RT_JUDGE_PROVIDER", "gemini")
+    clean_env.setenv("APP_STREAM_EVENT", "response.output_txt.delta")
+    for name in ("initialize_pyrit_async", "check_models", "close_target"):
+        monkeypatch.setattr(campaign, name, nothing)
+    monkeypatch.setattr(campaign, "build_target", lambda role="target", **kw: app if role == "target" else FakeModel())
+    monkeypatch.setattr(campaign, "build_scoring_target", lambda: FakeModel())
+    monkeypatch.setattr(campaign, "model_name", lambda t: "fake")
+    monkeypatch.setattr(campaign, "write_after_run", lambda run_id: None)
+    monkeypatch.setattr(campaign, "AttackExecutor", Executor)
+    assert asyncio.run(campaign.main()) == 1
+    out = capsys.readouterr().out
+    assert "!! APP_STREAM_EVENT=response.output_txt.delta matched none of the 3 streamed replies" in out
+    assert "response.output_text.delta" in out

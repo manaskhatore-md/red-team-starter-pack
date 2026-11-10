@@ -29,7 +29,12 @@ truststore.inject_into_ssl()
 from pyrit.executor.attack import AttackExecutor, PromptSendingAttack
 from pyrit.setup import IN_MEMORY, initialize_pyrit_async
 
-from harnesses.pyrit_campaigns.target_factory import build_target, check_models, close_target
+from harnesses.pyrit_campaigns.target_factory import (
+    build_target,
+    check_models,
+    close_target,
+    unmatched_stream_summary,
+)
 
 # TODO: swap these for two questions your own system should answer well, so a pass
 # confirms the right endpoint is wired up and not just that some model replied.
@@ -82,12 +87,19 @@ async def main():
 
         print(text if text.strip() else "(empty)")
 
+    unmatched = unmatched_stream_summary(target)
     await close_target(target)
 
     if failures:
         print(f"\nSMOKE TEST FAILED ({len(failures)} of {len(BENIGN_PROMPTS)} prompts):")
         for failure in failures:
             print(f"  - {failure}")
+        if unmatched is not None and any("empty response" in f for f in failures):
+            configured, _count, kinds = unmatched
+            print(
+                f"  Hint: no stream event matched APP_STREAM_EVENT={configured} "
+                f"(saw: {', '.join(kinds) or 'none'}). Check APP_STREAM_EVENT for a typo."
+            )
         return 1
 
     print(f"\nSMOKE TEST PASSED - {len(BENIGN_PROMPTS)}/{len(BENIGN_PROMPTS)} prompts answered.")

@@ -408,9 +408,12 @@ Some streams send more than the answer in the same field: OpenAI's Responses API
 tool call's arguments in `delta` just like the answer's text, and the Vercel AI SDK streams
 the model's reasoning that way. So when the reply's text comes from more than one kind of
 event, the request fails and the error names the kinds it found. Set `APP_STREAM_EVENT` to
-the kind(s) that carry the answer, comma-separated. It is matched against each event's SSE
-`event:` name or its JSON `type`; an event with neither is a `message`. Only the reply is
-narrowed: trace and control fields are still read from every event.
+the kind(s) that carry the answer, comma-separated. Testing a streaming agent that calls
+tools? Set `APP_STREAM_EVENT` up front to the answer's event kind(s), because a reply that
+is only a tool call has one event kind and would otherwise have its tool arguments graded
+as the answer. It is matched against each event's SSE `event:` name or its JSON `type`; an
+event with neither is a `message`. Only the reply is narrowed: trace and control fields are
+still read from every event.
 
 If the app takes a short-lived bearer token over HTTP, set `APP_TOKEN_COMMAND` to a command
 that prints a fresh token and nothing else. The kit runs it before the first request and
@@ -424,7 +427,7 @@ for `APP_TRANSPORT=http`; with `browser-api` the signed-in page handles the sign
 ```bash
 APP_RESPONSE_PATH=choices.0.delta.content
 APP_STREAM_MODE=concat                           # default; last takes the final event's text
-APP_STREAM_EVENT=response.output_text.delta      # only if the error asks: the events with the answer
+APP_STREAM_EVENT=response.output_text.delta      # set for tool-calling streams, or if the error asks: the events with the answer
 APP_TOKEN_COMMAND=python C:/tokens/get_app_token.py   # your own script; prints only the token
 ```
 

@@ -60,6 +60,7 @@ from harnesses.pyrit_campaigns.system_prompt import CANARY_CHECK
 from harnesses.pyrit_campaigns.target_factory import (
     NEEDS_TRACE_LABEL,
     TRACE_METADATA_KEY,
+    UNMATCHED_STREAM_METADATA_KEY,
     judging_mode,
     unverified_category,
 )
@@ -647,6 +648,41 @@ def build_summary(results, memory, run_id: str) -> str:
     started = min((r.timestamp for r in results if r.timestamp), default=None)
 
     lines = [f"# Run summary: {campaign}, run {run_id[:8]}", ""]
+    assistant_pieces = [
+        piece
+        for e in entries
+        for message in e["messages"]
+        for piece in message.message_pieces
+        if piece.role == "assistant" and getattr(piece, "response_error", "none") == "none"
+    ]
+    unmatched_pieces = [
+        piece for piece in assistant_pieces if (piece.prompt_metadata or {}).get(UNMATCHED_STREAM_METADATA_KEY)
+    ]
+    if assistant_pieces and len(unmatched_pieces) == len(assistant_pieces):
+        seen_kinds = list(dict.fromkeys(
+            kind.strip()
+            for piece in unmatched_pieces
+            for kind in str((piece.prompt_metadata or {})[UNMATCHED_STREAM_METADATA_KEY]).split(",")
+            if kind.strip()
+        ))
+        stream_event = labels.get("rt_stream_event", "")
+        setting = f"`APP_STREAM_EVENT={stream_event}`" if stream_event else "`APP_STREAM_EVENT`"
+        shown_kinds = f"`{', '.join(seen_kinds)}`" if seen_kinds else "none"
+        if len(assistant_pieces) >= 2:
+            lines += [
+                f"**Stream events missing:** {setting} matched none of the {len(assistant_pieces)} replies in "
+                f"this run (event kinds seen: {shown_kinds}), so every reply was read as empty text. "
+                "An empty reply gives the judge nothing to flag, so passes in this report do not mean the app "
+                "held — check `APP_STREAM_EVENT` for a typo and re-run.",
+                "",
+            ]
+        else:
+            lines += [
+                f"**No matching stream events:** {setting} did not match the reply's stream events "
+                f"(saw: {shown_kinds}), so its reply text was read as empty. That is normal for a "
+                "single tool-call or refusal turn; if you did not expect an empty reply, check `APP_STREAM_EVENT`.",
+                "",
+            ]
     # First, as the scan printed it first: how the probes that ask for a specific were judged.
     specifics = [e for e in entries if (e["result"].labels or {}).get(NEEDS_TRACE_LABEL) == "true"]
     needs_trace = len({probe_name(e["result"]) for e in specifics})

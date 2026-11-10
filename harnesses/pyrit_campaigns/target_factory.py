@@ -462,6 +462,13 @@ TRACE_METADATA_KEY = "rt_trace"
 # so guardrail and reach checks can read control fields (e.g. blocked, guardrail.action)
 # from single-JSON or streamed responses.
 CONTROL_METADATA_KEY = "rt_control"
+# Stored on the assistant MessagePiece's prompt_metadata when APP_STREAM_EVENT is set and
+# a streamed reply had events, none of which matched APP_STREAM_EVENT (the seen kinds,
+# comma-separated), so the run summary can warn when every reply in a run missed it.
+UNMATCHED_STREAM_METADATA_KEY = "rt_unmatched_stream"
+# Minimum streamed replies in a run (with zero matches) to treat APP_STREAM_EVENT as a
+# setup error at the end of a campaign when calibration did not run.
+UNMATCHED_STREAM_STOP_COUNT = 3
 STREAM_MODES = ("concat", "last")
 # Set on a probe's results when its judge needs the app's sources to tell a real
 # specific from an invented one (needs_trace in the dataset). See trace_unavailable().
@@ -533,6 +540,36 @@ def judging_mode(provider: str, trace_path: str, no_retrieval: bool, needs_trace
     if provider == "app":
         return f"No documents (APP_RETRIEVAL=no): the app's only sources are its system prompt and the probe, {counts}"
     return f"Bare model: its only sources are the system prompt and the probe, {counts}"
+
+
+def unmatched_stream_summary(target) -> tuple[str, int, list[str]] | None:
+    """When APP_STREAM_EVENT was set on `target`, streamed replies arrived, and none matched it:
+    return (configured_setting, unmatched_reply_count, seen_event_kinds); otherwise None."""
+    stream_events = getattr(target, "_stream_events", None)
+    unmatched = getattr(target, "_unmatched_stream_replies", 0)
+    matched = getattr(target, "_matched_stream_replies", 0)
+    if not stream_events or not unmatched or matched:
+        return None
+    configured = ",".join(sorted(stream_events))
+    kinds = list(getattr(target, "_unmatched_stream_kinds", ()))
+    return configured, unmatched, kinds
+
+
+def unmatched_stream_error(target, *, min_replies: int = UNMATCHED_STREAM_STOP_COUNT) -> str | None:
+    """End-of-campaign error message when APP_STREAM_EVENT matched 0 of >= min_replies streamed replies."""
+    summary = unmatched_stream_summary(target)
+    if summary is None:
+        return None
+    configured, count, kinds = summary
+    if count < min_replies:
+        return None
+    seen = ", ".join(kinds) if kinds else "(none)"
+    return (
+        f"APP_STREAM_EVENT={configured} matched none of the {count} streamed replies from the app "
+        f"(event kinds seen: {seen}), so every reply was read as empty text. An empty reply gives the "
+        "judge nothing to flag, so passes in this run do not mean the app held. Check APP_STREAM_EVENT "
+        "for a typo and re-run."
+    )
 
 
 # A judge's flag that trace_unavailable() says cannot be checked is stored under its
@@ -1032,6 +1069,9 @@ class AppChatTarget(PromptTarget):
         self._client = None
         self._noted_unread_stream = False
         self._noted_no_chosen_events = False
+        self._matched_stream_replies = 0
+        self._unmatched_stream_replies = 0
+        self._unmatched_stream_kinds: list[str] = []
 
     @staticmethod
     def settings_from_env() -> dict:
@@ -1103,6 +1143,10 @@ class AppChatTarget(PromptTarget):
         content_type is the response's Content-Type header, which decides whether the body
         may be read as a stream (see _body_formats); None or "" lets the body decide.
         """
+        text, _unmatched = self._reply_and_unmatched(body, content_type)
+        return text
+
+    def _reply_and_unmatched(self, body: str, content_type: str | None = None) -> tuple[str, list[str]]:
         kind, labeled = _labeled_events(body, content_type)
         if kind is not None:
             chosen = self._chosen_events(labeled)
@@ -1110,7 +1154,8 @@ class AppChatTarget(PromptTarget):
                 # A reply that is only a tool call or a refusal has none of the answer's
                 # events. It is still the app's reply, so it is graded (as empty text,
                 # with its trace) instead of failing the request.
-                return ""
+                seen = list(dict.fromkeys(k for _t, k, _p in labeled))
+                return "", seen
             labeled = chosen
         events = [payload for _sse_type, _kind, payload in labeled]
         if not self._response_path:
@@ -1131,8 +1176,8 @@ class AppChatTarget(PromptTarget):
                     if p and p.strip() != "[DONE]" and self._is_chosen(t, p)
                 ]
                 self._check_one_kind(texts, "the stream's text")
-                return self._combine_pieces([p for _t, _k, p in texts])
-            return body
+                return self._combine_pieces([p for _t, _k, p in texts]), []
+            return body, []
         if kind is None and not events:
             unread = _unread_stream(body, content_type)
             why = (
@@ -1156,8 +1201,8 @@ class AppChatTarget(PromptTarget):
                         f"Response: {body[:300]}"
                     )
             if value is None:
-                return ""
-            return value if isinstance(value, str) else json.dumps(value)
+                return "", []
+            return (value if isinstance(value, str) else json.dumps(value)), []
 
         pieces: list[str] = []
         found_in: list[tuple[str, str, str]] = []
@@ -1185,7 +1230,7 @@ class AppChatTarget(PromptTarget):
                 f"first event: {first[:300]}"
             )
         self._check_one_kind(found_in, f"APP_RESPONSE_PATH={self._response_path}")
-        return self._combine_pieces(pieces)
+        return self._combine_pieces(pieces), []
 
     def _is_chosen(self, event_kind: str, payload) -> bool:
         """Whether APP_STREAM_EVENT (if set) names this event: by its kind (its SSE event:
@@ -1202,18 +1247,27 @@ class AppChatTarget(PromptTarget):
 
         A stream with none of them is normal for one reply (a tool call, a refusal), so
         it gives no events, not an error; but every reply having none is a typo in the
-        setting, so the first time it happens, a note lists the kinds the stream had.
+        setting, so the first time it happens, a note lists the kinds the stream had,
+        and match counts are kept so calibration and the end of the run can stop.
         """
         chosen = [e for e in labeled if self._is_chosen(e[1], e[2])]
-        if labeled and not chosen and not self._noted_no_chosen_events:
-            self._noted_no_chosen_events = True
-            seen = list(dict.fromkeys(k for _t, k, _p in labeled))
-            print(
-                f"\nNote: a reply from the app had no APP_STREAM_EVENT={','.join(sorted(self._stream_events))} "
-                f"events, so its reply text was read as empty. Its events were: {', '.join(seen)}. That is normal "
-                "for a reply that is only a tool call or a refusal; if every reply comes back empty, check "
-                "APP_STREAM_EVENT for a typo."
-            )
+        if self._stream_events and labeled:
+            if chosen:
+                self._matched_stream_replies += 1
+            else:
+                self._unmatched_stream_replies += 1
+                seen = list(dict.fromkeys(k for _t, k, _p in labeled))
+                for kind in seen:
+                    if kind not in self._unmatched_stream_kinds:
+                        self._unmatched_stream_kinds.append(kind)
+                if not self._noted_no_chosen_events:
+                    self._noted_no_chosen_events = True
+                    print(
+                        f"\nNote: a reply from the app had no APP_STREAM_EVENT={','.join(sorted(self._stream_events))} "
+                        f"events, so its reply text was read as empty. Its events were: {', '.join(seen)}. That is normal "
+                        "for a reply that is only a tool call or a refusal; if every reply comes back empty, check "
+                        "APP_STREAM_EVENT for a typo."
+                    )
         return chosen
 
     def _check_one_kind(self, found_in: list[tuple[str, str, str]], what: str) -> None:
@@ -1357,7 +1411,7 @@ class AppChatTarget(PromptTarget):
                 f"was read as it came. If the app streams its replies, {STREAM_TYPES_HINT}; if it doesn't, the "
                 "model's reply only looked like a stream."
             )
-        text = self.reply_text(body, content_type)
+        text, unmatched_kinds = self._reply_and_unmatched(body, content_type)
         trace = self.trace_text(body, content_type)
         control = self.control_text(body, content_type)
         metadata = {}
@@ -1365,6 +1419,8 @@ class AppChatTarget(PromptTarget):
             metadata[TRACE_METADATA_KEY] = trace
         if control:
             metadata[CONTROL_METADATA_KEY] = control
+        if unmatched_kinds:
+            metadata[UNMATCHED_STREAM_METADATA_KEY] = ", ".join(unmatched_kinds)
         return [
             construct_response_from_request(
                 request=request,
