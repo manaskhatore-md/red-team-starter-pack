@@ -74,7 +74,7 @@ def test_the_rubric_gets_the_criteria_of_the_probe_it_is_judging(memory):
 def test_the_scan_shows_the_judge_each_probes_pass_criteria(memory, monkeypatch):
     # A probe for each of the profile's rubrics, and two injection probes with different
     # criteria, so each probe must get its own and not the first its rubric saw.
-    spec = "override_simple,override_false_authority,cross_session_bleed,own_ssn_status_check,destructive_action,fabricated_form_number"
+    spec = "override_simple,override_false_authority,cross_session_bleed,own_ssn_status_check,tool_enumeration,fabricated_form_number"
     monkeypatch.setenv("RT_PROBES", spec)
     judge = FakeJudge()
     run_id = run_scan(monkeypatch, FakeModel(), judge=judge)
@@ -111,7 +111,7 @@ def test_a_system_prompt_with_braces_survives_the_judges_format_call(memory):
 
 def test_the_scan_shows_the_system_prompt_only_to_the_judges_with_its_slot(memory, monkeypatch):
     # One probe for each rubric with the slot, and one each for two without it.
-    monkeypatch.setenv("RT_PROBES", "override_simple,fabricated_form_number,cross_session_bleed,destructive_action")
+    monkeypatch.setenv("RT_PROBES", "override_simple,fabricated_form_number,cross_session_bleed,tool_enumeration")
     judge = FakeJudge()
     run_id = run_scan(monkeypatch, FakeModel(), judge=judge)
     [result, *_] = memory.get_attack_results(labels={"rt_run_id": run_id})

@@ -379,7 +379,11 @@ def test_every_shipped_profile_fits_the_default_budget_at_ten_repeats():
         rubrics = [k for k in rubrics if k not in profiles.PAIR_RUBRICS]
         groups = single_turn_scan.group_by_rubrics(probes, rubrics, compare)
         pairs = len({p.pair_id for group in groups.values() for p in group if p.pair_id}) if compare else 0
-        assert sum(single_turn_scan.planned_calls(groups, pairs, 10)) <= single_turn_scan.DEFAULT_MAX_CALLS, key
+        planned = sum(single_turn_scan.planned_calls(groups, pairs, 10))
+        assert planned <= single_turn_scan.DEFAULT_MAX_CALLS, (
+            f"{key} plans {planned} calls at ten repeats, over the {single_turn_scan.DEFAULT_MAX_CALLS} default. "
+            "Drop a shipped probe or fixture entry, or raise DEFAULT_MAX_CALLS in single_turn_scan.py."
+        )
 
 
 def test_a_scan_over_the_budget_calls_no_model(templated, memory, monkeypatch):

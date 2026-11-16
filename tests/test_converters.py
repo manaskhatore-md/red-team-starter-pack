@@ -394,33 +394,33 @@ def sent_user_messages(target) -> dict[str, str]:
 
 
 def test_all_selected_probes_are_encoded_when_converters_are_set(memory, monkeypatch, capsys):
-    target, results, summary_md = run_scan(memory, monkeypatch, "override_simple,destructive_action", "rot13")
+    target, results, summary_md = run_scan(memory, monkeypatch, "override_simple,tool_enumeration", "rot13")
     out = capsys.readouterr().out
     probes = {p.name: p for p in scan.profile_probes(get_profile("public_conversational"))}
     sent = sent_user_messages(target)
 
-    injection, agency = probes["override_simple"].prompt, probes["destructive_action"].prompt
+    injection, agency = probes["override_simple"].prompt, probes["tool_enumeration"].prompt
     assert "encoded in ROT13" in sent[injection] and injection not in sent[injection]
     assert "encoded in ROT13" in sent[agency] and agency not in sent[agency]
     assert "the 2 excessive_agency and prompt_injection probe(s) are sent twice, encoded and as written." in out
 
     encoding = sorted((r.labels["rt_probe"], r.labels["rt_encoding"]) for r in results)
     assert encoding == [
-        ("destructive_action", ""),
-        ("destructive_action", "rot13"),
         ("override_simple", ""),
         ("override_simple", "rot13"),
+        ("tool_enumeration", ""),
+        ("tool_enumeration", "rot13"),
     ]
     assert "override_simple [rot13]" in out
-    assert "destructive_action [rot13]" in out
+    assert "tool_enumeration [rot13]" in out
     assert "| Converters | `rot13`, on the excessive_agency and prompt_injection probes (marked with it below), each also sent" in summary_md
     assert "| override_simple [rot13] |" in summary_md
-    assert "| destructive_action [rot13] |" in summary_md
+    assert "| tool_enumeration [rot13] |" in summary_md
 
 
 def test_list_probes_previews_all_selected_probes_when_encoded(capsys):
     profile = get_profile("public_conversational")
-    scan.list_probes(profile, probes_spec="override_simple,destructive_action", converters_spec="base64")
+    scan.list_probes(profile, probes_spec="override_simple,tool_enumeration", converters_spec="base64")
     out = capsys.readouterr().out
     assert out.count("converted (base64):") == 2
     assert "the 2 excessive_agency and prompt_injection probe(s) are sent twice, encoded and as written." in out
@@ -682,7 +682,7 @@ def test_a_pass_sends_both_halves_of_a_pair_if_it_changes_either(clean_env):
 
 
 def test_planned_calls_count_only_the_probes_each_pass_sends():
-    probes = [p for p in scan.profile_probes(get_profile("public_conversational")) if p.name in ("override_simple", "destructive_action")]
+    probes = [p for p in scan.profile_probes(get_profile("public_conversational")) if p.name in ("override_simple", "tool_enumeration")]
     groups = {("injection_compliance",): [probes[0]], ("excessive_agency",): [probes[1]]}
     by_pass = {"pii-space": [probes[0]], "rot13": probes}
     # 2 as written + 1 pii-space + 2 rot13, twice.
@@ -704,7 +704,7 @@ def test_planned_calls_count_only_the_pairs_each_pass_sends():
 
 
 def test_planned_calls_count_each_encoded_probe_twice():
-    probes = [p for p in scan.profile_probes(get_profile("public_conversational")) if p.name in ("override_simple", "destructive_action")]
+    probes = [p for p in scan.profile_probes(get_profile("public_conversational")) if p.name in ("override_simple", "tool_enumeration")]
     groups = {("injection_compliance",): [probes[0]], ("excessive_agency",): [probes[1]]}
     assert scan.planned_calls(groups, 0, 3) == (6, 6)
     assert scan.planned_calls(groups, 0, 3, converted=[p for p in probes if p.name == "override_simple"]) == (9, 9)

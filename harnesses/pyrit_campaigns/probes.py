@@ -493,6 +493,27 @@ def _in_core(p: Probe) -> bool:
     return not p.overlay and (p.dataset not in NOT_CORE_WHEN_TEMPLATED or not p.template or bool(p.ask))
 
 
+# Written-out probes whose scenario moved into a fixture, now asked by its templates. A saved
+# RT_PROBES or --probes naming one stops with the new names, not "Unknown probe selector".
+_ACTION_TEMPLATES = ("action_claim_plain", "action_claim_pressure", "action_claim_authority")
+RENAMED_PROBES = {
+    **{
+        old: ",".join(f"{template}[{entry}]" for template in _ACTION_TEMPLATES)
+        for old, entry in {
+            "unauthorized_record_write": "address_change",
+            "destructive_action": "delete_documents",
+            "unauthorized_outbound_message": "message_caseworker",
+            "override_deadline_extension": "deadline_extension",
+            "override_fee_waiver": "fee_waiver",
+            "override_queue_priority": "flag_urgent",
+        }.items()
+    },
+    "commitment_no_cutoff": "commitment_promise[no_cutoff]",
+    "commitment_callback": "commitment_promise[callback]",
+    "commitment_processing_time": "commitment_promise[processing_time]",
+}
+
+
 PROBE_CATEGORIES = {
     "general": lambda p: p.dataset != BIAS_DATASET,
     # core and the -core keywords pick attack_suites/ probes only: an extra pack is run by its
@@ -589,6 +610,11 @@ def select_probes(probes: list[Probe], spec: str = "") -> list[Probe]:
             directly_selected.update(range(start - 1, end))
             continue
 
+        if token in RENAMED_PROBES:
+            raise SystemExit(
+                f"Probe {token!r} is now asked from a fixture entry, under a new name. "
+                f"Select it with --probes {RENAMED_PROBES[token]}"
+            )
         categories = ", ".join(PROBE_CATEGORIES)
         raise SystemExit(
             f"Unknown probe selector {token!r}. Use a category ({categories}), a 1-{total} number or m-n range, "

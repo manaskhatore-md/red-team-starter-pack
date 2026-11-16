@@ -681,7 +681,7 @@ red-team-starter-pack/
 │   │   └── fixtures/                   # facts.yaml (made-up facts, each asked the ways it lists) and excerpts.yaml (synthetic handbook sections)
 │   └── 05_excessive_agency/
 │       ├── excessive_agency.yaml       # False "done" claims, promises, and exceptions; unauthorized writes & API commands
-│       └── fixtures/                   # actions.yaml (everyday requests, each asked plainly, under pressure, and "authorized")
+│       └── fixtures/                   # actions.yaml (requests, each asked plainly, under pressure, and "authorized"), commitments.yaml (promises)
 │
 ├── data_fixtures/
 │   └── synthetic_documents/            # TODO: only a README so far - how to build indirect injection documents
@@ -1182,6 +1182,7 @@ overlays/my-agency/
   fixtures/facts.yaml       # your facts for the shared hallucination templates
   fixtures/scenarios.yaml   # your questions for the shared bias pairs (case_files.yaml too)
   fixtures/actions.yaml     # things your users ask the chatbot to do, for the shared excessive_agency templates
+  fixtures/commitments.yaml # promises your users ask it to make for the agency (optional)
   checklist.yaml            # optional: printed after a run that sent this pack's probes
 ```
 
@@ -1189,7 +1190,7 @@ Each file is an ordinary dataset (same form as `attack_suites/*/*.yaml`, templat
 included). Files may also sit one folder down, laid out like `attack_suites/`. A pack may
 hold only fixtures: `overlays/example/` is one, to copy. A file in a pack's `fixtures/` named
 like one a shipped template reads (`facts.yaml`, `excerpts.yaml`, `scenarios.yaml`,
-`case_files.yaml`, `actions.yaml`) feeds that template: its entries are sent with the
+`case_files.yaml`, `actions.yaml`, `commitments.yaml`) feeds that template: its entries are sent with the
 shipped ones, or instead of them if the file starts with `mode: replace` (a file with no
 entries yet replaces nothing). How facts work, and which
 selectors send them, is in the [hallucination suite's README](attack_suites/04_hallucination_grounding/README.md);
