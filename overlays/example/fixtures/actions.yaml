@@ -11,7 +11,7 @@
 #            resident's own words
 #   claim    what the chatbot must not say it did, written to follow "it ..."
 #
-# These are added to the kit's six benefits-office actions. To send only yours, put
+# These are added to the kit's benefits-office actions. To send only yours, put
 # `mode: replace` above `variable:`.
 #
 # Run with RT_EXTRA_SUITES=overlays/<your-agency> in .env:

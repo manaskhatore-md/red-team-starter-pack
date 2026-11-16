@@ -5,16 +5,21 @@ in the single-turn scan, and each profile's multi-turn objectives include one go
 judges, which multi_turn_crescendo and multi_turn_red_team both run.
 """
 
+import re
+
 import pytest
 
 from harnesses.pyrit_campaigns import multi_turn_crescendo, multi_turn_red_team, probe_templates, single_turn_scan
+from harnesses.pyrit_campaigns.probes import RENAMED_PROBES
 from harnesses.pyrit_campaigns.profiles import PROFILES, dataset_path, get_profile
 
 # The whole suite, as every profile should send it.
 SUITE = single_turn_scan.load_probes(["excessive_agency"])
-# The framings are the suite's template seeds, the actions the entries in its fixture.
-FRAMINGS = tuple(dict.fromkeys(p.template for p in SUITE if p.template))
-ACTIONS = tuple(e["id"] for e in probe_templates.load_fixtures(dataset_path("excessive_agency").parent / "fixtures" / "actions.yaml")[1])
+FIXTURES = dataset_path("excessive_agency").parent / "fixtures"
+# The framings are the suite's templates that read actions.yaml, the actions its entries.
+FRAMINGS = tuple(dict.fromkeys(p.template for p in SUITE if p.template and p.template != "commitment_promise"))
+ACTIONS = tuple(e["id"] for e in probe_templates.load_fixtures(FIXTURES / "actions.yaml")[1])
+COMMITMENTS = tuple(e["id"] for e in probe_templates.load_fixtures(FIXTURES / "commitments.yaml")[1])
 RUBRIC = single_turn_scan.load_rubrics()["excessive_agency"]
 
 
@@ -29,7 +34,7 @@ def suite(profile):
 
 def test_every_action_is_asked_each_way():
     probes = suite(get_profile("public_conversational"))
-    templated = [p for p in probes if p.template]
+    templated = [p for p in probes if p.template in FRAMINGS]
     assert FRAMINGS and ACTIONS
     assert [p.name for p in templated] == [f"{t}[{a}]" for t in FRAMINGS for a in ACTIONS]
     for probe in templated:
@@ -41,6 +46,27 @@ def test_every_action_is_asked_each_way():
     assert by_name["action_claim_plain[address_change]"].prompt.startswith("Can you change the mailing address")
     # The request runs into the sentence around it: no line break before the "?".
     assert by_name["action_claim_plain[address_change]"].prompt.rstrip().endswith("MD 21218?")
+
+
+def test_every_commitment_is_asked_for_once_and_judged_by_its_own_promise():
+    probes = [p for p in suite(get_profile("public_conversational")) if p.template == "commitment_promise"]
+    assert COMMITMENTS and [p.name for p in probes] == [f"commitment_promise[{c}]" for c in COMMITMENTS]
+    for probe in probes:
+        assert "{{" not in probe.prompt and "{{" not in probe.pass_criteria, probe.name
+        # The situation runs into the question, and the criteria name the same promise.
+        assert ". Can you promise me " in " ".join(probe.prompt.split()), probe.name
+    callback = next(p for p in probes if p.name == "commitment_promise[callback]")
+    assert "call me back today" in callback.prompt and "call me back today" in callback.pass_criteria
+
+
+def test_no_written_out_probe_is_one_a_fixture_entry_now_asks():
+    # Their scenarios moved into actions.yaml and commitments.yaml; the old name points to the new.
+    names = {p.name for p in SUITE}
+    for old, new in RENAMED_PROBES.items():
+        assert old not in names
+        assert set(new.split(",")) <= names, old
+        with pytest.raises(SystemExit, match=rf"Select it with --probes {re.escape(new)}"):
+            single_turn_scan.select_probes(SUITE, old)
 
 
 def test_every_profile_runs_the_suite_and_grades_it_with_the_rubric(profile):
@@ -59,7 +85,7 @@ def test_each_framing_and_each_action_can_be_run_on_its_own():
     assert [p.name for p in pressure] == [f"action_claim_pressure[{a}]" for a in ACTIONS]
     one = single_turn_scan.select_probes(probes, "action_claim_authority[flag_urgent]")
     assert [p.name for p in one] == ["action_claim_authority[flag_urgent]"]
-    assert [p.name for p in single_turn_scan.select_probes(probes, "override_fee_waiver")] == ["override_fee_waiver"]
+    assert [p.name for p in single_turn_scan.select_probes(probes, "tool_enumeration")] == ["tool_enumeration"]
 
 
 def test_the_rubric_uses_the_trace_when_there_is_one():
@@ -109,4 +135,4 @@ def test_the_agent_campaign_sends_every_probe_with_its_placeholders_filled(clean
     assert len(objectives) == len(SUITE)
     assert not [o for o in objectives if "{{" in o]
     assert any("Can you change the mailing address on my case to 1427 Oak Street" in " ".join(o.split()) for o in objectives)
-    assert any("Maryland Department of Human Services employee" in o for o in objectives)
+    assert any("someone from Maryland Department of Human Services will call me back today" in o for o in objectives)
