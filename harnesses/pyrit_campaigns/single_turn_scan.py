@@ -203,7 +203,7 @@ from harnesses.pyrit_campaigns.system_prompt import (
     system_message,
     takes_system_prompt,
 )
-from scripts.run_summary import write_after_run
+from scripts.run_summary import stream_event_warning, write_after_run
 from harnesses.pyrit_campaigns.target_factory import (
     NEEDS_TRACE_LABEL,
     TRACE_METADATA_KEY,
@@ -1514,6 +1514,7 @@ async def main(
         # Settings still at "TODO ...", so the summary can say the probes named a placeholder.
         "rt_placeholders": ", ".join(unfilled),
         "rt_trace_path": os.getenv("APP_TRACE_PATH", "").strip(),
+        "rt_stream_event": os.getenv("APP_STREAM_EVENT", "").strip(),
         # "no" when APP_RETRIEVAL=no: the app has no documents, so a flag needs no trace to stand.
         "rt_app_retrieval": "no" if app_has_no_retrieval() else "",
         # Which rubrics judged the run: the rubric file's fingerprint and the pack's version.
@@ -1788,6 +1789,10 @@ async def main(
             print(f"  - {error}")
         print("  (a blocked or empty response is not a pass - it means nothing was tested)")
 
+    stream_error = stream_event_warning(run_labels["rt_run_id"])
+    if stream_error:
+        print(f"\n!! {stream_error}")
+
     checklist = checklist_for(
         profile, {probe.dataset for probe in sent}, pack_suites((probe.overlay, probe.dataset) for probe in sent)
     )
@@ -1811,7 +1816,7 @@ async def main(
     for t in (target, judge):
         await close_target(t)
 
-    if errors:
+    if errors or stream_error:
         return 1
     if findings and FAIL_ON_FINDING:
         return 1

@@ -462,6 +462,18 @@ TRACE_METADATA_KEY = "rt_trace"
 # so guardrail and reach checks can read control fields (e.g. blocked, guardrail.action)
 # from single-JSON or streamed responses.
 CONTROL_METADATA_KEY = "rt_control"
+# Stored on the assistant MessagePiece's prompt_metadata when APP_STREAM_EVENT is set and the
+# reply was a stream with events: MATCHED when one of its events is a kind APP_STREAM_EVENT
+# names, UNMATCHED (the kinds it had, comma-separated) when none is. One UNMATCHED reply is
+# normal (a tool call, a refusal); every streamed reply UNMATCHED is a typo in the setting.
+# See stream_event_misses().
+MATCHED_STREAM_METADATA_KEY = "rt_matched_stream"
+UNMATCHED_STREAM_METADATA_KEY = "rt_unmatched_stream"
+# The fewest streamed replies, none matching APP_STREAM_EVENT, that make a campaign's end and
+# its run summary say the setting is wrong (stream_event_error). Fewer may all be tool calls or
+# refusals: one probe, or one pair. Calibration stops on fewer, since its questions are ones any
+# working app answers with text.
+UNMATCHED_STREAM_STOP_COUNT = 3
 STREAM_MODES = ("concat", "last")
 # Set on a probe's results when its judge needs the app's sources to tell a real
 # specific from an invented one (needs_trace in the dataset). See trace_unavailable().
@@ -533,6 +545,54 @@ def judging_mode(provider: str, trace_path: str, no_retrieval: bool, needs_trace
     if provider == "app":
         return f"No documents (APP_RETRIEVAL=no): the app's only sources are its system prompt and the probe, {counts}"
     return f"Bare model: its only sources are the system prompt and the probe, {counts}"
+
+
+def stream_event_misses(pieces) -> tuple[int, list[str]] | None:
+    """(how many replies, the event kinds they had) when APP_STREAM_EVENT matched none of the
+    streamed replies among `pieces`, the app's replies as stored (see MATCHED_STREAM_METADATA_KEY).
+    None when one matched, or when none was a stream checked against the setting.
+
+    Each reply counts once: when Crescendo backtracks, PyRIT copies the turns before it into a
+    new conversation, and a copy keeps its original_prompt_id.
+    """
+    matched, missed, kinds, seen = 0, 0, [], set()
+    for piece in pieces:
+        if piece.role != "assistant" or piece.response_error != "none":
+            continue
+        reply = str(piece.original_prompt_id or piece.id)
+        if reply in seen:
+            continue
+        seen.add(reply)
+        metadata = piece.prompt_metadata or {}
+        if metadata.get(MATCHED_STREAM_METADATA_KEY):
+            matched += 1
+        elif metadata.get(UNMATCHED_STREAM_METADATA_KEY):
+            missed += 1
+            kinds += [k.strip() for k in str(metadata[UNMATCHED_STREAM_METADATA_KEY]).split(",") if k.strip()]
+    if matched or not missed:
+        return None
+    return missed, list(dict.fromkeys(kinds))
+
+
+def stream_event_error(pieces, setting: str, code=lambda text: text) -> str | None:
+    """Why a run's passes mean nothing when APP_STREAM_EVENT matched none of its streamed
+    replies, and there were at least UNMATCHED_STREAM_STOP_COUNT of them; else None.
+
+    `pieces`: every reply of the run, calibration's included. A campaign's end (as an error)
+    and its run summary (as a banner) both say it from this, so they agree on the same run.
+    `setting`: the run's APP_STREAM_EVENT. `code`: how to show a setting (backticks in the summary).
+    """
+    misses = stream_event_misses(pieces)
+    if misses is None or misses[0] < UNMATCHED_STREAM_STOP_COUNT:
+        return None
+    count, kinds = misses
+    seen = code(", ".join(kinds)) if kinds else "none"
+    return (
+        f"{code(f'APP_STREAM_EVENT={setting}')} matched none of the {count} streamed replies from the app "
+        f"(event kinds seen: {seen}), so every reply was read as empty text. An empty reply gives the judge "
+        f"nothing to flag, so passes in this run do not mean the app held. Check {code('APP_STREAM_EVENT')} "
+        "for a typo and re-run, unless every reply really was only a tool call or a refusal."
+    )
 
 
 # A judge's flag that trace_unavailable() says cannot be checked is stored under its
@@ -1187,6 +1247,18 @@ class AppChatTarget(PromptTarget):
         self._check_one_kind(found_in, f"APP_RESPONSE_PATH={self._response_path}")
         return self._combine_pieces(pieces)
 
+    def stream_event_match(self, body: str, content_type: str | None = None) -> dict:
+        """What to store with this reply about APP_STREAM_EVENT (see MATCHED_STREAM_METADATA_KEY):
+        nothing when the setting is unset or the reply is not a stream with events."""
+        if not self._stream_events:
+            return {}
+        kind, labeled = _labeled_events(body, content_type)
+        if kind is None or not labeled:
+            return {}
+        if any(self._is_chosen(event_kind, payload) for _t, event_kind, payload in labeled):
+            return {MATCHED_STREAM_METADATA_KEY: "yes"}
+        return {UNMATCHED_STREAM_METADATA_KEY: ", ".join(dict.fromkeys(k for _t, k, _p in labeled))}
+
     def _is_chosen(self, event_kind: str, payload) -> bool:
         """Whether APP_STREAM_EVENT (if set) names this event: by its kind (its SSE event:
         name, else its JSON "type"; see _event_kind) or by its JSON "type"."""
@@ -1365,6 +1437,7 @@ class AppChatTarget(PromptTarget):
             metadata[TRACE_METADATA_KEY] = trace
         if control:
             metadata[CONTROL_METADATA_KEY] = control
+        metadata.update(self.stream_event_match(body, content_type))
         return [
             construct_response_from_request(
                 request=request,

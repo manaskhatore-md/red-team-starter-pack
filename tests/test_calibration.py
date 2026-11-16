@@ -59,3 +59,50 @@ def test_calibrate_records_its_questions_with_the_run(memory, capsys):
     kinds = sorted(r.labels["rt_calibration"] for r in memory.get_attack_results() if r.labels.get("rt_run_id") == "r1")
     assert kinds == ["in_scope", "in_scope", "off_topic", "off_topic"]
     assert "-> SNAP helps families buy food." in capsys.readouterr().out
+
+
+def test_one_non_empty_in_scope_reply_alongside_an_empty_one_does_not_stop():
+    assert calibration.stuck_reason(["", ""], ["", "SNAP helps families buy food."], "SNAP", usable_in_scope=2) is None
+
+
+def test_calibrate_stops_when_a_mistyped_app_stream_event_matches_nothing(fake_app, clean_env, memory, capsys):
+    from harnesses.pyrit_campaigns.target_factory import build_target, close_target
+
+    clean_env.setenv("APP_RESPONSE_PATH", "delta")
+    clean_env.setenv("APP_STREAM_EVENT", "response.output_txt.delta")
+    fake_app["replies"] = [(
+        200,
+        'event: response.created\ndata: {"type": "response.created"}\n\n'
+        'event: response.output_text.delta\ndata: {"type": "response.output_text.delta", "delta": "SNAP helps."}\n\n'
+        'event: response.completed\ndata: {"type": "response.completed"}\n\n',
+        "text/event-stream",
+    )]
+    target = build_target()
+    try:
+        with pytest.raises(SystemExit) as exc_info:
+            asyncio.run(calibration.calibrate(target, {"rt_run_id": "r-typo"}, "SNAP"))
+    finally:
+        asyncio.run(close_target(target))
+    message = str(exc_info.value)
+    assert "APP_STREAM_EVENT=response.output_txt.delta" in message
+    assert "response.created, response.output_text.delta, response.completed" in message
+    assert "RT_SKIP_CALIBRATION=1" in message
+    assert "-> (empty reply)" in capsys.readouterr().out
+
+
+def test_calibrate_stops_when_in_scope_replies_come_back_empty(fake_app, clean_env, memory):
+    from harnesses.pyrit_campaigns.target_factory import build_target, close_target
+
+    clean_env.setenv("APP_RESPONSE_PATH", "reply")
+    fake_app["replies"] = [(200, '{"reply": null}', "application/json")]
+    target = build_target()
+    try:
+        with pytest.raises(SystemExit) as exc_info:
+            asyncio.run(calibration.calibrate(target, {"rt_run_id": "r-null"}, "TODO Program"))
+    finally:
+        asyncio.run(close_target(target))
+    message = str(exc_info.value)
+    assert "empty reply to every in-scope calibration question" in message
+    assert "APP_RESPONSE_PATH" in message
+    assert "asked about 'TODO Program'" in message
+    assert "RT_SKIP_CALIBRATION=1" in message

@@ -61,6 +61,7 @@ from harnesses.pyrit_campaigns.target_factory import (
     NEEDS_TRACE_LABEL,
     TRACE_METADATA_KEY,
     judging_mode,
+    stream_event_error,
     unverified_category,
 )
 from scripts.export_finding_report import (
@@ -301,6 +302,34 @@ def fixed_replies(entries, fallbacks: set[str] = frozenset()) -> list[dict]:
         if text in fallbacks or len(questions) >= FIXED_REPLY_QUESTIONS:
             out.append({"text": text, "members": members, "probes": probes, "fallback": text in fallbacks})
     return sorted(out, key=lambda g: -len(g["members"]))
+
+
+def run_stream_error(results, memory, code=lambda text: text) -> str | None:
+    """target_factory.stream_event_error() over every reply of a run, given all its results.
+
+    Calibration's replies count: if they matched APP_STREAM_EVENT, the setting is right, and
+    probes that came back empty were tool calls or refusals. The run summary and the end of a
+    campaign (stream_event_warning) both read it, so they say the same of one run.
+    """
+    pieces = [
+        piece
+        for result in results
+        for message in full_conversation_messages(memory, result)
+        for piece in message.message_pieces
+    ]
+    setting = next((s for r in results if (s := (r.labels or {}).get("rt_stream_event"))), "")
+    return stream_event_error(pieces, setting, code)
+
+
+def stream_event_warning(run_id: str) -> str | None:
+    """run_stream_error() for a run that just ended, read from the database as its summary will be."""
+    try:
+        memory = CentralMemory.get_memory_instance()
+        return run_stream_error(memory.get_attack_results(labels={"rt_run_id": run_id}), memory)
+    except Exception as e:
+        # Like the summary (write_after_run): the results are saved, so the run still ends normally.
+        print(f"\nCould not check whether APP_STREAM_EVENT matched this run's replies ({e}).")
+        return None
 
 
 def calibration_entries(calibration, memory) -> list[dict]:
@@ -571,6 +600,7 @@ def pair_rates_by_encoding(pairs) -> list[dict]:
 
 
 def build_summary(results, memory, run_id: str) -> str:
+    stream_error = run_stream_error(results, memory, code=lambda text: f"`{text}`")
     calibration = calibration_entries([r for r in results if (r.labels or {}).get(CALIBRATION_LABEL)], memory)
     results = [r for r in results if not (r.labels or {}).get(CALIBRATION_LABEL)]
     if not results:
@@ -647,6 +677,8 @@ def build_summary(results, memory, run_id: str) -> str:
     started = min((r.timestamp for r in results if r.timestamp), default=None)
 
     lines = [f"# Run summary: {campaign}, run {run_id[:8]}", ""]
+    if stream_error:
+        lines += [f"**Stream events missing:** {stream_error}", ""]
     # First, as the scan printed it first: how the probes that ask for a specific were judged.
     specifics = [e for e in entries if (e["result"].labels or {}).get(NEEDS_TRACE_LABEL) == "true"]
     needs_trace = len({probe_name(e["result"]) for e in specifics})

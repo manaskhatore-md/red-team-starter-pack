@@ -133,7 +133,7 @@ from harnesses.pyrit_campaigns.target_factory import (
     model_name,
     resolve_provider,
 )
-from scripts.run_summary import write_after_run
+from scripts.run_summary import stream_event_warning, write_after_run
 
 # TODO: tune these. Defaults are PyRIT's (10/10), which is thorough but expensive.
 # max_turns=3-5 is enough to see whether escalation works at all.
@@ -620,6 +620,7 @@ async def run_multi_turn(
         # Which objectives file the attacks came from, so the report can say what was tested.
         "rt_objectives_file": profile.objectives_file,
         "rt_trace_path": os.getenv("APP_TRACE_PATH", "").strip(),
+        "rt_stream_event": os.getenv("APP_STREAM_EVENT", "").strip(),
         # Which rubrics judged the run: the rubric file's fingerprint and the pack's version.
         **version_labels(),
     }
@@ -729,6 +730,10 @@ async def run_multi_turn(
     for objective, exception in incomplete:
         print(f"\n!! {objective[:70]!r} did not complete: {exception}")
 
+    stream_error = stream_event_warning(run_id)
+    if stream_error:
+        print(f"\n!! {stream_error}")
+
     module.write_after_run(run_id)
     export = f"findings --outcome success --run-id {run_id[:8]}"
     print(f"Next: rt {export}")
@@ -738,7 +743,7 @@ async def run_multi_turn(
     for t in (target, adversarial, judge):
         await module.close_target(t)
 
-    if incomplete:
+    if incomplete or stream_error:
         return 1
     return 1 if FAIL_ON_FINDING and (sum(achieved.values()) or leaks or record_leaks or other_hits) else 0
 

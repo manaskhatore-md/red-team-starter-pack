@@ -1251,9 +1251,52 @@ def test_a_reply_with_none_of_the_app_stream_events_is_graded_as_empty_with_its_
         asyncio.run(target_factory.close_target(target))
     assert reply.converted_value == ""
     assert "cancel_order" in reply.prompt_metadata[target_factory.TRACE_METADATA_KEY]
+    assert (
+        reply.prompt_metadata[target_factory.UNMATCHED_STREAM_METADATA_KEY]
+        == "response.created, response.function_call_arguments.delta, response.completed"
+    )
+    assert target_factory.MATCHED_STREAM_METADATA_KEY not in reply.prompt_metadata
     note = capsys.readouterr().out
     assert "reply text was read as empty" in note
     assert "response.created, response.function_call_arguments.delta, response.completed" in note
+
+
+def test_each_streamed_reply_records_whether_app_stream_event_matched_it(clean_env):
+    def app(stream_event):
+        return target_factory.AppChatTarget(
+            endpoint="https://example.test/chat",
+            request_template='{"message": "{PROMPT}"}',
+            response_path="delta",
+            stream_event=stream_event,
+        )
+
+    chosen = app("response.output_text.delta")
+    assert chosen.stream_event_match(RESPONSES_API_BODY, "text/event-stream") == {
+        target_factory.MATCHED_STREAM_METADATA_KEY: "yes"
+    }
+    assert chosen.stream_event_match(TOOL_CALL_ONLY_BODY, "text/event-stream") == {
+        target_factory.UNMATCHED_STREAM_METADATA_KEY: "response.created, response.function_call_arguments.delta, "
+        "response.completed"
+    }
+    # Not a stream, or no APP_STREAM_EVENT: nothing to record.
+    assert chosen.stream_event_match('{"delta": "hi"}', "application/json") == {}
+    assert app("").stream_event_match(TOOL_CALL_ONLY_BODY, "text/event-stream") == {}
+
+
+def test_a_reply_copied_when_crescendo_backtracks_is_counted_once():
+    def reply(conversation_id):
+        return MessagePiece(
+            role="assistant", original_value="", conversation_id=conversation_id,
+            prompt_metadata={target_factory.UNMATCHED_STREAM_METADATA_KEY: "response.refusal.delta"},
+        )
+
+    first, second = reply("c1"), reply("c1")
+    # PyRIT's copy of the turns before a backtrack: a new id and conversation, the same original_prompt_id.
+    copy = first.to_message().duplicate().message_pieces[0]
+    copy.conversation_id = "c2"
+    assert copy.id != first.id and copy.original_prompt_id == first.original_prompt_id
+    assert target_factory.stream_event_misses([first, second, copy]) == (2, ["response.refusal.delta"])
+    assert target_factory.stream_event_error([first, second, copy], "response.output_text.delta") is None
 
 
 def test_the_note_about_a_reply_with_none_of_the_app_stream_events_is_printed_once(fake_app, clean_env, capsys):
@@ -1447,3 +1490,115 @@ def test_app_token_command_is_refused_with_browser_api():
 
     with pytest.raises(SystemExit, match="APP_TOKEN_COMMAND works only with APP_TRANSPORT=http"):
         BrowserApiTarget(page_url="https://example.test/", endpoint="/chat", token_command="echo token")
+
+
+def test_a_scan_with_calibration_skipped_fails_when_app_stream_event_never_matches(
+    fake_app, clean_env, monkeypatch, memory, capsys
+):
+    from helpers import scan_main
+    from scripts import run_summary
+
+    clean_env.setenv("RT_SKIP_CALIBRATION", "1")
+    clean_env.setenv("RT_PROBES", "1-3")
+    clean_env.setenv("APP_RESPONSE_PATH", "delta")
+    clean_env.setenv("APP_STREAM_EVENT", "response.output_txt.delta")
+    fake_app["replies"] = [(200, RESPONSES_API_BODY, "text/event-stream")]
+    target = build_target()
+    try:
+        exit_code, run_id = scan_main(monkeypatch, target)
+    finally:
+        asyncio.run(target_factory.close_target(target))
+    assert exit_code == 1
+    out = capsys.readouterr().out
+    assert "!! APP_STREAM_EVENT=response.output_txt.delta matched none of the 3 streamed replies" in out
+    assert "(event kinds seen: response.output_text.delta, response.function_call_arguments.delta)" in out
+    assert "unless every reply really was only a tool call or a refusal" in out
+    results = [r for r in memory.get_attack_results() if (r.labels or {}).get("rt_run_id") == run_id]
+    text = run_summary.build_summary(results, memory, run_id)
+    banner = next(line for line in text.splitlines() if line.startswith("**Stream events missing:** "))
+    assert "`APP_STREAM_EVENT=response.output_txt.delta` matched none of the 3 streamed replies" in banner
+    # The console and the report say the same of the run.
+    assert f"!! {banner.removeprefix('**Stream events missing:** ').replace('`', '')}" in out
+
+
+def test_a_scan_below_the_cutoff_neither_fails_nor_warns_in_its_summary(fake_app, clean_env, monkeypatch, memory, capsys):
+    from helpers import scan_main
+    from scripts import run_summary
+
+    # Two probes may both be tool calls, so a mistyped APP_STREAM_EVENT is not said this late in either place.
+    clean_env.setenv("RT_SKIP_CALIBRATION", "1")
+    clean_env.setenv("RT_PROBES", "1-2")
+    clean_env.setenv("APP_RESPONSE_PATH", "delta")
+    clean_env.setenv("APP_STREAM_EVENT", "response.output_txt.delta")
+    fake_app["replies"] = [(200, RESPONSES_API_BODY, "text/event-stream")]
+    target = build_target()
+    try:
+        exit_code, run_id = scan_main(monkeypatch, target)
+    finally:
+        asyncio.run(target_factory.close_target(target))
+    assert exit_code == 0
+    assert "!! APP_STREAM_EVENT" not in capsys.readouterr().out
+    results = [r for r in memory.get_attack_results() if (r.labels or {}).get("rt_run_id") == run_id]
+    assert "**Stream events missing:**" not in run_summary.build_summary(results, memory, run_id)
+
+
+def test_a_single_tool_call_only_probe_with_calibration_skipped_is_not_treated_as_a_typo(
+    fake_app, clean_env, monkeypatch, memory
+):
+    from helpers import scan_main
+    from scripts import run_summary
+
+    clean_env.setenv("RT_SKIP_CALIBRATION", "1")
+    clean_env.setenv("RT_PROBES", "1")
+    clean_env.setenv("APP_RESPONSE_PATH", "delta")
+    clean_env.setenv("APP_STREAM_EVENT", "response.output_text.delta")
+    clean_env.setenv("APP_TRACE_PATH", "trace.tool_calls")
+    fake_app["replies"] = [(200, TOOL_CALL_ONLY_BODY, "text/event-stream")]
+    target = build_target()
+    try:
+        exit_code, run_id = scan_main(monkeypatch, target)
+    finally:
+        asyncio.run(target_factory.close_target(target))
+    assert exit_code == 0
+    results = [r for r in memory.get_attack_results() if (r.labels or {}).get("rt_run_id") == run_id]
+    text = run_summary.build_summary(results, memory, run_id)
+    assert "**Stream events missing:**" not in text
+    assert "APP_STREAM_EVENT" not in text.split("\n## ", 1)[0]
+
+
+def test_a_scan_where_some_replies_match_app_stream_event_and_some_are_tool_calls_succeeds(
+    fake_app, clean_env, monkeypatch, memory
+):
+    from helpers import scan_main
+    from scripts import run_summary
+
+    clean_env.setenv("RT_SKIP_CALIBRATION", "1")
+    clean_env.setenv("RT_PROBES", "1-3")
+    clean_env.setenv("APP_RESPONSE_PATH", "delta")
+    clean_env.setenv("APP_STREAM_EVENT", "response.output_text.delta")
+    fake_app["replies"] = [(200, TOOL_CALL_ONLY_BODY), (200, TOOL_CALL_ONLY_BODY), (200, RESPONSES_API_BODY)]
+    target = build_target()
+    try:
+        exit_code, run_id = scan_main(monkeypatch, target)
+    finally:
+        asyncio.run(target_factory.close_target(target))
+    assert exit_code == 0
+    results = [r for r in memory.get_attack_results() if (r.labels or {}).get("rt_run_id") == run_id]
+    text = run_summary.build_summary(results, memory, run_id)
+    assert "**Stream events missing:**" not in text
+
+
+def test_smoke_test_names_app_stream_event_and_seen_kinds_when_stream_matches_nothing(
+    fake_app, clean_env, monkeypatch, memory, capsys
+):
+    from helpers import nothing
+    from scripts import smoke_test
+
+    clean_env.setenv("APP_RESPONSE_PATH", "delta")
+    clean_env.setenv("APP_STREAM_EVENT", "response.output_txt.delta")
+    fake_app["replies"] = [(200, RESPONSES_API_BODY, "text/event-stream")]
+    monkeypatch.setattr(smoke_test, "initialize_pyrit_async", nothing)
+    assert asyncio.run(smoke_test.main()) == 1
+    out = capsys.readouterr().out
+    assert "Hint: no stream event matched APP_STREAM_EVENT=response.output_txt.delta" in out
+    assert "response.output_text.delta" in out

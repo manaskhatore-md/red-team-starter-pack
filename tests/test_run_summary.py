@@ -289,3 +289,61 @@ def test_unset_placeholders_are_said_up_front(memory):
 def test_a_run_with_real_values_says_nothing_about_placeholders(memory):
     add_probe(memory, "Do I qualify for SNAP?", "Maybe.", "unauthorized_determination", rt_probe="p1", rt_placeholders="")
     assert "Placeholders" not in summary(memory)
+
+
+def test_stream_events_missing_banner_opens_the_summary_and_survives_scrubbing(memory):
+    from harnesses.pyrit_campaigns.target_factory import UNMATCHED_STREAM_METADATA_KEY
+    from scripts.scrub import scrub_report
+
+    for idx in ("1", "2", "3"):
+        add_app_probe(
+            memory, f"probe {idx}", "", "injection_compliance",
+            metadata={UNMATCHED_STREAM_METADATA_KEY: "response.created, response.output_text.delta"},
+            rt_probe=f"p{idx}", rt_stream_event="response.output_txt.delta",
+        )
+    text = scrub_report(summary(memory))
+    assert (
+        "**Stream events missing:** `APP_STREAM_EVENT=response.output_txt.delta` matched none of the 3 streamed "
+        "replies from the app (event kinds seen: `response.created, response.output_text.delta`)"
+    ) in text
+    # The end of the campaign reads the same replies and says the same.
+    warning = rs.stream_event_warning(RUN)
+    assert f"**Stream events missing:** {warning}".replace("`", "") in text.replace("`", "")
+
+
+def test_a_stream_check_that_cannot_read_the_database_says_so_and_lets_the_run_end(monkeypatch, capsys):
+    def broken():
+        raise RuntimeError("database is locked")
+
+    monkeypatch.setattr(rs.CentralMemory, "get_memory_instance", broken)
+    assert rs.stream_event_warning(RUN) is None
+    assert "Could not check whether APP_STREAM_EVENT matched this run's replies (database is locked)" in (
+        capsys.readouterr().out
+    )
+
+
+@pytest.mark.parametrize("calibration_matched, probes, warned", [
+    (False, 2, False),  # below the cutoff: one pair may be all tool calls
+    (False, 3, True),
+    (True, 3, False),  # calibration matched, so the setting is right: the probes were tool calls
+])
+def test_the_stream_events_banner_counts_the_runs_streamed_replies_calibrations_included(
+    memory, calibration_matched, probes, warned
+):
+    from harnesses.pyrit_campaigns.target_factory import MATCHED_STREAM_METADATA_KEY, UNMATCHED_STREAM_METADATA_KEY
+
+    if calibration_matched:
+        add_app_probe(
+            memory, "What is SNAP?", "SNAP helps families buy food.", metadata={MATCHED_STREAM_METADATA_KEY: "yes"},
+            rt_calibration="in_scope", rt_stream_event="response.output_text.delta",
+        )
+    # A reply that is not a stream (no record either way) does not count.
+    add_app_probe(memory, "plain probe", "A plain JSON answer.", "injection_compliance", rt_probe="plain")
+    for idx in range(probes):
+        add_app_probe(
+            memory, f"probe {idx}", "", "injection_compliance",
+            metadata={UNMATCHED_STREAM_METADATA_KEY: "response.function_call_arguments.delta"},
+            rt_probe=f"p{idx}", rt_stream_event="response.output_text.delta",
+        )
+    assert ("**Stream events missing:**" in summary(memory)) is warned
+    assert (rs.stream_event_warning(RUN) is not None) is warned
