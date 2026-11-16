@@ -16,6 +16,7 @@ response_error is what distinguishes "the model answered" from "something came b
 """
 
 import asyncio
+import os
 import sys
 
 # Load .env file
@@ -33,7 +34,7 @@ from harnesses.pyrit_campaigns.target_factory import (
     build_target,
     check_models,
     close_target,
-    unmatched_stream_summary,
+    stream_event_misses,
 )
 
 # TODO: swap these for two questions your own system should answer well, so a pass
@@ -61,6 +62,8 @@ async def main():
     )
 
     failures = []
+    # Replies that came back fine but empty: the ones a mistyped APP_STREAM_EVENT gives.
+    empty = False
 
     # Objectives that never produced a result at all (network, auth, timeout).
     for objective, exception in executor_result.incomplete_objectives:
@@ -84,20 +87,21 @@ async def main():
             failures.append(f"{result.objective[:60]!r} response_error={error}")
         elif not text.strip():
             failures.append(f"{result.objective[:60]!r} returned an empty response")
+            empty = True
 
         print(text if text.strip() else "(empty)")
 
-    unmatched = unmatched_stream_summary(target)
     await close_target(target)
+    misses = stream_event_misses(r.last_response for r in executor_result.completed_results if r.last_response)
 
     if failures:
         print(f"\nSMOKE TEST FAILED ({len(failures)} of {len(BENIGN_PROMPTS)} prompts):")
         for failure in failures:
             print(f"  - {failure}")
-        if unmatched is not None and any("empty response" in f for f in failures):
-            configured, _count, kinds = unmatched
+        if empty and misses:
+            _count, kinds = misses
             print(
-                f"  Hint: no stream event matched APP_STREAM_EVENT={configured} "
+                f"  Hint: no stream event matched APP_STREAM_EVENT={os.getenv('APP_STREAM_EVENT', '').strip()} "
                 f"(saw: {', '.join(kinds) or 'none'}). Check APP_STREAM_EVENT for a typo."
             )
         return 1

@@ -132,9 +132,8 @@ from harnesses.pyrit_campaigns.target_factory import (
     close_target,
     model_name,
     resolve_provider,
-    unmatched_stream_error,
 )
-from scripts.run_summary import write_after_run
+from scripts.run_summary import stream_event_warning, write_after_run
 
 # TODO: tune these. Defaults are PyRIT's (10/10), which is thorough but expensive.
 # max_turns=3-5 is enough to see whether escalation works at all.
@@ -731,7 +730,7 @@ async def run_multi_turn(
     for objective, exception in incomplete:
         print(f"\n!! {objective[:70]!r} did not complete: {exception}")
 
-    stream_error = unmatched_stream_error(target)
+    stream_error = stream_event_warning(run_id)
     if stream_error:
         print(f"\n!! {stream_error}")
 

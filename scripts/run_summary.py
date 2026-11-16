@@ -60,8 +60,8 @@ from harnesses.pyrit_campaigns.system_prompt import CANARY_CHECK
 from harnesses.pyrit_campaigns.target_factory import (
     NEEDS_TRACE_LABEL,
     TRACE_METADATA_KEY,
-    UNMATCHED_STREAM_METADATA_KEY,
     judging_mode,
+    stream_event_error,
     unverified_category,
 )
 from scripts.export_finding_report import (
@@ -302,6 +302,34 @@ def fixed_replies(entries, fallbacks: set[str] = frozenset()) -> list[dict]:
         if text in fallbacks or len(questions) >= FIXED_REPLY_QUESTIONS:
             out.append({"text": text, "members": members, "probes": probes, "fallback": text in fallbacks})
     return sorted(out, key=lambda g: -len(g["members"]))
+
+
+def run_stream_error(results, memory, code=lambda text: text) -> str | None:
+    """target_factory.stream_event_error() over every reply of a run, given all its results.
+
+    Calibration's replies count: if they matched APP_STREAM_EVENT, the setting is right, and
+    probes that came back empty were tool calls or refusals. The run summary and the end of a
+    campaign (stream_event_warning) both read it, so they say the same of one run.
+    """
+    pieces = [
+        piece
+        for result in results
+        for message in full_conversation_messages(memory, result)
+        for piece in message.message_pieces
+    ]
+    setting = next((s for r in results if (s := (r.labels or {}).get("rt_stream_event"))), "")
+    return stream_event_error(pieces, setting, code)
+
+
+def stream_event_warning(run_id: str) -> str | None:
+    """run_stream_error() for a run that just ended, read from the database as its summary will be."""
+    try:
+        memory = CentralMemory.get_memory_instance()
+        return run_stream_error(memory.get_attack_results(labels={"rt_run_id": run_id}), memory)
+    except Exception as e:
+        # Like the summary (write_after_run): the results are saved, so the run still ends normally.
+        print(f"\nCould not check whether APP_STREAM_EVENT matched this run's replies ({e}).")
+        return None
 
 
 def calibration_entries(calibration, memory) -> list[dict]:
@@ -572,6 +600,7 @@ def pair_rates_by_encoding(pairs) -> list[dict]:
 
 
 def build_summary(results, memory, run_id: str) -> str:
+    stream_error = run_stream_error(results, memory, code=lambda text: f"`{text}`")
     calibration = calibration_entries([r for r in results if (r.labels or {}).get(CALIBRATION_LABEL)], memory)
     results = [r for r in results if not (r.labels or {}).get(CALIBRATION_LABEL)]
     if not results:
@@ -648,41 +677,8 @@ def build_summary(results, memory, run_id: str) -> str:
     started = min((r.timestamp for r in results if r.timestamp), default=None)
 
     lines = [f"# Run summary: {campaign}, run {run_id[:8]}", ""]
-    assistant_pieces = [
-        piece
-        for e in entries
-        for message in e["messages"]
-        for piece in message.message_pieces
-        if piece.role == "assistant" and getattr(piece, "response_error", "none") == "none"
-    ]
-    unmatched_pieces = [
-        piece for piece in assistant_pieces if (piece.prompt_metadata or {}).get(UNMATCHED_STREAM_METADATA_KEY)
-    ]
-    if assistant_pieces and len(unmatched_pieces) == len(assistant_pieces):
-        seen_kinds = list(dict.fromkeys(
-            kind.strip()
-            for piece in unmatched_pieces
-            for kind in str((piece.prompt_metadata or {})[UNMATCHED_STREAM_METADATA_KEY]).split(",")
-            if kind.strip()
-        ))
-        stream_event = labels.get("rt_stream_event", "")
-        setting = f"`APP_STREAM_EVENT={stream_event}`" if stream_event else "`APP_STREAM_EVENT`"
-        shown_kinds = f"`{', '.join(seen_kinds)}`" if seen_kinds else "none"
-        if len(assistant_pieces) >= 2:
-            lines += [
-                f"**Stream events missing:** {setting} matched none of the {len(assistant_pieces)} replies in "
-                f"this run (event kinds seen: {shown_kinds}), so every reply was read as empty text. "
-                "An empty reply gives the judge nothing to flag, so passes in this report do not mean the app "
-                "held — check `APP_STREAM_EVENT` for a typo and re-run.",
-                "",
-            ]
-        else:
-            lines += [
-                f"**No matching stream events:** {setting} did not match the reply's stream events "
-                f"(saw: {shown_kinds}), so its reply text was read as empty. That is normal for a "
-                "single tool-call or refusal turn; if you did not expect an empty reply, check `APP_STREAM_EVENT`.",
-                "",
-            ]
+    if stream_error:
+        lines += [f"**Stream events missing:** {stream_error}", ""]
     # First, as the scan printed it first: how the probes that ask for a specific were judged.
     specifics = [e for e in entries if (e["result"].labels or {}).get(NEEDS_TRACE_LABEL) == "true"]
     needs_trace = len({probe_name(e["result"]) for e in specifics})

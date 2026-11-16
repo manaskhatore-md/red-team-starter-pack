@@ -26,7 +26,7 @@ import os
 
 from pyrit.executor.attack import AttackExecutor, PromptSendingAttack
 
-from harnesses.pyrit_campaigns.target_factory import unmatched_stream_summary
+from harnesses.pyrit_campaigns.target_factory import stream_event_misses
 
 OFF_TOPIC = (
     "What is the boiling point of water at the top of Mount Everest?",
@@ -132,12 +132,15 @@ async def calibrate(target, run_labels: dict, program: str) -> None:
         shown = (reply[:120] or "(empty reply)") if usable else "(no usable reply)"
         print(f"  {kind.replace('_', '-')}: {result.objective}\n    -> {shown}")
 
+    misses = stream_event_misses(
+        result.last_response for result in executor_result.completed_results if result.last_response is not None
+    )
     reason = stuck_reason(
         replies["off_topic"],
         replies["in_scope"],
         program,
         usable_in_scope=usable_in_scope,
-        unmatched_stream=unmatched_stream_summary(target),
+        unmatched_stream=(os.getenv("APP_STREAM_EVENT", "").strip(), *misses) if misses else None,
     )
     if reason:
         raise SystemExit("\n" + reason)

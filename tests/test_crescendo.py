@@ -613,18 +613,22 @@ def test_multi_turn_fails_when_app_stream_event_matches_none_of_the_streamed_rep
         response_path="delta",
         stream_event="response.output_txt.delta",
     )
-    stream = (
-        'event: response.output_text.delta\n'
-        'data: {"type": "response.output_text.delta", "delta": "Hi"}\n\n'
-    )
-    for _ in range(3):
-        app.reply_text(stream, "text/event-stream")
+    sent = []
 
     class Executor:
         def __init__(self, **kwargs):
             pass
 
         async def execute_attack_async(self, **kwargs):
+            # Three replies whose stream had no APP_STREAM_EVENT event, stored with the run's labels.
+            if not sent:
+                labels = kwargs["field_overrides"][0]["memory_labels"]
+                for turn in range(3):
+                    sent.append(add_probe(
+                        memory, f"turn {turn}", "",
+                        metadata={target_factory.UNMATCHED_STREAM_METADATA_KEY: "response.output_text.delta"},
+                        **labels,
+                    ))
             return SimpleNamespace(completed_results=[], incomplete_objectives=[])
 
     clean_env.setenv("RT_PROFILE", "public_conversational")

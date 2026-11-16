@@ -203,7 +203,7 @@ from harnesses.pyrit_campaigns.system_prompt import (
     system_message,
     takes_system_prompt,
 )
-from scripts.run_summary import write_after_run
+from scripts.run_summary import stream_event_warning, write_after_run
 from harnesses.pyrit_campaigns.target_factory import (
     NEEDS_TRACE_LABEL,
     TRACE_METADATA_KEY,
@@ -216,7 +216,6 @@ from harnesses.pyrit_campaigns.target_factory import (
     model_name,
     resolve_provider,
     trace_unavailable,
-    unmatched_stream_error,
     unverified_category,
     unverified_rubric,
 )
@@ -1790,7 +1789,7 @@ async def main(
             print(f"  - {error}")
         print("  (a blocked or empty response is not a pass - it means nothing was tested)")
 
-    stream_error = unmatched_stream_error(target)
+    stream_error = stream_event_warning(run_labels["rt_run_id"])
     if stream_error:
         print(f"\n!! {stream_error}")
 
