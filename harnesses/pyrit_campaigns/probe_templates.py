@@ -258,12 +258,12 @@ def check_facts(fixture: FixtureFile, asks: set[str]) -> None:
             )
         if len(set(wanted)) != len(wanted):
             raise SystemExit(f"{where}: `ask` names a way to ask twice")
-        if status == "real" and not str(entry.get("source") or "").strip():
+        if status == "real" and blank(entry.get("source")):
             raise SystemExit(
                 f"{where}: a real fact needs a `source`: where it was checked, and when. The finding report "
                 "shows it beside any finding, so a reviewer can check the answer key."
             )
-        has_by, has_on = bool(str(entry.get("confirmed_by") or "").strip()), entry.get("confirmed_on") is not None
+        has_by, has_on = not blank(entry.get("confirmed_by")), entry.get("confirmed_on") is not None
         if has_by != has_on:
             raise SystemExit(f"{where}: set `confirmed_by` and `confirmed_on` together, or neither")
         if has_on and confirmed_date(entry["confirmed_on"]) is None:
@@ -285,14 +285,29 @@ def template_version(seed) -> str:
     return version
 
 
+def blank(value) -> bool:
+    """Whether a fixture field's value counts as not given: left out, empty, or only spaces.
+
+    Not `not value`: YAML reads an unquoted 0 or false as a number or a boolean, and an
+    entry that says `answer: 0` (a fee of $0) has given its answer.
+    """
+    if value is None:
+        return True
+    if isinstance(value, str):
+        return not value.strip()
+    if isinstance(value, (list, dict)):
+        return not value
+    return False
+
+
 def has_version(entry: dict, version: str) -> bool:
     """Whether a fixture entry gives this version. Left out or left blank, its pair is skipped."""
-    return bool(str(entry.get(version) or "").strip())
+    return not blank(entry.get(version))
 
 
 def unreviewed(entry: dict, version: str) -> bool:
     """Whether the entry's `version` has no review sign-off (see VERSION above)."""
-    return bool(version) and not str((entry.get("reviewed_by") or {}).get(version) or "").strip()
+    return bool(version) and blank((entry.get("reviewed_by") or {}).get(version))
 
 
 def fields_used(seed, variable: str) -> set[str]:
@@ -322,9 +337,13 @@ def check_entries(fixture: FixtureFile, templates) -> None:
     # source), or one a kit update stopped reading. Neither should stop an agency's pack from
     # loading, so it is left alone - but where it may be a version with no pair, said once.
     unread: dict[str, list[str]] = {}
+    # (entry id, unread field) -> a field the entry left blank that it is close to: most likely
+    # the same field, misspelled once a copied entry's blank skeleton was filled in.
+    blank_twin: dict[tuple[str, str], str] = {}
     for entry in fixture.entries:
         where = f"{shown}, entry {entry['id']!r}"
         given = set(map(str, entry))
+        left_blank = {name for name in given & known if blank(entry.get(name))}
         for name in sorted(given - known):
             # Only against fields the entry lacks: a misspelling leaves the field it was meant to be
             # missing. One beside the field it resembles (requested_by beside request, spanish_notes
@@ -338,8 +357,20 @@ def check_entries(fixture: FixtureFile, templates) -> None:
                     f"{', '.join(sorted(known))}."
                 )
             unread.setdefault(name, []).append(entry["id"])
+            # Not an error: a writer's note beside a field left blank for now (spanish_notes beside
+            # an empty spanish) looks the same. Said in the note, and in the error if it is needed.
+            twin = difflib.get_close_matches(name, sorted(left_blank - {"id"}), n=1)
+            if twin:
+                blank_twin[(entry["id"], name)] = twin[0]
     if versions:
         for name, ids in unread.items():
+            twins = sorted({blank_twin[(i, name)] for i in ids if blank_twin.get((i, name)) in versions})
+            if twins:
+                print(
+                    f"Note: {shown}: no template reads `{name}` (entry {', '.join(map(repr, ids))}). Did you mean "
+                    f"`{twins[0]}`? It is blank, so its pair is not sent."
+                )
+                continue
             print(
                 f"Note: {shown}: no template reads `{name}` (entry {', '.join(map(repr, ids))}), so it is not sent. "
                 "If it is a version to compare, such as a language, write a pair of templates for it (see "
@@ -347,9 +378,15 @@ def check_entries(fixture: FixtureFile, templates) -> None:
             )
     for entry in fixture.entries:
         where = f"{shown}, entry {entry['id']!r}"
-        missing = [name for name in sorted(used - versions - {"id"}) if not str(entry.get(name) or "").strip()]
+        missing = [name for name in sorted(used - versions - {"id"}) if blank(entry.get(name))]
         if missing:
-            raise SystemExit(f"{where}: needs {', '.join(f'`{m}`' for m in missing)}")
+            typos = [
+                f"`{field}` is blank and `{typo}` is given: a misspelling?"
+                for (i, typo), field in sorted(blank_twin.items())
+                if i == entry["id"] and field in missing
+            ]
+            hint = f" ({'; '.join(typos)})" if typos else ""
+            raise SystemExit(f"{where}: needs {', '.join(f'`{m}`' for m in missing)}{hint}")
         if not versions:
             continue
         given = sorted(v for v in versions if has_version(entry, v))
@@ -377,7 +414,7 @@ def check_entries(fixture: FixtureFile, templates) -> None:
             signed[name] = value
         by, on = signed["reviewed_by"], signed["reviewed_on"]
         for version in sorted(set(by) | set(on)):
-            if not str(by.get(version) or "").strip() or on.get(version) is None:
+            if blank(by.get(version)) or on.get(version) is None:
                 raise SystemExit(f"{where}: set `reviewed_by` and `reviewed_on` together for {version}, or neither")
             if confirmed_date(on[version]) is None:
                 raise SystemExit(

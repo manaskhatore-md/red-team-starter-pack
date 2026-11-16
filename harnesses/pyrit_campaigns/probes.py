@@ -12,6 +12,7 @@ import yaml
 from harnesses.pyrit_campaigns import profiles
 from harnesses.pyrit_campaigns.probe_templates import (
     FixtureFile,
+    blank,
     check_facts,
     check_entries,
     confirmed_date,
@@ -267,11 +268,20 @@ def fixture_feeds(dataset: str, seeds, shipped_file: Path, extras) -> dict[str, 
                 )
                 continue
             own = read_fixture(path, variable=shipped.variable, allow_empty=True)
+            if not own.entries:
+                # An empty file that replaced the shipped entries would send none of either: a pack
+                # copied from the example, before its entries are written, would quietly take the
+                # shipped ones out of every run, `core` included. So replacing waits for entries.
+                waits = (
+                    f" Its `mode: replace` applies once it has some, so attack_suites/'s {name} entries are "
+                    "still sent."
+                    if own.mode == "replace"
+                    else ""
+                )
+                print(f"Note: {shown_path(path)} has no entries yet, so it adds no probes.{waits}")
+                continue
             if own.mode == "replace":
                 replacing.append(shown_path(path))
-            if not own.entries:
-                print(f"Note: {shown_path(path)} has no entries yet, so it adds no probes.")
-                continue
             _check_fed(own, asks, users)
             packs[pack.name] = own
         if len(replacing) > 1:
@@ -363,7 +373,7 @@ def _probe(seed, expanded, dataset: str, pack: Pack, values: dict[str, str], tem
         ask=expanded.ask,
         fact_source=" ".join(str(entry.get("source") or "").split()),
         confirmed_on=confirmed.isoformat() if confirmed else "",
-        unconfirmed=entry.get("status") == "real" and not str(entry.get("confirmed_by") or "").strip(),
+        unconfirmed=entry.get("status") == "real" and blank(entry.get("confirmed_by")),
         version=expanded.version,
         unreviewed=unreviewed(expanded.entry, expanded.version),
     )

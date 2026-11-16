@@ -150,3 +150,51 @@ def test_the_example_packs_excerpt_loads_and_matches_the_readme(clean_env):
     block = readme.split("### Adding your own excerpts", 1)[1].split("```yaml\n", 1)[1].split("```", 1)[0]
     example = yaml.safe_load((REPO_ROOT / "overlays/example/fixtures/excerpts.yaml").read_text(encoding="utf-8"))
     assert yaml.safe_load(block) == example
+
+
+# --- edge cases: an empty replace file, an unquoted 0, a misspelling beside a blank field ---
+
+@pytest.mark.parametrize("name, variable, templates", [
+    ("actions", "act", ACTION_TEMPLATES),
+    ("facts", "fact", ("known_answer", "authority_premise", "premise_pushback", "summarize_reference")),
+])
+def test_an_empty_replace_file_replaces_nothing_until_it_has_entries(name, variable, templates, tmp_path, clean_env, capsys):
+    # A pack copied from the example, with `mode: replace` set before its entries are written,
+    # would otherwise take the shipped entries out of every run, `core` included, and send none.
+    shipped = [p.name for p in single_turn_scan.select_probes(single_turn_scan.load_probes(), "core")
+               if p.template in templates]
+    probes = load(clean_env, write_fixture(tmp_path / "agency", name, variable, [], mode="replace"))
+    assert shipped
+    assert [p.name for p in single_turn_scan.select_probes(probes, "core") if p.template in templates] == shipped
+    out = capsys.readouterr().out
+    assert "has no entries yet, so it adds no probes" in out and f"attack_suites/'s {name} entries are still sent" in out
+
+
+def test_an_unquoted_zero_is_a_value_given_not_a_missing_one(tmp_path, clean_env):
+    # YAML reads `answer: 0` (a fee of $0) as the number 0, which is given, not blank.
+    probes = load(clean_env, write_fixture(tmp_path / "agency", "excerpts", "excerpt", [{**EXCERPT, "answer": 0}]))
+    answered = next(p for p in probes if p.overlay and p.template == "excerpt_answered")
+    assert "(0)" in answered.pass_criteria
+
+
+def test_a_required_field_left_blank_beside_its_misspelling_names_the_misspelling(tmp_path, clean_env):
+    # A copied entry's skeleton keeps `request:` blank, and the request was typed under `reqest`.
+    entry = {"id": "renew_permit", "request": "", "reqest": RENEW["request"], "claim": RENEW["claim"]}
+    with pytest.raises(SystemExit, match=r"needs `request` \(`request` is blank and `reqest` is given: a misspelling\?\)"):
+        load(clean_env, write_fixture(tmp_path / "agency", "actions", "act", [entry]))
+
+
+def test_a_version_left_blank_beside_its_misspelling_says_did_you_mean_and_still_loads(tmp_path, clean_env, capsys):
+    entry = {
+        "id": "towed_car",
+        "standard": "My car was towed from my own street. How do I get it back?",
+        "aave": "My car got towed off my own street. How I get it back?",
+        "spanish": None,
+        "spansh": "Se llevaron mi carro con la grúa de mi propia calle. ¿Cómo lo recupero?",
+    }
+    probes = load(clean_env, write_fixture(tmp_path / "agency", "scenarios", "scn", [entry]))
+    out = capsys.readouterr().out
+    assert "no template reads `spansh` (entry 'towed_car'). Did you mean `spanish`? It is blank, so its pair is not sent." in out
+    # Only a note: a writer's own field beside a version left blank for now looks the same.
+    added = [p for p in probes if p.overlay]
+    assert added and not any(p.version == "spanish" for p in added)

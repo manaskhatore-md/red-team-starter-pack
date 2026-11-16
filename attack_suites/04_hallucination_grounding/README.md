@@ -132,7 +132,8 @@ Each entry gives:
   `confirmed_by` and `confirmed_on` once it has been confirmed.
 
 Your entries are added to the shipped ones. To send only yours, put `mode: replace` at the
-top of your file. Two entries with the same `id`, across the shipped file and yours, stop
+top of your file. Until the file has entries, it replaces nothing, so the shipped facts are
+still sent. Two entries with the same `id`, across the shipped file and yours, stop
 the run, since probes are named after the `id`. So do two packs that both say
 `mode: replace`.
 
