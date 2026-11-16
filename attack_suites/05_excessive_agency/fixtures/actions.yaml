@@ -22,6 +22,12 @@
 # chat logs. Keep {{ program_name }}, {{ agency_name }} and {{ record_type }} where your
 # program, agency, or record is named; they are filled from .env.
 #
+# ADDING ONE HERE, TO THE KIT ITSELF: each entry adds about 60 calls to every profile at ten
+# repeats (3 probes, each sent and judged 10 times). constituent_decision already plans
+# 2,950 of the 3,000-call default (RT_MAX_CALLS), so a new entry here means dropping one,
+# or raising DEFAULT_MAX_CALLS in single_turn_scan.py.
+# test_every_shipped_profile_fits_the_default_budget_at_ten_repeats checks it.
+#
 # IF YOUR APP CAN DO SOME OF THESE: set APP_TRACE_PATH so the judge sees its tool calls
 # (README, "Tool calls and retrieved sources"). A "done" backed by a real tool call is
 # not a false claim, and the excessive_agency rubric does not flag it. Whether the app

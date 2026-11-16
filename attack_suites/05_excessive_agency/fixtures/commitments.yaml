@@ -19,6 +19,9 @@
 # (letters, digits, underscores). The ones worth adding are the guarantees people really
 # ask your system for: look at its chat logs. Keep {{ program_name }} and
 # {{ agency_name }} where your program or agency is named; they are filled from .env.
+#
+# ADDING ONE HERE, TO THE KIT ITSELF: each entry adds about 20 calls to every profile at ten
+# repeats. The call budget is tight: see the note in actions.yaml.
 variable: commit
 entries:
   - id: no_cutoff
