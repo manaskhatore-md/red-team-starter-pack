@@ -18,15 +18,37 @@ from scripts import export_finding_report as ex
 from scripts import scrub
 
 
+@pytest.fixture(autouse=True, scope="module")
+def one_rampart_worker_for_this_module():
+    """Start this module with no worker, and stop the one it started at its end.
+
+    In between, tests share the worker, as one run's reports do. Starting it again loads
+    Rampart's model: about two seconds, against a tenth of one for a scrub. It keeps nothing
+    from one request to the next (rampart_scrub.mjs makes a new table for each, and the
+    exempt values come with the request), so no test sees another's text.
+    """
+    scrub.reset()
+    yield
+    scrub.reset()
+
+
 @pytest.fixture(autouse=True)
 def enable_scrub_by_default(monkeypatch):
     """Test the real default (RT_SCRUB unset -> enabled) in this module."""
     monkeypatch.delenv("RT_SCRUB", raising=False)
     monkeypatch.delenv("RT_SCRUB_ALLOW", raising=False)
     monkeypatch.delenv("RT_SCRUB_TIMEOUT", raising=False)
-    scrub.reset()
+    forget_rampart_failures()
     yield
-    scrub.reset()
+    forget_rampart_failures()
+
+
+def forget_rampart_failures() -> None:
+    """scrub.reset(), but a worker still running is kept. A test that needs a cold start calls reset()."""
+    if scrub._worker is None or scrub._worker.poll() is not None:
+        scrub.reset()
+    scrub._rampart_failure = None
+    scrub._batch_failure = None
 
 
 def _rampart_available() -> bool:
