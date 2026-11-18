@@ -420,8 +420,12 @@ def load_pack(
                 # A pack's file replaces this one: its entries are sent as the pack's probes.
                 continue
             # A template seed becomes one probe per entry in its fixture file; any
-            # other seed, one probe. See probe_templates.py.
-            probes += [_probe(seed, expanded, dataset, pack, values, path) for expanded in expand(seed, path)]
+            # other seed, one probe. See probe_templates.py. attack_suites/'s fixture was
+            # read and checked in fixture_feeds() already; a pack's own is beside its file.
+            source = feeds[fixture].shipped if (not pack.name and fixture in feeds) else None
+            probes += [
+                _probe(seed, expanded, dataset, pack, values, path) for expanded in expand(seed, path, source=source)
+            ]
     if pack.name and shared:
         shared_file, shared_seeds = shared
         for seed in shared_seeds:

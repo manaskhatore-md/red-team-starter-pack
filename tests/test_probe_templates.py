@@ -402,3 +402,28 @@ def test_loading_a_template_logs_no_rendering_error(templated, caplog):
     with caplog.at_level("ERROR"):
         single_turn_scan.profile_probes(profile)
     assert "Error rendering template" not in caplog.text
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "plain words",
+        "ends with a newline\n",
+        "two newlines at the end\n\n",
+        "a windows\r\nline break",
+        "a lone } and nothing else",
+        "{ braces that are not a blank }",
+        "{{ program_name }} households",
+        "{{ unknown }} stays as written",
+        "{% if program_name %}a {{ program_name }} probe{% endif %}",
+    ],
+)
+def test_fill_gives_what_pyrit_gives(text):
+    # fill() skips building a template for text with nothing to fill: it must still
+    # give exactly what PyRIT's own rendering gives.
+    from pyrit.models import SeedPrompt
+
+    from harnesses.pyrit_campaigns.probe_templates import fill
+
+    values = {"program_name": "SNAP"}
+    assert fill(text, **values) == SeedPrompt(value=text, data_type="text").render_template_value_silent(**values)

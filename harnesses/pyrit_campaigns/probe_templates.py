@@ -159,6 +159,11 @@ def load_dataset(path: Path) -> SeedDataset:
 
 def fill(text: str, **values) -> str:
     """Fill {{ blanks }} in text the way PyRIT fills a seed, leaving unknown ones in place."""
+    if "{" not in text and "\r" not in text and not text.endswith("\n"):
+        # Nothing to fill, and nothing Jinja would change: it only turns \r\n into \n and
+        # drops one final \n. Most pass criteria are like this, and building a template
+        # for each one was a good part of loading the probes.
+        return text
     return SeedPrompt(value=text, data_type="text").render_template_value_silent(**values)
 
 
