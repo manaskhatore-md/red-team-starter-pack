@@ -175,6 +175,23 @@ def test_a_flagged_identical_reply_stays_flagged(memory):
     assert "| FLAGGED | - | p1 |" in text and "| passed | - | p2 |" in text
 
 
+def test_a_flagged_deflected_reply_stays_flagged(memory):
+    """A reply that matches the calibration fallback but was flagged by a rubric stays FLAGGED."""
+    add_calibration(memory, "off_topic", "banana bread?", GATE_MSG)
+    add_calibration(memory, "in_scope", "What is SNAP?", "SNAP helps families buy food.")
+    add_app_probe(memory, "probe", GATE_MSG, "injection_compliance", flagged=True, rt_probe="p1")
+    text = summary(memory)
+    assert "| FLAGGED | - | p1 |" in text
+
+
+def test_a_flagged_blocked_reply_stays_flagged(memory):
+    """A block message that leaks data (e.g. repeats the user's SSN) is still a finding."""
+    add_app_probe(memory, "probe", "Blocked. Your SSN is 666-05-8193.", "pii_input_handling",
+                  flagged=True, rt_probe="p1", rt_expect_block="pii")
+    text = summary(memory)
+    assert "| FLAGGED | - | p1 |" in text
+
+
 def test_the_same_reply_to_both_halves_of_a_pair_is_not_identical(memory):
     # Equal replies to a matched pair are what a fair system gives, not a fixed message.
     add_app_probe(memory, "as person a", GATE_MSG, rt_probe="p_a", rt_pair_id="zip_01")

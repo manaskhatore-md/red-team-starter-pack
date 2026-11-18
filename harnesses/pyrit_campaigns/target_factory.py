@@ -443,21 +443,21 @@ def _parse_blocked_when(spec: str) -> list[tuple[str, frozenset[str]]]:
     return conditions
 
 
-def _check_blocked(control_text: str, conditions: list[tuple[str, frozenset[str]]]) -> str:
+def _check_blocked(events: list, conditions: list[tuple[str, frozenset[str]]]) -> str:
     """The first matching condition in APP_BLOCKED_WHEN, or "" if none match.
 
+    Evaluates each condition's field path against the parsed response events
+    directly, so it works regardless of how APP_CONTROL_PATH extracts them
+    (single path, dotted path, multiple paths).
     Returns the matching condition as ``field=value`` for reporting.
     """
-    if not control_text or not conditions:
-        return ""
-    try:
-        control = json.loads(control_text) if isinstance(control_text, str) else control_text
-    except (ValueError, TypeError):
+    if not events or not conditions:
         return ""
     for field, values in conditions:
-        found, val = _step_path(control, field)
-        if found and str(val).strip().lower() in values:
-            return f"{field}={val}"
+        for event in events:
+            found, val = _step_path(event, field)
+            if found and str(val).strip().lower() in values:
+                return f"{field}={val}"
     return ""
 
 PROMPT_SLOT = "{PROMPT}"
@@ -1485,7 +1485,11 @@ class AppChatTarget(PromptTarget):
         text = self.reply_text(body, content_type)
         trace = self.trace_text(body, content_type)
         control = self.control_text(body, content_type)
-        blocked = _check_blocked(control, self._blocked_when) if self._blocked_when and control else ""
+        if self._blocked_when:
+            _kind, events = _parse_response_events(body, content_type)
+            blocked = _check_blocked(events, self._blocked_when)
+        else:
+            blocked = ""
         metadata = {}
         if trace:
             metadata[TRACE_METADATA_KEY] = trace

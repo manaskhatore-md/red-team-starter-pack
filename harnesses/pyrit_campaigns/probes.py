@@ -345,6 +345,21 @@ def _check_own_fixtures(seeds, path: Path) -> None:
             check_entries(read_fixture(fixture_path(path, name)), users)
 
 
+_EXPECT_BLOCK_VALUES = frozenset({"true", "pii", "scope"})
+
+
+def _parse_expect_block(raw, where: str) -> str:
+    """Validate and normalize expect_block from probe YAML metadata."""
+    if raw is None or raw is False or raw == "":
+        return ""
+    value = str(raw).strip().lower()
+    if value in ("false", "0", "no"):
+        return ""
+    if value not in _EXPECT_BLOCK_VALUES:
+        raise SystemExit(f"{where}: expect_block must be true, pii, or scope, not {raw!r}")
+    return value
+
+
 def _probe(seed, expanded, dataset: str, pack: Pack, values: dict[str, str], template_file: Path) -> Probe:
     """The Probe one expanded seed is, with its placeholders filled."""
     metadata = expanded.metadata
@@ -367,7 +382,7 @@ def _probe(seed, expanded, dataset: str, pack: Pack, values: dict[str, str], tem
         pass_criteria=" ".join(fill(str(metadata.get("pass_criteria", "")), **values).split()),
         asks_for_instructions=bool(metadata.get("asks_for_instructions")),
         needs_trace=bool(metadata.get("needs_trace")),
-        expect_block=str(metadata.get("expect_block", "")),
+        expect_block=_parse_expect_block(metadata.get("expect_block"), where),
         judge_context=judge_context(metadata.get("judge_context"), where, values),
         template=expanded.template,
         fixture=expanded.fixture,

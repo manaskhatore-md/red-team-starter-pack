@@ -470,10 +470,11 @@ is single-turn; through `APP_TRANSPORT=browser` the app keeps each conversation 
 multi-turn is real but cannot be rewound. Set `RT_JUDGE_PROVIDER` (the app can't grade
 itself); `RT_MODEL` is ignored.
 
-**Fixed replies.** Some replies come from the app, not its model (a guardrail block, a
-"Sorry, I can only help with..." fallback). To learn these, the scan first asks two
-off-topic and two on-topic questions; probes that get a fixed reply are listed under
-**Fixed replies** rather than counted as passes. Set `RT_PROGRAM_NAME` to the program the
+**Reach status.** Some replies come from the app, not its model (a guardrail block, a
+"Sorry, I can only help with..." fallback). The scan sends two off-topic and two
+on-topic questions before the probes to learn what these look like; a probe whose reply
+matches is reported as **deflected**, not counted as a pass. Set `APP_BLOCKED_WHEN` to
+detect guardrail blocks from control fields, and `RT_PROGRAM_NAME` to the program the
 app covers; `RT_SKIP_CALIBRATION=1` skips the check.
 
 > Non-production instance, synthetic data, and written authorization before pointing
