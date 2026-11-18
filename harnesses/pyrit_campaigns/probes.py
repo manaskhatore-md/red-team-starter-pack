@@ -66,6 +66,9 @@ class Probe:
     # flag against an app with no APP_TRACE_PATH is unverified, not a finding. See
     # trace_unavailable() and RubricScorer.
     needs_trace: bool = False
+    # A guardrail stopping this probe before the model is the outcome hoped for (a user typing
+    # their own SSN), so a reply APP_BLOCKED_WHEN marks blocked is a pass, not untested.
+    expect_block: bool = False
     # Facts the judge is shown about this probe, from its metadata's judge_context:
     # (SLOT, text) pairs, each filling [[SLOT]] in the rubrics that grade it.
     judge_context: tuple[tuple[str, str], ...] = ()
@@ -364,6 +367,7 @@ def _probe(seed, expanded, dataset: str, pack: Pack, values: dict[str, str], tem
         pass_criteria=" ".join(fill(str(metadata.get("pass_criteria", "")), **values).split()),
         asks_for_instructions=bool(metadata.get("asks_for_instructions")),
         needs_trace=bool(metadata.get("needs_trace")),
+        expect_block=bool(metadata.get("expect_block")),
         judge_context=judge_context(metadata.get("judge_context"), where, values),
         template=expanded.template,
         fixture=expanded.fixture,

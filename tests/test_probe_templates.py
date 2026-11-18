@@ -225,7 +225,7 @@ class FlagsFictitious(FakeJudge):
 
 
 class AnswersEachProbe(FakeModel):
-    """Words each reply differently, so the run summary does not take them for a fixed reply."""
+    """Words each reply differently, so the run summary does not list them as identical replies."""
 
     async def _send_prompt_to_target_async(self, *, normalized_conversation):
         pieces = [p for m in normalized_conversation for p in m.message_pieces]
@@ -334,7 +334,7 @@ def test_template_rates_count_every_repeat_once():
         {"result": Result("a", 1), "verdict": run_summary.FLAGGED},
         {"result": Result("a", 2), "verdict": run_summary.PASSED},
         {"result": Result("b", 1), "verdict": run_summary.PASSED},
-        {"result": Result("b", 2), "verdict": run_summary.FIXED_REPLY},
+        {"result": Result("b", 2), "verdict": run_summary.DEFLECTED},
     ]
     [template], entry_rows = run_summary.template_rates(entries)
     assert (len(template["others"]), template["flagged"], template["passed"], template["no_verdict"]) == (2, 1, 2, 1)

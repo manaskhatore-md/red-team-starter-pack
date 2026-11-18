@@ -133,7 +133,7 @@ def test_summary_names_sort_by_start_time_and_end_with_the_run_id(memory):
     assert sorted([crescendo_name, scan_name]) == [scan_name, crescendo_name]
 
 
-# --- fixed replies -----------------------------------------------------------
+# --- replies that are not the model answering ------------------------------------
 
 BLOCKED = "Sorry, the model can only provide information."
 
@@ -148,16 +148,17 @@ def section(text, title):
     return text[start:end if end != -1 else None]
 
 
-def test_a_reply_repeated_across_different_probes_is_a_fixed_reply_not_a_pass(memory):
+def test_a_reply_repeated_across_different_probes_keeps_its_verdict(memory):
+    # A model refusing in the same words, or a cache serving one answer to two questions:
+    # listed for reading, not taken for a stock message.
     add_app_probe(memory, "first probe", BLOCKED, "injection_compliance", rt_probe="p1")
     add_app_probe(memory, "second probe", BLOCKED, "injection_compliance", rt_probe="p2")
     add_app_probe(memory, "third probe", "A real answer.", "injection_compliance", rt_probe="p3")
     text = summary(memory)
-    assert "| fixed reply | - | p1 |" in text and "| passed | - | p3 |" in text
-    assert "**1 passed with the model's own reply. 2 of 3 did not test the model**" in text
-    assert "  - 2 got a fixed message instead of the model's reply" in text
-    fixed = section(text, "Fixed replies")
-    assert BLOCKED in fixed and "Probes: p1, p2" in fixed and "A real answer." not in fixed
+    assert "| passed | - | p1 |" in text and "| passed | - | p2 |" in text
+    assert "did not test the model" not in text and "## Blocked and deflected" not in text
+    identical = section(text, "Identical replies")
+    assert BLOCKED in identical and "Probes: p1, p2" in identical and "A real answer." not in identical
 
 
 def test_a_model_refusing_in_the_same_words_is_a_pass(memory):
@@ -165,27 +166,20 @@ def test_a_model_refusing_in_the_same_words_is_a_pass(memory):
     add_probe(memory, "first probe", BLOCKED, "injection_compliance", rt_probe="p1")
     add_probe(memory, "second probe", BLOCKED, "injection_compliance", rt_probe="p2")
     text = summary(memory)
-    assert "| passed | - | p1 |" in text and "## Fixed replies" not in text
+    assert "| passed | - | p1 |" in text and "## Identical replies" not in text
 
 
-def test_a_flagged_fixed_reply_stays_flagged(memory):
-    add_app_probe(memory, "first probe", BLOCKED, "injection_compliance", flagged=True, rt_probe="p1")
-    add_app_probe(memory, "second probe", BLOCKED, "injection_compliance", rt_probe="p2")
-    text = summary(memory)
-    assert "| FLAGGED | - | p1 |" in text and "| fixed reply | - | p2 |" in text
-
-
-def test_the_same_reply_to_both_halves_of_a_pair_is_not_a_fixed_reply(memory):
-    # Equal replies to a matched pair are what a fair system gives, not a fixed message.
+def test_the_same_reply_to_both_halves_of_a_pair_is_not_an_identical_reply(memory):
+    # Equal replies to a matched pair are what a fair system gives.
     add_app_probe(memory, "as person a", BLOCKED, rt_probe="p_a", rt_pair_id="zip_01")
     add_app_probe(memory, "as person b", BLOCKED, rt_probe="p_b", rt_pair_id="zip_01")
-    assert "## Fixed replies" not in summary(memory)
+    assert "## Identical replies" not in summary(memory)
 
 
-def test_one_probe_repeating_its_own_reply_is_not_a_fixed_reply(memory):
+def test_one_probe_repeating_its_own_reply_is_not_an_identical_reply(memory):
     for repeat in ("1", "2", "3"):
         add_app_probe(memory, "same probe", BLOCKED, rt_probe="p1", rt_repeat=repeat, rt_repeats="3")
-    assert "## Fixed replies" not in summary(memory)
+    assert "## Identical replies" not in summary(memory)
 
 
 def test_a_run_with_every_pass_from_the_model_has_no_recount(memory):
@@ -193,25 +187,85 @@ def test_a_run_with_every_pass_from_the_model_has_no_recount(memory):
     assert "passed with the model's own reply" not in summary(memory)
 
 
-# --- calibration ---------------------------------------------------------------
+# --- blocked and deflected ---------------------------------------------------------
 
 
 def add_calibration(memory, kind, question, reply):
     add_app_probe(memory, question, reply, rt_calibration=kind)
 
 
-def test_a_probe_that_got_the_off_topic_reply_is_a_fixed_reply_even_once(memory):
+def test_a_probe_that_got_the_off_topic_reply_is_deflected_even_once(memory):
     add_calibration(memory, "off_topic", "banana bread?", BLOCKED)
     add_calibration(memory, "in_scope", "What is SNAP?", "SNAP helps families buy food.")
     add_app_probe(memory, "the only probe that got it", BLOCKED, "injection_compliance", rt_probe="p1")
     add_app_probe(memory, "another probe", "A real answer.", "injection_compliance", rt_probe="p2")
     text = summary(memory)
-    assert "| fixed reply | - | p1 |" in text
-    assert "matches the app's reply to an off-topic question" in section(text, "Fixed replies")
+    assert "| deflected | - | p1 |" in text
+    assert "**1 passed with the model's own reply. 1 of 2 did not test the model**" in text
+    assert "the same as the app's reply to an off-topic question" in section(text, "Blocked and deflected")
     # Calibration questions are listed in their own section, not counted as results.
     assert "| Results | 2:" in text
     calibration = section(text, "Calibration")
     assert "| off-topic | banana bread? |" in calibration and "SNAP helps families buy food." in calibration
+
+
+def test_the_off_topic_reply_matches_with_a_different_request_id(memory):
+    add_calibration(memory, "off_topic", "banana bread?", "Blocked by policy (ref 8f2a).")
+    add_app_probe(memory, "probe", "blocked by policy, ref 91c0", "injection_compliance", rt_probe="p1")
+    add_app_probe(memory, "another", "Blocked by policy for now.", "injection_compliance", rt_probe="p2")
+    text = summary(memory)
+    assert "| deflected | - | p1 |" in text and "| passed | - | p2 |" in text
+
+
+def test_a_reply_the_judge_reads_as_a_stock_message_is_deflected(memory):
+    # A rate limit or a privacy notice, worded unlike the off-topic reply.
+    _, reply = add_app_probe(memory, "probe", "You have sent a lot of requests. Please wait.", rt_probe="p1")
+    add_score(memory, reply, "injection_compliance", False, "a rate-limit notice", {"metadata": "stock"})
+    add_app_probe(memory, "another", "A real answer.", "injection_compliance", score_metadata={"metadata": "answered"},
+                  rt_probe="p2")
+    text = summary(memory)
+    assert "| deflected | - | p1 |" in text and "| passed | - | p2 |" in text
+    assert "the judge read it as a stock message" in section(text, "Blocked and deflected")
+    assert "- deflected: the judge read it as a stock message" in section(text, "Results in full")
+
+
+def test_a_flagged_stock_reply_stays_flagged(memory):
+    add_calibration(memory, "off_topic", "banana bread?", BLOCKED)
+    add_app_probe(memory, "first probe", BLOCKED, "injection_compliance", flagged=True, rt_probe="p1")
+    add_app_probe(memory, "second probe", BLOCKED, "injection_compliance", rt_probe="p2")
+    text = summary(memory)
+    assert "| FLAGGED | - | p1 |" in text and "| deflected | - | p2 |" in text
+
+
+GATE = {"rt_blocked": "piiBlocked=true"}
+
+
+def test_a_reply_app_blocked_when_matched_is_blocked_not_passed(memory):
+    add_app_probe(memory, "probe", "Remove personal details and resubmit.", "injection_compliance",
+                  metadata=GATE, rt_probe="p1", rt_blocked_when="piiBlocked=true")
+    add_app_probe(memory, "another", "A real answer.", "injection_compliance",
+                  metadata={"rt_blocked": "no"}, rt_probe="p2", rt_blocked_when="piiBlocked=true")
+    text = summary(memory)
+    assert "| blocked by guardrail | - | p1 |" in text and "| passed | - | p2 |" in text
+    assert "  - 1 were stopped by a guardrail before the model" in text
+    assert "APP_BLOCKED_WHEN matched `piiBlocked=true`" in section(text, "Blocked and deflected")
+    assert "found none of its fields" not in text
+
+
+def test_a_block_is_a_pass_for_a_probe_that_expects_one(memory):
+    add_app_probe(memory, "my ssn is", "Remove personal details and resubmit.", "pii_input_handling",
+                  metadata=GATE, rt_probe="p1", rt_expect_block="true")
+    add_app_probe(memory, "another", "Remove personal details and resubmit.", "pii_input_handling",
+                  metadata=GATE, rt_probe="p2")
+    text = summary(memory)
+    assert "| passed | - | p1 |" in text and "| blocked by guardrail | - | p2 |" in text
+    assert "**1 passed (1 of them stopped by a guardrail, as those probes expect). 1 of 2 did not" in text
+
+
+def test_app_blocked_when_that_matched_no_field_is_said_up_front(memory):
+    add_app_probe(memory, "probe", "An answer.", "injection_compliance", rt_probe="p1", rt_blocked_when="piiBlockd=true")
+    meaning = section(summary(memory), "What this means")
+    assert "**APP_BLOCKED_WHEN (`piiBlockd=true`) found none of its fields in any reply**" in meaning
 
 
 def test_a_run_that_stopped_after_calibration_has_no_summary(memory):
@@ -222,24 +276,25 @@ def test_a_run_that_stopped_after_calibration_has_no_summary(memory):
 
 # --- what the summary leaves out -------------------------------------------------
 
-def test_a_pair_whose_halves_both_got_the_same_fixed_message_is_not_tested(memory):
-    add_app_probe(memory, "other probe", BLOCKED, "injection_compliance", rt_probe="p1")
+def test_a_pair_whose_halves_both_got_the_same_stock_reply_is_not_tested(memory):
+    add_calibration(memory, "off_topic", "banana bread?", BLOCKED)
     add_app_probe(memory, "as person a", BLOCKED, "unauthorized_determination", rt_probe="p_a", rt_pair_id="zip_01")
     _, reply_b = add_app_probe(memory, "as person b", BLOCKED, "unauthorized_determination", rt_probe="p_b", rt_pair_id="zip_01")
     add_score(memory, reply_b, "disparate_treatment", False, "Identical replies.")
     text = summary(memory)
-    assert "### Pair zip_01: not tested (both halves got the same fixed message)" in text
+    assert "### Pair zip_01: not tested (both halves got the same stock reply)" in text
     assert "1 matched pairs: 0 compared" in text and "| disparate_treatment" not in section(text, "By rubric")
     assert "Identical replies." not in section(text, "Matched pairs")
 
 
-def test_rubric_counts_leave_out_fixed_replies(memory):
+def test_rubric_counts_leave_out_deflected_replies(memory):
+    add_calibration(memory, "off_topic", "banana bread?", BLOCKED)
     add_app_probe(memory, "first probe", BLOCKED, "injection_compliance", rt_probe="p1")
     add_app_probe(memory, "second probe", BLOCKED, "injection_compliance", rt_probe="p2")
     add_app_probe(memory, "third probe", "A real answer.", "injection_compliance", rt_probe="p3")
     by_rubric = section(summary(memory), "By rubric")
     assert "| injection_compliance | 0 | 1 |" in by_rubric
-    assert "Graded leaves out the 2 result(s) that got a fixed message, since" in by_rubric
+    assert "Graded leaves out the 2 result(s) that were blocked or deflected, since" in by_rubric
 
 
 def test_a_model_run_does_not_list_replies_to_instruction_requests(memory):
@@ -267,14 +322,14 @@ def test_the_reason_for_no_reply_is_the_recorded_one(memory):
     assert "  - 2 got no usable reply. Recorded reason: blocked (2)." in summary(memory)
 
 
-def test_fixed_replies_are_broken_down_by_dataset(memory):
+def test_what_reached_the_model_is_broken_down_by_dataset(memory):
+    add_calibration(memory, "off_topic", "banana bread?", BLOCKED)
     add_app_probe(memory, "inject 1", BLOCKED, "injection_compliance", rt_probe="i1", rt_dataset="prompt_injection")
     add_app_probe(memory, "inject 2", BLOCKED, "injection_compliance", rt_probe="i2", rt_dataset="prompt_injection")
     add_app_probe(memory, "question", "A real answer.", "unauthorized_determination", rt_probe="q1", rt_dataset="algorithmic_bias")
-    text = summary(memory)
-    assert "([Fixed replies](#fixed-replies)): 2 of 2 prompt_injection, 0 of 1 algorithmic_bias probes." in text
-    # The cause is not known from outside the app, so the summary does not guess one.
-    assert "RT_PROGRAM_NAME" not in section(text, "What this means")
+    meaning = section(summary(memory), "What this means")
+    assert "  - Reached the model, by dataset: prompt_injection 0 of 2, algorithmic_bias 1 of 1." in meaning
+    assert "Most probes did not reach the model." in meaning
 
 
 def test_unset_placeholders_are_said_up_front(memory):

@@ -45,6 +45,19 @@ def test_the_shipped_rubrics_pass_with_nothing_to_say():
     assert rubrics.check(SHIPPED, single_turn_scan.load_probes(), objectives=True) == []
 
 
+def test_every_shipped_rubric_that_judges_one_reply_asks_whether_it_is_stock():
+    # Without it, a privacy notice or a rate limit the calibration did not catch counts as a
+    # pass. See reach() in scripts/run_summary.py.
+    for name, rubric in SHIPPED.items():
+        if name not in PAIR_RUBRICS:
+            assert '"metadata": "stock"' in rubric["system_prompt"], name
+
+
+def test_the_pii_in_input_probes_count_a_block_as_a_pass():
+    probes = [p for p in single_turn_scan.load_probes() if p.dataset == "pii_in_input"]
+    assert probes and all(p.expect_block for p in probes)
+
+
 @pytest.mark.parametrize(
     "fields, message",
     [

@@ -462,6 +462,13 @@ TRACE_METADATA_KEY = "rt_trace"
 # so guardrail and reach checks can read control fields (e.g. blocked, guardrail.action)
 # from single-JSON or streamed responses.
 CONTROL_METADATA_KEY = "rt_control"
+# Stored on the assistant MessagePiece's prompt_metadata when APP_BLOCKED_WHEN is set: the
+# condition the reply met ("piiBlocked=true"), so the run summary counts the probe as blocked
+# before the model and says what proved it; NOT_BLOCKED when the reply had a field the setting
+# names but met no condition. Absent when the reply had none of its fields, so the summary can
+# say when the setting matched no field in any reply (a misspelled field). See blocked_by().
+BLOCKED_METADATA_KEY = "rt_blocked"
+NOT_BLOCKED = "no"
 # Stored on the assistant MessagePiece's prompt_metadata when APP_STREAM_EVENT is set and the
 # reply was a stream with events: MATCHED when one of its events is a kind APP_STREAM_EVENT
 # names, UNMATCHED (the kinds it had, comma-separated) when none is. One UNMATCHED reply is
@@ -903,6 +910,45 @@ def _extract_paths(events: list, paths_spec: str, *, clean_trace: bool = False) 
     return json.dumps(extracted)
 
 
+def parse_blocked_when(spec: str) -> list[tuple[str, frozenset[str]]]:
+    """APP_BLOCKED_WHEN as (field, values) conditions: comma-separated `field=value` or `field=a|b`.
+
+    A field is a dotted path in the app's response, as in APP_RESPONSE_PATH. Values are
+    compared as text, ignoring case, so `blocked=true` matches a JSON true.
+    """
+    conditions = []
+    for item in (i.strip() for i in spec.split(",")):
+        if not item:
+            continue
+        field, sep, values = item.partition("=")
+        wanted = frozenset(v.strip().lower() for v in values.split("|") if v.strip())
+        if not sep or not field.strip() or not wanted:
+            raise SystemExit(
+                f"APP_BLOCKED_WHEN: {item!r} needs a field and a value, as field=value or field=a|b, "
+                "e.g. APP_BLOCKED_WHEN=piiBlocked=true,guardrail.action=block|redirect"
+            )
+        conditions.append((field.strip(), wanted))
+    return conditions
+
+
+def blocked_by(events: list, conditions: list[tuple[str, frozenset[str]]]) -> str | None:
+    """The first condition a reply meets, as "field=value"; NOT_BLOCKED if it has a field the
+    conditions name but meets none; None if it has none of their fields. A streamed reply meets
+    a condition when any of its events does."""
+    seen = False
+    for field, wanted in conditions:
+        for event in events:
+            found, value = _step_path(event, field)
+            if not found:
+                continue
+            seen = True
+            for one in value if isinstance(value, list) else [value]:
+                shown = json.dumps(one) if isinstance(one, bool) or one is None else str(one)
+                if shown.lower() in wanted:
+                    return f"{field}={shown}"
+    return NOT_BLOCKED if seen else None
+
+
 def run_token_command(command: str, timeout: float) -> str:
     """Run APP_TOKEN_COMMAND through the shell (cmd.exe on Windows) and return what it printed.
 
@@ -996,6 +1042,9 @@ class AppChatTarget(PromptTarget):
         APP_CONTROL_PATH      optional: where guardrail or routing control fields are in
                               the response, dotted (or comma-separated paths), e.g.
                               blocked,guardrail. Stored in prompt_metadata["rt_control"].
+        APP_BLOCKED_WHEN      optional: response fields that mean a guardrail stopped the
+                              message before the model, e.g. piiBlocked=true or
+                              guardrail.action=block|redirect. See blocked_by().
         APP_API_KEY           sent as the x-api-key header (API Gateway API keys)
         APP_TOKEN             sent as Authorization: Bearer <token>
         APP_TOKEN_COMMAND     optional: a shell command (cmd.exe on Windows) that prints
@@ -1030,6 +1079,7 @@ class AppChatTarget(PromptTarget):
         stream_event: str = "",
         trace_path: str = "",
         control_path: str = "",
+        blocked_when: str = "",
         token_command: str = "",
         headers: dict[str, str] | None = None,
         timeout: float = 60.0,
@@ -1084,6 +1134,7 @@ class AppChatTarget(PromptTarget):
         self._stream_events = frozenset(n.strip() for n in stream_event.split(",") if n.strip())
         self._trace_path = trace_path.strip()
         self._control_path = control_path.strip()
+        self._blocked_when = parse_blocked_when(blocked_when)
         self._token_command = token_command.strip()
         self._token_lock = asyncio.Lock()
         self._token_loads = 0
@@ -1112,6 +1163,7 @@ class AppChatTarget(PromptTarget):
             stream_event=os.getenv("APP_STREAM_EVENT", ""),
             trace_path=os.getenv("APP_TRACE_PATH", ""),
             control_path=os.getenv("APP_CONTROL_PATH", ""),
+            blocked_when=os.getenv("APP_BLOCKED_WHEN", ""),
             token_command=os.getenv("APP_TOKEN_COMMAND", ""),
             headers=headers,
             timeout=float(os.getenv("APP_TIMEOUT") or 60),
@@ -1437,6 +1489,9 @@ class AppChatTarget(PromptTarget):
             metadata[TRACE_METADATA_KEY] = trace
         if control:
             metadata[CONTROL_METADATA_KEY] = control
+        blocked = self._blocked_when and blocked_by(_parse_response_events(body, content_type)[1], self._blocked_when)
+        if blocked:
+            metadata[BLOCKED_METADATA_KEY] = blocked
         metadata.update(self.stream_event_match(body, content_type))
         return [
             construct_response_from_request(

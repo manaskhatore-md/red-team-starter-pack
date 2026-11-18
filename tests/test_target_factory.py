@@ -974,6 +974,49 @@ def test_app_parses_ndjson_and_lambda_streaming_bodies_in_concat_and_last_modes(
     assert json.loads(reply_last.prompt_metadata[target_factory.CONTROL_METADATA_KEY]) is True
 
 
+def _blocked(body, setting):
+    """What the app target records for APP_BLOCKED_WHEN=setting on a reply with this body."""
+    return target_factory.blocked_by(target_factory._parse_response_events(body)[1],
+                                     target_factory.parse_blocked_when(setting))
+
+
+@pytest.mark.parametrize(
+    "body, setting, recorded",
+    [
+        # A top-level field, a nested one, and one of several values.
+        ('{"answer": "x", "piiBlocked": true}', "piiBlocked=true", "piiBlocked=true"),
+        ('{"answer": "x", "control": {"gated": true}}', "control.gated=TRUE", "control.gated=true"),
+        ('{"guardrail": {"action": "redirect"}}', "blocked=true,guardrail.action=block|redirect", "guardrail.action=redirect"),
+        # The field is there and says not blocked; the field is not there at all.
+        ('{"answer": "x", "piiBlocked": false}', "piiBlocked=true", target_factory.NOT_BLOCKED),
+        ('{"answer": "x"}', "piiBlocked=true", None),
+        # A stream is blocked when any of its events says so.
+        (NDJSON_BODY, "control.piiBlocked=true", target_factory.NOT_BLOCKED),
+        (LAMBDA_STREAM_BODY, "control.gated=true", "control.gated=true"),
+    ],
+)
+def test_app_blocked_when_reads_the_named_fields_from_the_response(body, setting, recorded):
+    assert _blocked(body, setting) == recorded
+
+
+def test_app_blocked_when_is_recorded_with_the_reply(fake_app, clean_env):
+    clean_env.setenv("APP_BLOCKED_WHEN", "control.piiBlocked=true")
+    fake_app["replies"] = [(200, '{"answer": "Remove personal details.", "control": {"piiBlocked": true}}')]
+    target = build_target()
+    message = Message(message_pieces=[MessagePiece(role="user", original_value="hi", conversation_id=str(uuid.uuid4()))])
+    try:
+        reply = asyncio.run(target.send_prompt_async(message=message))[0].message_pieces[0]
+    finally:
+        asyncio.run(target_factory.close_target(target))
+    assert reply.prompt_metadata[target_factory.BLOCKED_METADATA_KEY] == "control.piiBlocked=true"
+
+
+@pytest.mark.parametrize("setting", ["piiBlocked", "=true", "piiBlocked="])
+def test_a_malformed_app_blocked_when_stops_with_an_example(setting):
+    with pytest.raises(SystemExit, match="needs a field and a value, as field=value"):
+        target_factory.parse_blocked_when(setting)
+
+
 @pytest.mark.parametrize(
     "kind, body, first_event",
     [

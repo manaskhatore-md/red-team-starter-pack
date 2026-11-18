@@ -1097,6 +1097,7 @@ def expand_repeats(
                     "rt_control": "true" if probe.control else "",
                     "rt_asks_for_instructions": str(probe.asks_for_instructions).lower(),
                     NEEDS_TRACE_LABEL: str(probe.needs_trace).lower(),
+                    "rt_expect_block": "true" if probe.expect_block else "",
                     "rt_template": probe.template,
                     "rt_template_file": probe.template_file,
                     "rt_fixture": probe.fixture,
@@ -1515,6 +1516,7 @@ async def main(
         "rt_placeholders": ", ".join(unfilled),
         "rt_trace_path": os.getenv("APP_TRACE_PATH", "").strip(),
         "rt_stream_event": os.getenv("APP_STREAM_EVENT", "").strip(),
+        "rt_blocked_when": os.getenv("APP_BLOCKED_WHEN", "").strip(),
         # "no" when APP_RETRIEVAL=no: the app has no documents, so a flag needs no trace to stand.
         "rt_app_retrieval": "no" if app_has_no_retrieval() else "",
         # Which rubrics judged the run: the rubric file's fingerprint and the pack's version.

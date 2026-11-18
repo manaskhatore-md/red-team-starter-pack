@@ -97,10 +97,11 @@ SCAN = {"rt_campaign": "single_turn_scan", "rt_run_id": RUN, "rt_profile": "publ
 
 
 def add_probe(memory, probe, reply, rubric=None, flagged=False, rationale="because", outcome=AttackOutcome.UNDETERMINED,
-              error="none", minutes=0, trace="", metadata=None, **labels):
+              error="none", minutes=0, trace="", metadata=None, score_metadata=None, **labels):
     """One result: the probe, the reply, and a judge score if a rubric is given.
 
-    trace is stored with the reply as the app target stores what it read at APP_TRACE_PATH."""
+    trace is stored with the reply as the app target stores what it read at APP_TRACE_PATH;
+    metadata is any other prompt_metadata on the reply, score_metadata the judge's."""
     conversation_id = str(uuid.uuid4())
     user = MessagePiece(role="user", original_value=probe, conversation_id=conversation_id)
     memory.add_message_to_memory(request=Message(message_pieces=[user]))
@@ -109,16 +110,17 @@ def add_probe(memory, probe, reply, rubric=None, flagged=False, rationale="becau
                           prompt_metadata=piece_metadata)
     memory.add_message_to_memory(request=Message(message_pieces=[answer]))
     if rubric:
-        add_score(memory, answer, rubric, flagged, rationale)
+        add_score(memory, answer, rubric, flagged, rationale, score_metadata)
     result = AttackResult(conversation_id=conversation_id, objective=probe, outcome=outcome,
                           timestamp=T0 + timedelta(minutes=minutes), labels={**SCAN, **labels})
     memory.add_attack_results_to_memory(attack_results=[result])
     return result, answer
 
 
-def add_score(memory, piece, rubric, flagged, rationale):
+def add_score(memory, piece, rubric, flagged, rationale, metadata=None):
     memory.add_scores_to_memory(scores=[Score(
         score_value="true" if flagged else "false",
+        score_metadata=metadata,
         score_type="true_false",
         score_category=[rubric],
         score_rationale=rationale,

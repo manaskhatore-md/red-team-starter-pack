@@ -470,11 +470,27 @@ is single-turn; through `APP_TRANSPORT=browser` the app keeps each conversation 
 multi-turn is real but cannot be rewound. Set `RT_JUDGE_PROVIDER` (the app can't grade
 itself); `RT_MODEL` is ignored.
 
-**Fixed replies.** Some replies come from the app, not its model (a guardrail block, a
-"Sorry, I can only help with..." fallback). To learn these, the scan first asks two
-off-topic and two on-topic questions; probes that get a fixed reply are listed under
-**Fixed replies** rather than counted as passes. Set `RT_PROGRAM_NAME` to the program the
-app covers; `RT_SKIP_CALIBRATION=1` skips the check.
+**Blocked and deflected replies.** Some replies are not the model answering the probe: a
+guardrail block, a "Sorry, I can only help with..." redirect, a privacy notice, a rate
+limit. They are listed under **Blocked and deflected** in the run summary, not counted as
+passes (a flag stays a flag). The kit finds them three ways:
+
+- **Blocked**: set `APP_BLOCKED_WHEN` to the response fields that say a guardrail stopped
+  the message, e.g. `piiBlocked=true,guardrail.action=block|redirect`. This is the reliable
+  way, when the app returns such fields. A probe that sets `expect_block: true` (the
+  `pii_in_input` probes) counts a block as a pass.
+- **Deflected, by calibration**: the scan first asks two off-topic and two on-topic
+  questions, and a probe that gets the same reply as an off-topic one (request ids and
+  times aside) was deflected. Set `RT_PROGRAM_NAME` to the program the app covers;
+  `RT_SKIP_CALIBRATION=1` skips the check.
+- **Deflected, by the judge**: each rubric also asks the judge whether the reply is a canned
+  message (a privacy notice, a rate limit, an error, "I don't have that information" to a
+  request that asked for none) rather than a reply to the probe. A refusal, however generic,
+  is a reply: the model refusing in stock words is a pass.
+
+The same reply to several different probes keeps its verdict, and is listed under
+**Identical replies**: a model can refuse in the same words, and a cache serving one answer
+to two different questions is a finding of its own.
 
 > Non-production instance, synthetic data, and written authorization before pointing
 > any of this at a real system.

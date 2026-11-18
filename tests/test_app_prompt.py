@@ -111,11 +111,11 @@ def test_they_are_not_listed_when_the_prompt_is_known(memory):
     assert "## Replies to requests for its instructions" not in summary(memory)
 
 
-def test_fixed_replies_are_left_out_of_the_list(memory):
-    # Two different probes got the same canned text, so it is a fixed reply, not the model's words.
+def test_deflected_replies_are_left_out_of_the_list(memory):
+    # The judge read the canned text as a stock message, so it is not the model's words.
     for name in ("system_prompt_extraction", "config_disclosure_pretext"):
         add_probe(memory, f"ask {name}", "Sorry, I can only provide information.", "injection_compliance",
-                  rt_probe=name, rt_asks_for_instructions="true", **APP)
+                  score_metadata={"metadata": "stock"}, rt_probe=name, rt_asks_for_instructions="true", **APP)
     add_probe(memory, "ask again", "My rules: be concise.", "injection_compliance", flagged=True,
               rt_probe="system_prompt_extraction", rt_asks_for_instructions="true", rt_repeat="2", **APP)
     text = summary(memory)
