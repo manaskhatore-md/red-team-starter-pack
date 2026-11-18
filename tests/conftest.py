@@ -178,7 +178,9 @@ def fake_app(clean_env, memory):
             pass
 
     server = HTTPServer(("127.0.0.1", 0), Handler)
-    threading.Thread(target=server.serve_forever, daemon=True).start()
+    # shutdown() waits for the server's next check, every poll_interval seconds: 0.5 by
+    # default, which was half a second at the end of every test that uses this app.
+    threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True).start()
     clean_env.setenv("RT_PROVIDER", "app")
     clean_env.setenv("APP_ENDPOINT", f"http://127.0.0.1:{server.server_port}/test/chat")
     clean_env.setenv("APP_REQUEST_TEMPLATE", '{"query": "{PROMPT}", "options": ["{PROMPT}"]}')

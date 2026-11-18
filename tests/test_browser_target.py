@@ -364,7 +364,7 @@ def signed_in_api():
     app = HTTPServer(("127.0.0.1", 0), App)
     sign_in = HTTPServer(("127.0.0.1", 0), SignInSite)
     for server in (app, sign_in):
-        threading.Thread(target=server.serve_forever, daemon=True).start()
+        threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True).start()
     state["url"] = f"http://127.0.0.1:{app.server_port}/chat"
     yield state
     for server in (app, sign_in):

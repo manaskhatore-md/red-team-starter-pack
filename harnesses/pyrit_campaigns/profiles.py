@@ -23,6 +23,8 @@ rather than stretching one of these to fit: a probe spec, a checklist, and where
 useful a goal file and a stand-in prompt.
 """
 
+import copy
+import functools
 import os
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -30,6 +32,16 @@ from pathlib import Path
 import yaml
 
 from harnesses.pyrit_campaigns.target_factory import resolve_provider
+
+
+@functools.lru_cache(maxsize=256)
+def _parsed_yaml(raw: bytes):
+    return yaml.safe_load(raw.decode("utf-8"))
+
+
+def load_yaml_file(path: Path):
+    """yaml.safe_load on a UTF-8 file, cached by its exact bytes and returned as a fresh copy."""
+    return copy.deepcopy(_parsed_yaml(path.read_bytes()))
 
 # Rubrics that compare two responses instead of grading one. They cannot run in a
 # single-turn scan, because there is nothing to compare a lone response against -
@@ -92,7 +104,7 @@ def read_checklist(path: Path) -> tuple[str, ...]:
     """The items of a checklist.yaml, or none if there is no such file. A malformed file stops the run."""
     if not path.is_file():
         return ()
-    data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    data = load_yaml_file(path) or {}
     items = data.get("checklist") if isinstance(data, dict) else None
     if not isinstance(items, list) or not all(isinstance(item, str) and item.strip() for item in items):
         raise SystemExit(f"{shown_path(path)} needs a `checklist:` list of text items.")
@@ -216,17 +228,22 @@ def extra_packs() -> tuple[Pack, ...]:
     return tuple(packs)
 
 
-def fed_fixtures(suite: str) -> frozenset[str]:
-    """The suite's attack_suites/ fixtures a pack's file of the same name feeds, e.g. {"facts", "excerpts"}:
-    every fixture one of its templates reads."""
-    path = dataset_path(suite)
-    data = yaml.safe_load(path.read_text(encoding="utf-8")) if path.is_file() else None
+@functools.lru_cache(maxsize=64)
+def _fed_fixtures_bytes(raw: bytes) -> frozenset[str]:
+    data = _parsed_yaml(raw)
     seeds = data.get("seeds") if isinstance(data, dict) else None
     return frozenset(
         str(seed["metadata"]["expand_with"])
         for seed in seeds or []
         if isinstance(seed, dict) and isinstance(seed.get("metadata"), dict) and seed["metadata"].get("expand_with")
     )
+
+
+def fed_fixtures(suite: str) -> frozenset[str]:
+    """The suite's attack_suites/ fixtures a pack's file of the same name feeds, e.g. {"facts", "excerpts"}:
+    every fixture one of its templates reads."""
+    path = dataset_path(suite)
+    return _fed_fixtures_bytes(path.read_bytes()) if path.is_file() else frozenset()
 
 
 def _pack_feeds(pack: Pack) -> dict:

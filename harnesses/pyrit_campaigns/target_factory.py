@@ -34,9 +34,11 @@ Providers come in two flavors, which is why they are not all one dict:
 """
 
 import asyncio
+import functools
 import json
 import os
 import re
+import ssl
 import subprocess
 import uuid
 
@@ -1431,7 +1433,7 @@ class AppChatTarget(PromptTarget):
         import httpx
 
         if self._client is None:
-            self._client = httpx.AsyncClient(timeout=self._timeout)
+            self._client = httpx.AsyncClient(timeout=self._timeout, verify=app_ssl_context())
         response = await self._client.post(self._endpoint, content=body, headers=self._headers)
         return response.status_code, response.text, response.headers.get("content-type", "")
 
@@ -1510,6 +1512,25 @@ class AppChatTarget(PromptTarget):
         if self._client is not None:
             await self._client.aclose()
             self._client = None
+
+
+def app_ssl_context() -> ssl.SSLContext:
+    """The certificates the app target checks HTTPS replies against, loaded once per process.
+
+    This is what httpx would load for a new client on its own: SSL_CERT_FILE, else
+    SSL_CERT_DIR, else certifi's bundle. Loading them takes a second or two (more with a
+    corporate bundle), and httpx does it again for every client it makes. Changing either
+    variable while the process runs loads them again.
+    """
+    return _ssl_context(os.environ.get("SSL_CERT_FILE", ""), os.environ.get("SSL_CERT_DIR", ""))
+
+
+@functools.lru_cache(maxsize=None)
+def _ssl_context(cert_file: str, cert_dir: str) -> ssl.SSLContext:
+    import httpx
+
+    # The arguments are the cache key; httpx reads the same two variables itself.
+    return httpx.create_ssl_context()
 
 
 def check_aws_creds() -> None:

@@ -1380,8 +1380,9 @@ async def main(
     rubrics = rubrics_for(probes)
     # The stand-in prompt describes the deployment, so whether it holds records is the
     # profile's call, not this run's --probes: an injection-only run still has data to leak.
-    # The multi-turn campaigns decide the same way.
-    records = records_for(profile_rubrics(profile))
+    # The multi-turn campaigns decide the same way. (profile_rubrics(profile), from the
+    # probes already loaded: loading them again took seconds.)
+    records = records_for(rubrics_for(select_probes(all_probes, profile.probes)))
     system_prompt = load_system_prompt(
         profile.key, placeholders(), new_canary(), records_section(records) if records else ""
     )

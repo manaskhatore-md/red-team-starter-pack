@@ -274,7 +274,7 @@ def failing_provider(clean_env, fake_keys, memory):
             pass
 
     server = HTTPServer(("127.0.0.1", 0), Handler)
-    threading.Thread(target=server.serve_forever, daemon=True).start()
+    threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True).start()
     clean_env.setenv("OPENAI_API_BASE", f"http://127.0.0.1:{server.server_port}/v1")
     # Two attempts at most for the errors worth retrying, with no wait between them, to
     # keep the test quick.
@@ -1638,3 +1638,17 @@ def test_smoke_test_names_app_stream_event_and_seen_kinds_when_stream_matches_no
     out = capsys.readouterr().out
     assert "Hint: no stream event matched APP_STREAM_EVENT=response.output_txt.delta" in out
     assert "response.output_text.delta" in out
+
+
+def test_app_ssl_context_reuses_cached_bundle_until_ssl_env_changes(clean_env):
+    import certifi
+
+    clean_env.delenv("SSL_CERT_FILE", raising=False)
+    clean_env.delenv("SSL_CERT_DIR", raising=False)
+    default_ctx = target_factory.app_ssl_context()
+    assert target_factory.app_ssl_context() is default_ctx
+
+    clean_env.setenv("SSL_CERT_FILE", certifi.where())
+    file_ctx = target_factory.app_ssl_context()
+    assert file_ctx is not default_ctx
+    assert target_factory.app_ssl_context() is file_ctx

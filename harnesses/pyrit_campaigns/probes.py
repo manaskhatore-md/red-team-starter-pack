@@ -7,8 +7,6 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
-import yaml
-
 from harnesses.pyrit_campaigns import profiles
 from harnesses.pyrit_campaigns.probe_templates import (
     FixtureFile,
@@ -316,7 +314,7 @@ def _check_fed(fixture: FixtureFile, asks: set[str], templates) -> None:
 
 def _fixtures_read(path: Path) -> set[str]:
     """The fixtures the templates in a probe file name in `expand_with`."""
-    data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    data = profiles.load_yaml_file(path) or {}
     seeds = data.get("seeds") if isinstance(data, dict) else None
     return {
         str(seed["metadata"]["expand_with"])
@@ -420,8 +418,12 @@ def load_pack(
                 # A pack's file replaces this one: its entries are sent as the pack's probes.
                 continue
             # A template seed becomes one probe per entry in its fixture file; any
-            # other seed, one probe. See probe_templates.py.
-            probes += [_probe(seed, expanded, dataset, pack, values, path) for expanded in expand(seed, path)]
+            # other seed, one probe. See probe_templates.py. attack_suites/'s fixture was
+            # read and checked in fixture_feeds() already; a pack's own is beside its file.
+            source = feeds[fixture].shipped if (not pack.name and fixture in feeds) else None
+            probes += [
+                _probe(seed, expanded, dataset, pack, values, path) for expanded in expand(seed, path, source=source)
+            ]
     if pack.name and shared:
         shared_file, shared_seeds = shared
         for seed in shared_seeds:
