@@ -44,6 +44,9 @@ cp .env.example .env          # use `copy` on Windows
 With pip instead: `python -m venv .venv`, activate it as above, then
 `pip install -r requirements.txt` and `pip install -e .`.
 
+**Settings go in `.env`.** Every `NAME=value` setting in this README is a line in that file.
+`.env.example`, which you just copied, has the common ones, each with a one-line description.
+
 - **Behind an agency proxy that inspects TLS**, set `UV_NATIVE_TLS=1` if uv fails with a
   certificate error. The kit itself already uses your computer's certificate store.
 - **Can't install the `rt` command?** Run `.\rt` (PowerShell or cmd) or `./rt` (macOS,
@@ -85,7 +88,7 @@ rt smoke   # sends two harmless prompts and prints the replies
 
 For an app with a JSON API, add to `.env`:
 
-```bash
+```ini
 RT_PROVIDER=app
 APP_ENDPOINT=https://your-app.example.gov/chat
 APP_REQUEST_TEMPLATE={"query": "{PROMPT}"}  # the request body; the probe goes in {PROMPT}
@@ -146,7 +149,7 @@ browser ones in `harnesses/pyrit_campaigns/browser_target.py`.
 app's chat page and reads the reply off the page (`uv pip install playwright`; it uses
 your installed Chrome or Edge):
 
-```bash
+```ini
 RT_PROVIDER=app
 APP_TRANSPORT=browser
 APP_BROWSER_URL=https://your-app.example.gov/   # the chat page
@@ -169,7 +172,7 @@ request from inside it. Set `APP_BROWSER_URL` to the page and `APP_ENDPOINT` to 
 request template as a whole quoted value, and the kit sends the conversation so far in
 the app's own shape. `rt crescendo` needs this.
 
-```bash
+```ini
 APP_REQUEST_TEMPLATE={"message": "{PROMPT}", "history": "{HISTORY}", "session_id": "{CONVERSATION_ID}"}
 APP_HISTORY_TURN={"role": "{ROLE}", "text": "{TEXT}"}   # one earlier turn, in the app's shape
 APP_HISTORY_ROLES=user,model                          # the app's names for the two sides
@@ -198,7 +201,7 @@ documents](attack_suites/04_hallucination_grounding/README.md#apps-that-search-d
 **System-prompt leaks.** The app keeps its own system prompt, so the kit can only spot a
 leak of it with your help:
 
-```bash
+```ini
 APP_PROMPT_CANARY=ZZ-APP-1234              # a code planted in the app's prompt; every reply is checked for it
 APP_SYSTEM_PROMPT_FILE=C:\path\prompt.txt  # or the prompt's text, kept outside the repo
 ```
@@ -208,7 +211,7 @@ probe: a guardrail's block, a "Sorry, I can only help with..." redirect, a rate 
 summary lists these as **blocked** or **deflected** instead of counting them as passes. A
 reply the judge flags always stays flagged. The kit spots them three ways:
 
-- `APP_BLOCKED_WHEN` names response fields that mean a guardrail stopped the message, e.g.
+- `APP_BLOCKED_WHEN` in `.env` names response fields that mean a guardrail stopped the message, e.g.
   `piiBlocked=true,guardrail.action=block|redirect`. This is the most reliable way, if
   your app returns such a field.
 - Before the probes, the scan asks two off-topic and two on-topic questions. A probe that
@@ -227,7 +230,7 @@ multi-turn runs work but can't rewind.
 Each model has one role. Unset settings fall back as shown, and an unset model uses the
 provider's default.
 
-```bash
+```ini
 RT_PROVIDER=gemini           # the model under test: gemini | openai | anthropic | bedrock | vertex | app
 RT_MODEL=...                 # optional; ignored with app
 RT_JUDGE_PROVIDER=...        # grades the replies; unset uses RT_PROVIDER. Use a different one
@@ -255,7 +258,7 @@ as the target with a Bedrock judge, so prompts and replies stay in your AWS acco
    beat your profile, so delete them if you switch back.
 3. **Set the region and model:**
 
-   ```bash
+   ```ini
    AWS_REGION_NAME=us-east-1     # set this: without it, the default is us-west-2
    RT_JUDGE_PROVIDER=bedrock
    RT_JUDGE_MODEL=bedrock/converse/us.anthropic.claude-sonnet-4-5-20250929-v1:0
@@ -280,7 +283,7 @@ as the target with a Bedrock judge, so prompts and replies stay in your AWS acco
 `vertex_ai/gemini-4-argon-cyber-permissive`, answer security requests other models refuse,
 which makes them good attackers:
 
-```bash
+```ini
 RT_ADVERSARIAL_PROVIDER=vertex
 RT_ADVERSARIAL_MODEL=vertex_ai/gemini-4-argon-cyber-permissive
 PROJECT_ID=your-gcp-project
@@ -333,7 +336,7 @@ preview with `rt probes --probes ...` before sending anything.
 ### Repeats
 
 A model can answer the same probe differently each time, so one reply is one sample.
-`--repeats 5` (or `RT_REPEATS`) sends every probe five times, each in a new conversation,
+`--repeats 5` (or `RT_REPEATS=5` in `.env`) sends every probe five times, each in a new conversation,
 and the summary shows how often each one failed. A probe that never failed isn't proven
 safe: 0 failures in 5 tries still allows a failure rate of up to about 45%.
 
@@ -376,7 +379,7 @@ one try each way is one reply.
 
 A deployed chatbot always has a system prompt, so the scan sends one ahead of every probe
 when it tests a plain model. By default that's a generic stand-in for the profile. To test
-your real instructions on your real model, point `RT_SYSTEM_PROMPT_FILE` at your prompt
+your real instructions on your real model, set `RT_SYSTEM_PROMPT_FILE` in `.env` to your prompt
 (keep the file outside the repo), or set it to `none` to send no prompt. Against your app,
 the app uses its own prompt and the kit sends none.
 
@@ -506,8 +509,9 @@ overlays/my-agency/
   checklist.yaml            # optional: printed after a run that sent this pack's probes
 ```
 
+Set `RT_EXTRA_SUITES=overlays/my-agency` in `.env` (several packs are comma-separated), then:
+
 ```bash
-RT_EXTRA_SUITES=overlays/my-agency        # in .env; several packs are comma-separated
 rt probes --probes my-agency              # preview only your pack's probes
 rt scan --probes core,my-agency           # the default run, then yours
 ```
@@ -682,7 +686,7 @@ objectives:
     needs_system_prompt: true           # success can only be confirmed against a known prompt
 ```
 
-Set `RT_OBJECTIVES_FILE` to the file to use it in place of the profile's goals. A mistake
+Set `RT_OBJECTIVES_FILE` in `.env` to the file to use it in place of the profile's goals. A mistake
 in it stops the run and says where.
 
 ### Your own profile
