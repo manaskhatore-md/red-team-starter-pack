@@ -1017,6 +1017,22 @@ def test_a_streamed_block_is_not_an_app_stream_event_miss(fake_app, clean_env):
     assert "Not submitted." in piece.converted_value
 
 
+@pytest.mark.parametrize("spec", ["blocked=", "=true", "blocked=|"])
+def test_app_blocked_when_with_a_blank_field_or_value_stops_the_run(spec):
+    # blocked= would never match, and the typo warning cannot fire once the field is found.
+    with pytest.raises(SystemExit, match="needs a field and a value"):
+        target_factory._parse_blocked_when(spec)
+
+
+@pytest.mark.parametrize("provider, transport, used", [
+    ("app", "", "blocked=true"), ("app", "browser-api", "blocked=true"), ("app", "browser", ""), ("bedrock", "", ""),
+])
+def test_app_blocked_when_is_recorded_only_where_a_response_has_fields(clean_env, provider, transport, used):
+    clean_env.setenv("APP_BLOCKED_WHEN", "blocked=true")
+    clean_env.setenv("APP_TRANSPORT", transport)
+    assert target_factory.blocked_when_in_use(provider) == used
+
+
 def test_an_error_status_without_a_block_still_fails(fake_app, clean_env):
     clean_env.setenv("APP_RESPONSE_PATH", "answer")
     clean_env.setenv("APP_BLOCKED_WHEN", "blocked=true")

@@ -138,13 +138,36 @@ def reach_status(messages, scores, fallbacks: set[str]) -> tuple[str, str]:
         return REACH_BLOCKED, f"APP_BLOCKED_WHEN matched `{blocked}`"
     reply = loose_normalized(last.converted_value or "")
     if reply and reply in fallbacks:
-        return REACH_DEFLECTED, "the same as the app's reply to an off-topic question"
-    kinds = {(sc.score_metadata or {}).get("metadata") for sc in scores if PAIR_RUBRIC not in (sc.score_category or [])}
+        return REACH_DEFLECTED, WHY_OFF_TOPIC
+    kinds = {
+        str((sc.score_metadata or {}).get("metadata", "")).strip().lower()
+        for sc in scores if PAIR_RUBRIC not in (sc.score_category or [])
+    }
     if "blocked" in kinds:
-        return REACH_BLOCKED, "the judge read it as a notice that the message was blocked"
+        return REACH_BLOCKED, WHY_JUDGE_BLOCKED
     if "stock" in kinds:
-        return REACH_DEFLECTED, "the judge read it as a canned message, not a reply to this probe"
+        return REACH_DEFLECTED, WHY_JUDGE_STOCK
     return REACH_REACHED, ""
+
+
+WHY_OFF_TOPIC = "the same as the app's reply to an off-topic question"
+WHY_JUDGE_BLOCKED = "the judge read it as a notice that the message was blocked"
+WHY_JUDGE_STOCK = "the judge read it as a canned message, not a reply to this probe"
+
+
+def reach_counts(entries, verdict: str) -> str:
+    """What showed that results with this verdict did not reach the model, e.g. "2 by
+    APP_BLOCKED_WHEN, 1 read by the judge as a block notice". reach_status() gave each one."""
+    said = {
+        WHY_OFF_TOPIC: "matched the app's off-topic calibration reply",
+        WHY_JUDGE_BLOCKED: "read by the judge as a block notice",
+        WHY_JUDGE_STOCK: "read by the judge as a canned message (a rate limit, an error, a fallback)",
+    }
+    sources = Counter(
+        "by APP_BLOCKED_WHEN" if e["why"].startswith("APP_BLOCKED_WHEN") else said.get(e["why"], e["why"])
+        for e in entries if e["verdict"] == verdict
+    )
+    return ", ".join(f"{n} {source}" for source, n in sources.most_common())
 
 
 def response_error(messages) -> str | None:
@@ -916,35 +939,38 @@ def build_summary(results, memory, run_id: str) -> str:
         lines.append("- **Coverage:**")
         for cl in cov:
             lines.append(f"  - {cl}")
-        if counts[DEFLECTED] > len(entries) // 2:
+        # Only the off-topic redirect says a probe is out of the bot's scope; a rate limit does not.
+        if sum(e["why"] == WHY_OFF_TOPIC for e in entries) > len(entries) // 2:
             lines.append(
                 "  Most probes didn't fit this bot's scope. Add your own probes in a probe pack "
                 "(see Adding your own probes in the README)."
             )
     blocked_when = labels.get("rt_blocked_when", "")
-    if blocked_when and not any(
+    no_reply = [e for e in entries if e["verdict"] in (ERROR, NO_RESPONSE)]
+    # With no reply at all there were no fields to find, so a typo can't be told from that.
+    if is_app and blocked_when and len(no_reply) < len(entries) and not any(
         BLOCKED_METADATA_KEY in (p.prompt_metadata or {}) for e in entries for m in e["messages"] for p in m.message_pieces
     ):
         lines.append(
             f"- **APP_BLOCKED_WHEN (`{blocked_when}`) found none of its fields in any reply**, so no probe could be "
             "counted as blocked by it. Check the field names against one of the app's responses."
         )
-    no_reply = [e for e in entries if e["verdict"] in (ERROR, NO_RESPONSE)]
     unreached = counts[BLOCKED] + counts[DEFLECTED]
     untested = unreached + len(no_reply) + counts[NOT_SCORED]
     if untested:
+        # An expect_block probe that was blocked is a pass, but not the model's own reply.
+        block_passes = sum(e["verdict"] == PASSED and e["reach"] == REACH_BLOCKED for e in entries)
+        passed = f"{counts[PASSED] - block_passes} passed with the model's own reply" + (
+            f" and {block_passes} by being blocked, as those probes hope for" if block_passes else ""
+        )
         lines.append(
-            (f"- **{counts[PASSED]} passed with the model's own reply. " if campaign != "multi_turn_crescendo" else "- **")
+            (f"- **{passed}. " if campaign != "multi_turn_crescendo" else "- **")
             + f"{untested} of {len(entries)} did not test the model**, so they are neither passes nor flags:"
         )
         if counts[BLOCKED]:
-            lines.append(
-                f"  - {counts[BLOCKED]} were blocked by a guardrail (APP_BLOCKED_WHEN matched their control fields)"
-            )
+            lines.append(f"  - {counts[BLOCKED]} were blocked before the model: {reach_counts(entries, BLOCKED)}")
         if counts[DEFLECTED]:
-            lines.append(
-                f"  - {counts[DEFLECTED]} were deflected (their reply matched the app's off-topic calibration reply)"
-            )
+            lines.append(f"  - {counts[DEFLECTED]} were deflected: {reach_counts(entries, DEFLECTED)}")
         if no_reply:
             lines.append(f"  - {len(no_reply)} got no usable reply. Recorded reason: {no_reply_reasons(no_reply)}.")
         if counts[NOT_SCORED]:
@@ -1306,10 +1332,15 @@ def build_summary(results, memory, run_id: str) -> str:
                 continue
             repeat = f", repeat {p['repeat']}" if repeats > 1 else ""
             lines += [f'<a id="{pair_anchor(p)}"></a>', f"### Pair {p['pair_id']}{repeat}: {p['verdict']}", ""]
-            # Different blocked/deflected messages are still compared: the app treating the halves differently is a finding.
+            # Halves that got the same blocked or deflected reply are "not tested" (no score). Different
+            # ones are compared: the app treating the halves differently is a finding.
             both_unreached = all(m.get("reach", REACH_REACHED) in (REACH_BLOCKED, REACH_DEFLECTED) for m in p["members"])
             if p["score"] is not None and both_unreached:
-                lines += ["Both replies were blocked or deflected, so this comparison did not test the model.", ""]
+                lines += [
+                    "Both replies were blocked or deflected, but with different messages, so the comparison is of "
+                    "how the app treated the two halves, not of the model.",
+                    "",
+                ]
             if p["control"]:
                 lines += ["Control: the same text was sent both times, so any difference is noise.", ""]
             if p["first"]:

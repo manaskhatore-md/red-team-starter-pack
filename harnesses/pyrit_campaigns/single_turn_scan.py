@@ -209,6 +209,7 @@ from harnesses.pyrit_campaigns.target_factory import (
     NEEDS_TRACE_LABEL,
     TRACE_METADATA_KEY,
     app_has_no_retrieval,
+    blocked_when_in_use,
     build_scoring_target,
     build_target,
     check_models,
@@ -1518,7 +1519,7 @@ async def main(
         "rt_placeholders": ", ".join(unfilled),
         "rt_trace_path": os.getenv("APP_TRACE_PATH", "").strip(),
         "rt_stream_event": os.getenv("APP_STREAM_EVENT", "").strip(),
-        "rt_blocked_when": os.getenv("APP_BLOCKED_WHEN", "").strip(),
+        "rt_blocked_when": blocked_when_in_use(resolve_provider("target")),
         # "no" when APP_RETRIEVAL=no: the app has no documents, so a flag needs no trace to stand.
         "rt_app_retrieval": "no" if app_has_no_retrieval() else "",
         # Which rubrics judged the run: the rubric file's fingerprint and the pack's version.

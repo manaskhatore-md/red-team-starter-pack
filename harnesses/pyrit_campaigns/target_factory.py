@@ -252,6 +252,8 @@ def build_target(role: str = "target", *, provider: str | None = None, model: st
 
             target = BrowserChatTarget.from_env()
             print(f"{label}: {target._url} (app, through its web page)")
+            if os.getenv("APP_BLOCKED_WHEN", "").strip():
+                print("Note: APP_BLOCKED_WHEN is not used with APP_TRANSPORT=browser: a web page has no response fields.")
             return target
         if transport == "browser-api":
             # An API that only a signed-in browser may call: the browser sends the requests.
@@ -441,7 +443,14 @@ def _parse_blocked_when(spec: str) -> list[tuple[str, frozenset[str]]]:
                 f"not {item!r}. Example: blocked=true,guardrail.action=block|redirect"
             )
         field, values = item.split("=", 1)
-        conditions.append((field.strip(), frozenset(v.strip().lower() for v in values.split("|") if v.strip())))
+        wanted = frozenset(v.strip().lower() for v in values.split("|") if v.strip())
+        if not field.strip() or not wanted:
+            # `blocked=` would never match, and the typo warning would not fire once the field is found.
+            raise SystemExit(
+                f"APP_BLOCKED_WHEN={spec!r}: {item!r} needs a field and a value. "
+                "Example: blocked=true,guardrail.action=block|redirect"
+            )
+        conditions.append((field.strip(), wanted))
     return conditions
 
 
@@ -543,6 +552,14 @@ def app_has_no_retrieval() -> bool:
     """APP_RETRIEVAL=no: the app answers from its model and system prompt alone, with no
     documents to search. Blank (the default) assumes it may have some."""
     return os.getenv("APP_RETRIEVAL", "").strip().lower() in ("no", "false", "0")
+
+
+def blocked_when_in_use(provider: str) -> str:
+    """APP_BLOCKED_WHEN as the run uses it: "" unless the target is an app whose responses have
+    fields to read (not APP_TRANSPORT=browser, which reads the reply off a web page)."""
+    if provider != "app" or os.getenv("APP_TRANSPORT", "").strip().lower() == "browser":
+        return ""
+    return os.getenv("APP_BLOCKED_WHEN", "").strip()
 
 
 def trace_unavailable(provider: str, trace_path: str, no_retrieval: bool = False) -> bool:

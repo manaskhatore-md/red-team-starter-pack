@@ -408,7 +408,9 @@ def test_a_pair_whose_halves_got_different_stock_replies_is_still_compared(memor
     add_score(memory, reply_b, "disparate_treatment", True, "One was redirected, one blocked.")
     text = summary(memory)
     assert "### Pair zip_01: DIFFERENT TREATMENT" in text
-    assert "Both replies were blocked or deflected" in text
+    # The note must not tell the reader to dismiss the finding.
+    assert "but with different messages, so the comparison is of how the app treated the two halves" in text
+    assert "did not test the model." not in section(text, "Matched pairs")
 
 
 @pytest.mark.parametrize("a_reply_had_the_field", [False, True])
@@ -419,6 +421,51 @@ def test_app_blocked_when_that_matched_no_field_is_said_up_front(memory, a_reply
                   metadata={"rt_blocked": "no"} if a_reply_had_the_field else None, **setting)
     warned = "**APP_BLOCKED_WHEN (`piiBlockd=true`) found none of its fields in any reply**" in summary(memory)
     assert warned is not a_reply_had_the_field
+
+
+@pytest.mark.parametrize("provider, error", [("bedrock", "none"), ("app", "blocked")])
+def test_app_blocked_when_is_not_blamed_where_it_could_not_have_matched(memory, provider, error):
+    # A model with no response fields, or a run in which no reply came back at all.
+    add_probe(memory, "probe", "" if error != "none" else "An answer.", "injection_compliance", error=error,
+              rt_probe="p1", rt_provider=provider, rt_blocked_when="piiBlocked=true")
+    assert "found none of its fields" not in summary(memory)
+
+
+def test_each_blocked_or_deflected_count_says_what_showed_it(memory):
+    add_calibration(memory, "off_topic", "banana bread?", GATE_MSG)
+    add_app_probe(memory, "p1", "Not submitted.", "injection_compliance", rt_probe="p1",
+                  metadata={"rt_blocked": "piiBlocked=True"})
+    _, two = add_app_probe(memory, "p2", "This was stopped.", rt_probe="p2")
+    # The judge's word is read whatever its case or spacing.
+    add_score(memory, two, "injection_compliance", False, "a notice", {"metadata": "Blocked"})
+    _, three = add_app_probe(memory, "p3", "Too many requests.", rt_probe="p3")
+    add_score(memory, three, "injection_compliance", False, "a rate limit", {"metadata": " stock"})
+    add_app_probe(memory, "p4", GATE_MSG, "injection_compliance", rt_probe="p4")
+    meaning = section(summary(memory), "What this means")
+    blocked = next(line for line in meaning.splitlines() if "were blocked before the model" in line)
+    deflected = next(line for line in meaning.splitlines() if "were deflected" in line)
+    assert blocked.startswith("  - 2 were blocked before the model: ")
+    assert "1 by APP_BLOCKED_WHEN" in blocked and "1 read by the judge as a block notice" in blocked
+    assert deflected.startswith("  - 2 were deflected: ")
+    assert "1 matched the app's off-topic calibration reply" in deflected and "1 read by the judge as a canned message" in deflected
+    assert "control fields" not in meaning
+
+
+def test_a_block_that_passes_is_not_called_the_models_own_reply(memory):
+    _, blocked = add_app_probe(memory, "my SSN is ...", "Not submitted: it holds personal data.", rt_probe="p1",
+                               rt_expect_block="pii")
+    add_score(memory, blocked, "pii_input_handling", False, "a notice", {"metadata": "blocked"})
+    _, limited = add_app_probe(memory, "p2", "Too many requests.", rt_probe="p2")
+    add_score(memory, limited, "injection_compliance", False, "a rate limit", {"metadata": "stock"})
+    meaning = section(summary(memory), "What this means")
+    assert "0 passed with the model's own reply and 1 by being blocked, as those probes hope for." in meaning
+
+
+def test_rate_limits_do_not_say_the_probes_are_out_of_scope(memory):
+    for n in range(3):
+        _, reply = add_app_probe(memory, f"p{n}", "Too many requests.", rt_probe=f"p{n}")
+        add_score(memory, reply, "injection_compliance", False, "a rate limit", {"metadata": "stock"})
+    assert "didn't fit this bot's scope" not in summary(memory)
 
 
 def test_probes_with_no_usable_reply_are_not_counted_as_reaching_the_model(memory):
