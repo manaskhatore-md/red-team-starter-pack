@@ -103,45 +103,34 @@ template and per fact. A template that fails for most facts points at the way of
 that fails under most templates points at that one fact, or at a mistake in its entry.
 Because those rates already pool many probes, one or two repeats are usually enough.
 
-## Adding your own facts
+## Making it yours
+
+### Adding your own facts
 
 1. Copy `overlays/example/` to `overlays/<your-agency>/`.
 2. Replace the entries in its `fixtures/facts.yaml` with facts from your program's own
-   knowledge base and policy documents. The field list is at the top of this folder's
-   `fixtures/facts.yaml`, and the example file shows a worked set.
+   knowledge base and policy documents. The fields, and which ones each way of asking
+   needs, are listed at the top of this folder's `fixtures/facts.yaml`. The example file
+   shows a worked set.
 3. Set `RT_EXTRA_SUITES=overlays/<your-agency>` in `.env`.
 4. Have someone who knows the program check each real fact (see "Confirming a real
    fact" below).
 
 You write facts, not probes. The kit's templates ask about each one, so when a template
-is improved, every agency's facts are asked the better way.
+is improved, every agency's facts are asked the better way. Your entries are added to the
+shipped ones, or replace them with `mode: replace` (see [Adding your own
+probes](../../README.md#adding-your-own-probes)).
 
-Each entry gives:
+Two mistakes make the judge flag correct replies:
 
-- `id`: names its probes. Letters, digits and underscores.
-- `status`: `real` (a true fact you have checked) or `fictitious` (made up for the test;
-  it must really not exist, or every correct reply is flagged).
-- `ask`: the ways to ask about it, `[question]` if left out. Each way needs certain
-  fields: `question` needs `question` and `pass`; `premise` and `pushback` need
-  `citation` and `false_claim`; `summary` needs `citation`. An entry missing a field its
-  `ask` needs stops the run, naming the entry.
-- `facts`: what is true, in full. Shown to the judge, never sent to the chatbot. For a
-  real fact, quote or closely paraphrase the source, including the details a correct
-  reply might mention, or the judge will flag a correct answer.
-- For a real fact: `source` (where it was checked, and when), which is required; and
-  `confirmed_by` and `confirmed_on` once it has been confirmed.
+- **A `fictitious` fact that really exists.** Check that a made-up law or office really
+  is made up.
+- **A real fact whose `facts` leave out details.** Quote or closely paraphrase the source,
+  including what a correct reply might mention, or the judge will flag that detail.
 
-Your entries are added to the shipped ones. To send only yours, put `mode: replace` at the
-top of your file. Until the file has entries, it replaces nothing, so the shipped facts are
-still sent. Two entries with the same `id`, across the shipped file and yours, stop
-the run, since probes are named after the `id`. So do two packs that both say
-`mode: replace`.
-
-**If your pack also has its own `hallucination.yaml`** with templates that read
-`fixtures/facts.yaml` (copies of the shared templates, for instance, made before packs
-could use the shared ones), the shared templates are not filled from your facts as well,
-since every fact would then be asked twice. The run prints a note saying so. To have the
-shared templates ask about your facts, delete the copies.
+If your pack has its own copies of the shared templates reading `fixtures/facts.yaml`, the
+shared templates leave your facts to them, so no fact is asked twice. The run prints a note
+saying so; delete the copies to have the shared templates ask about your facts.
 
 ### Confirming a real fact
 
@@ -178,10 +167,9 @@ entries:
 
 The two questions are written to follow "Based on this section of the handbook,". Keep
 `unanswered` close to the text's topic: a question it plainly has nothing to do with tests
-nothing. Each entry is asked the same three ways as the shipped ones, which still run
-unless the file starts with `mode: replace`. The fields are explained at the top of
-`fixtures/excerpts.yaml` in this folder, and `overlays/example/fixtures/excerpts.yaml` is
-this entry, to copy. Use only text that holds nothing confidential: it is sent to the
+nothing. Each entry is asked the same three ways as the shipped ones. The fields are
+explained at the top of `fixtures/excerpts.yaml` in this folder, and
+`overlays/example/fixtures/excerpts.yaml` is this entry, to copy. Use only text that holds nothing confidential: it is sent to the
 system under test and stored in the results.
 
 ## Apps that search documents
@@ -194,7 +182,7 @@ document.
 - **Set `APP_TRACE_PATH`** if the app's response can include the documents or sources it
   used. The judge is then shown them and judges against them. A reply whose trace is empty
   retrieved nothing, so a specific in it had no source, and a failure counts. See
-  [Testing your app in depth](../../README.md#testing-your-app-in-depth). Many retrieval
+  [Connecting to your app](../../README.md#connecting-to-your-app). Many retrieval
   frameworks can return their sources with a setting or a debug flag: ask the app team.
 - **Set `APP_RETRIEVAL=no`** if the app searches no documents. Like a bare model, its only
   sources are then its system prompt and what the person typed, which the judge sees, so

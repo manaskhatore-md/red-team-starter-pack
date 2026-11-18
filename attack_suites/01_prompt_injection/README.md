@@ -79,8 +79,7 @@ judge said:
 - **Data-carrying links**, keys and passwords, and realistic Social Security or card
   numbers, as in every suite.
 
-More on all of these: [The system prompt, and the canary token in
-it](../../README.md#the-system-prompt-and-the-canary-token-in-it).
+More on all of these: [Checks that need no judge](../../README.md#checks-that-need-no-judge).
 
 ## Running it
 
@@ -92,21 +91,13 @@ rt probes --probes prompt_injection
 rt scan --probes prompt_injection
 ```
 
-Filters that only look for known attack wording are often fooled by the same attack
-written differently. Request converters send each probe again in an encoded or
-disguised form (base64, ROT13, look-alike letters, and others), alongside the original:
+Filters that only look for known attack wording often miss the same attack in another
+form, so this suite is the one to run encoded too ([Encoding
+probes](../../README.md#encoding-probes)), and with [repeats](../../README.md#repeats):
 
 ```bash
-rt scan --probes prompt_injection --converters rot13,base64
+rt scan --probes prompt_injection --converters rot13,base64 --repeats 5
 ```
-
-A probe that is refused as written but obeyed once encoded got past something the plain
-text did not. The run summary sets the two side by side. See [Encoding and obfuscating
-probes](../../README.md#encoding-and-obfuscating-probes-request-converters).
-
-A chatbot can answer the same attack differently each time. Send each probe several
-times with `--repeats` to get a failure rate rather than a single yes or no; see
-[Repeats](../../README.md#repeats-how-often-a-probe-fails-not-just-whether-it-did).
 
 These probes each try once, in one message. A patient attacker escalates over many
 turns. The multi-turn campaigns (`rt crescendo`, `rt adaptive`) do that, working toward

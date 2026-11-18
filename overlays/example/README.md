@@ -37,8 +37,8 @@ overlays/example/
 6. In `.env`: `RT_EXTRA_SUITES=overlays/<your-agency>`.
 7. `rt scan --probes <your-agency>` sends only your pack's probes; `rt scan --probes core,<your-agency>`
    sends the default run and then yours. Add `--repeats 5` for the bias pairs: one reply per
-   version is one sample. `rt scan --list-probes --probes <your-agency>` shows
-   what would be sent, without sending it.
+   version is one sample. `rt probes --probes <your-agency>` shows what would be sent,
+   without sending it.
 
 You write facts, questions and actions, not probes: the kit's hallucination templates ask
 about each fact in the ways its `ask` list names, its bias templates pair each version of a

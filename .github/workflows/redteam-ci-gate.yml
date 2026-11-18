@@ -52,7 +52,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # uv installs the dependencies much faster than pip (see the README). It caches
+      # uv installs the dependencies much faster than pip. It caches
       # downloads between runs, keyed on requirements*.txt. activate-environment puts
       # the .venv it makes on PATH, so the `python` in later steps is that venv's.
       - uses: astral-sh/setup-uv@v6
