@@ -69,8 +69,10 @@ class _GateWithIds(PromptTarget):
 
 
 def test_calibrate_stops_an_app_that_blocks_everything_with_a_new_id_each_time(memory, capsys):
-    with pytest.raises(SystemExit, match="same reply as its off-topic ones"):
+    with pytest.raises(SystemExit, match="same reply as its off-topic ones") as stopped:
         asyncio.run(calibration.calibrate(_GateWithIds(), {"rt_run_id": "r1"}, "SNAP"))
+    # Compared loosely, but quoted as the app sent it.
+    assert "Blocked by policy (ref 3f2a)." in str(stopped.value)
 
 
 def test_calibrate_records_its_questions_with_the_run(memory, capsys):

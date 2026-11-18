@@ -69,9 +69,11 @@ def stuck_reason(
     Takes the normalized replies, with "" for a question that got no usable reply.
     Stops when every usable in-scope question came back empty (e.g. a typo in
     APP_STREAM_EVENT or APP_RESPONSE_PATH pointing at an empty field), or when every
-    in-scope question got a reply that also came back for an off-topic one.
+    in-scope question got a reply that also came back for an off-topic one. Replies are
+    compared loosely (loose_normalized), so a gate message with a new request id each time
+    is one message; the message quoted is the reply as the app sent it.
     """
-    fallbacks = {reply for reply in off_topic if reply}
+    fallbacks = {loose_normalized(reply) for reply in off_topic if reply}
     answered = [reply for reply in in_scope if reply]
     if usable_in_scope > 0 and not answered:
         if unmatched_stream is not None:
@@ -98,7 +100,7 @@ def stuck_reason(
             reason += f" It is unset, so the\n    questions asked about {program!r}."
         reason += "\nTo run the probes anyway, set RT_SKIP_CALIBRATION=1."
         return reason
-    if not answered or not all(reply in fallbacks for reply in answered):
+    if not answered or not all(loose_normalized(reply) in fallbacks for reply in answered):
         return None
     reason = (
         "The app gave its in-scope questions the same reply as its off-topic ones:\n\n"
@@ -136,7 +138,7 @@ async def calibrate(target, run_labels: dict, program: str) -> None:
         kind = result.labels[CALIBRATION_LABEL]
         if kind == "in_scope" and usable:
             usable_in_scope += 1
-        replies[kind].append(loose_normalized(reply))
+        replies[kind].append(reply)
         shown = (reply[:120] or "(empty reply)") if usable else "(no usable reply)"
         print(f"  {kind.replace('_', '-')}: {result.objective}\n    -> {shown}")
 
