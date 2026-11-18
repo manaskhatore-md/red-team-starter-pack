@@ -912,7 +912,6 @@ def test_app_parses_sse_stream_reply_trace_and_control_fields(fake_app, clean_en
 
     clean_env.setenv("APP_RESPONSE_PATH", "choices.0.delta.content")
     clean_env.setenv("APP_TRACE_PATH", "trace.tool_calls, citations")
-    clean_env.setenv("APP_CONTROL_PATH", "control")
     fake_app["replies"] = [(200, SSE_BODY)]
     target = build_target()
     message = Message(message_pieces=[MessagePiece(role="user", original_value="hi", conversation_id=str(uuid.uuid4()))])
@@ -926,10 +925,6 @@ def test_app_parses_sse_stream_reply_trace_and_control_fields(fake_app, clean_en
         "trace.tool_calls": [{"name": "lookup_rate"}, {"name": "check_table"}],
         "citations": ["CMS-2026"],
     }
-    assert json.loads(reply.prompt_metadata[target_factory.CONTROL_METADATA_KEY]) == {
-        "blocked": False,
-        "action": "allow",
-    }
 
 
 def test_app_parses_ndjson_and_lambda_streaming_bodies_in_concat_and_last_modes(fake_app, clean_env):
@@ -938,7 +933,6 @@ def test_app_parses_ndjson_and_lambda_streaming_bodies_in_concat_and_last_modes(
     # NDJSON in default concat mode
     clean_env.setenv("APP_RESPONSE_PATH", "delta")
     clean_env.setenv("APP_TRACE_PATH", "trace.rounds.tool_calls")
-    clean_env.setenv("APP_CONTROL_PATH", "control.piiBlocked, control.gated")
     fake_app["replies"] = [(200, NDJSON_BODY)]
     target = build_target()
     message = Message(message_pieces=[MessagePiece(role="user", original_value="hi", conversation_id=str(uuid.uuid4()))])
@@ -952,16 +946,11 @@ def test_app_parses_ndjson_and_lambda_streaming_bodies_in_concat_and_last_modes(
         {"name": "step_one"},
         {"name": "step_two"},
     ]
-    assert json.loads(reply.prompt_metadata[target_factory.CONTROL_METADATA_KEY]) == {
-        "control.piiBlocked": False,
-        "control.gated": False,
-    }
 
     # Lambda concatenated JSON chunks in APP_STREAM_MODE=last (cumulative snapshots)
     clean_env.setenv("APP_RESPONSE_PATH", "answer")
     clean_env.setenv("APP_STREAM_MODE", "last")
     clean_env.setenv("APP_TRACE_PATH", "trace.citations")
-    clean_env.setenv("APP_CONTROL_PATH", "control.gated")
     fake_app["replies"] = [(200, LAMBDA_STREAM_BODY)]
     target = build_target()
     try:
@@ -971,43 +960,52 @@ def test_app_parses_ndjson_and_lambda_streaming_bodies_in_concat_and_last_modes(
 
     assert reply_last.converted_value == "Hello from Lambda!"
     assert json.loads(reply_last.prompt_metadata[target_factory.TRACE_METADATA_KEY]) == ["COMAR 10.09.24"]
-    assert json.loads(reply_last.prompt_metadata[target_factory.CONTROL_METADATA_KEY]) is True
 
 
-@pytest.mark.parametrize(
-    "control_path, blocked_when, body, expected_blocked",
-    [
-        # Multiple top-level fields: the working case before this fix.
-        ("blocked,guardrail", "blocked=true,guardrail.action=block",
-         '{"answer": "no", "blocked": true, "guardrail": {"action": "block"}}', "blocked=True"),
-        # Single top-level field.
-        ("blocked", "blocked=true",
-         '{"answer": "no", "blocked": true}', "blocked=True"),
-        # Single dotted path.
-        ("guardrail.action", "guardrail.action=block",
-         '{"answer": "no", "guardrail": {"action": "block"}}', "guardrail.action=block"),
-        # Mixed: dotted + top-level.
-        ("guardrail.action,blocked", "guardrail.action=block",
-         '{"answer": "no", "guardrail": {"action": "block"}, "blocked": true}', "guardrail.action=block"),
-        # No match.
-        ("blocked", "blocked=true",
-         '{"answer": "yes", "blocked": false}', ""),
-    ],
-    ids=["multi-toplevel", "single-toplevel", "single-dotted", "dotted-and-toplevel", "no-match"],
-)
-def test_app_blocked_when_detects_all_control_path_shapes(fake_app, clean_env, control_path, blocked_when, body, expected_blocked):
-    clean_env.setenv("APP_RESPONSE_PATH", "answer")
-    clean_env.setenv("APP_CONTROL_PATH", control_path)
-    clean_env.setenv("APP_BLOCKED_WHEN", blocked_when)
-    fake_app["replies"] = [(200, body)]
+def _reply_from_app():
     target = build_target()
     message = Message(message_pieces=[MessagePiece(role="user", original_value="hi", conversation_id=str(uuid.uuid4()))])
     try:
-        reply = asyncio.run(target.send_prompt_async(message=message))[0].message_pieces[0]
+        return asyncio.run(target.send_prompt_async(message=message))[0].message_pieces[0]
     finally:
         asyncio.run(target_factory.close_target(target))
-    blocked = (reply.prompt_metadata or {}).get(target_factory.BLOCKED_METADATA_KEY, "")
-    assert blocked == expected_blocked
+
+
+@pytest.mark.parametrize(
+    "blocked_when, status, body, recorded, reply",
+    [
+        # A top-level field, a dotted one, and one of several conditions.
+        ("blocked=true", 200, '{"answer": "no", "blocked": true}', "blocked=True", "no"),
+        ("guardrail.action=block", 200, '{"answer": "no", "guardrail": {"action": "block"}}', "guardrail.action=block", "no"),
+        ("blocked=true,guardrail.action=block|redirect", 200, '{"answer": "no", "guardrail": {"action": "redirect"}}',
+         "guardrail.action=redirect", "no"),
+        # The field is there and says not blocked; it is not there at all.
+        ("blocked=true", 200, '{"answer": "yes", "blocked": false}', target_factory.NOT_BLOCKED, "yes"),
+        ("blocked=true", 200, '{"answer": "yes"}', None, "yes"),
+        # A block shaped unlike an answer, and one sent with an error status (a content filter's 400):
+        # what came back is the reply.
+        ("blocked=true", 200, '{"notice": "Remove personal details.", "blocked": true}', "blocked=True",
+         '{"notice": "Remove personal details.", "blocked": true}'),
+        ("blocked=true", 400, '{"error": "content filtered", "blocked": true}', "blocked=True",
+         '{"error": "content filtered", "blocked": true}'),
+    ],
+    ids=["top-level", "dotted", "one-of-several", "not-blocked", "no-field", "no-answer-field", "error-status"],
+)
+def test_app_blocked_when_reads_its_fields_from_the_response(fake_app, clean_env, blocked_when, status, body, recorded, reply):
+    clean_env.setenv("APP_RESPONSE_PATH", "answer")
+    clean_env.setenv("APP_BLOCKED_WHEN", blocked_when)
+    fake_app["replies"] = [(status, body)]
+    piece = _reply_from_app()
+    assert (piece.prompt_metadata or {}).get(target_factory.BLOCKED_METADATA_KEY) == recorded
+    assert piece.converted_value == reply
+
+
+def test_an_error_status_without_a_block_still_fails(fake_app, clean_env):
+    clean_env.setenv("APP_RESPONSE_PATH", "answer")
+    clean_env.setenv("APP_BLOCKED_WHEN", "blocked=true")
+    fake_app["replies"] = [(400, '{"error": "bad request", "blocked": false}')]
+    with pytest.raises(Exception, match="HTTP 400"):
+        _reply_from_app()
 
 
 @pytest.mark.parametrize(

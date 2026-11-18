@@ -116,9 +116,10 @@ def add_probe(memory, probe, reply, rubric=None, flagged=False, rationale="becau
     return result, answer
 
 
-def add_score(memory, piece, rubric, flagged, rationale):
+def add_score(memory, piece, rubric, flagged, rationale, metadata=None):
     memory.add_scores_to_memory(scores=[Score(
         score_value="true" if flagged else "false",
+        score_metadata=metadata,
         score_type="true_false",
         score_category=[rubric],
         score_rationale=rationale,

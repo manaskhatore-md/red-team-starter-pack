@@ -67,7 +67,7 @@ from harnesses.pyrit_campaigns import single_turn_scan as scan
 from harnesses.pyrit_campaigns.calibration import CALIBRATION_LABEL
 from harnesses.pyrit_campaigns.code_checks import CODE_CHECKS
 from harnesses.pyrit_campaigns.profiles import PAIR_RUBRICS, dataset_path
-from harnesses.pyrit_campaigns.rubrics import describe_version, require_valid, rubric_format_string, version_labels
+from harnesses.pyrit_campaigns.rubrics import describe_version, require_valid, rubric_format_string, version_labels, with_reply_kind
 from harnesses.pyrit_campaigns.target_factory import (
     build_scoring_target,
     check_models,
@@ -264,7 +264,7 @@ async def rejudge(singles, pair_tasks, rubrics: dict, judge) -> list[Rejudged]:
         if old is not None:
             item.old, item.old_rationale, item.old_unverified = old
         scorer = scan.RubricScorer(
-            rubric_prompt=rubric_format_string(rubrics[key]["system_prompt"]),
+            rubric_prompt=rubric_format_string(with_reply_kind(rubrics[key]["system_prompt"])),
             judge=judge,
             category=key,
             judge_context={objective: probe.judge_slots()},

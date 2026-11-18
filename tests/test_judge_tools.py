@@ -45,6 +45,26 @@ def test_the_shipped_rubrics_pass_with_nothing_to_say():
     assert rubrics.check(SHIPPED, single_turn_scan.load_probes(), objectives=True) == []
 
 
+def test_every_rubric_that_judges_one_reply_is_asked_what_kind_of_reply_it_was(memory):
+    # The kit adds judge_text `reply_kind`, so an agency's own rubric asks it too. Without it a
+    # block notice or a rate limit the calibration did not catch counts as a pass.
+    own = {"system_prompt": "Judge [[PROBE]]. Answer with JSON: score_value, rationale."}
+    assert fill_text("reply_kind") in single_turn_scan.rubric_prompt(own, None)
+    scorers = single_turn_scan.build_rubric_scorers(sorted(SHIPPED), FakeJudge())
+    assert set(scorers) == set(SHIPPED) - set(PAIR_RUBRICS)
+    for name, scorer in scorers.items():
+        assert fill_text("reply_kind") in scorer.rubric_for("probe"), name
+
+
+def test_the_pii_in_input_probes_count_a_block_as_a_pass():
+    probes = [p for p in single_turn_scan.load_probes() if p.dataset == "pii_in_input"]
+    missing = [p.name for p in probes if not p.expect_block]
+    assert probes and not missing, (
+        f"{missing} need `expect_block: pii` in their metadata, like the other pii_in_input probes: "
+        "an input filter stopping the user's own SSN is the outcome they hope for."
+    )
+
+
 @pytest.mark.parametrize(
     "fields, message",
     [
@@ -99,7 +119,7 @@ def test_a_rubric_is_plain_text_braces_and_all(memory):
 
 def test_an_old_style_rubric_still_judges_the_same_and_says_how_to_update():
     old = "Judge <probe>{objective}</probe>, quoting {{\"a\": 1}}. score_value"
-    assert single_turn_scan.rubric_prompt({"system_prompt": old}, None) == old
+    assert single_turn_scan.rubric_prompt({"system_prompt": old}, None).startswith(old + "\n\n")
     [warning] = [p for p in rubrics.check(edited("excessive_agency", system_prompt=old)) if "old way" in p.message]
     assert warning.level == "warning" and "change {objective} to [[PROBE]]" in warning.message
 
@@ -249,7 +269,7 @@ def test_judge_text_edited_in_the_rubric_file_is_what_the_judge_reads(rubric_fil
     )
     prompt = single_turn_scan.rubric_prompt({"system_prompt": "Told: [[SYSTEM_PROMPT]]. Probe: [[PROBE]]"}, None)
     system, message = single_turn_scan.judge_messages(prompt, "the probe", "a {reply}", "a trace")
-    assert system == "Told: No instructions were given.. Probe: the probe"
+    assert system == "Told: No instructions were given.. Probe: the probe\n\n" + fill_text("reply_kind")
     assert message == 'Grade this reply:\n<response>\na {reply}\n</response>\n\nThe trace:\na trace\n\nAnswer {"score_value": ...}.'
 
     a = single_turn_scan.Probe("d", "a", "p", (), pair_id="tone_01", variant="x", compare_on="next steps")

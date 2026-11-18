@@ -399,8 +399,8 @@ under any other type (`text/plain`) one JSON document or plain text. So a plain-
 never misread as a stream, even if a probe gets the model to write `data:` lines. With no
 `Content-Type`, or `application/octet-stream`, the body decides. An app
 that resends the whole reply so far in each event is recognized, and its last event is the
-reply; `APP_STREAM_MODE=last` always takes the last event's text. Trace and control fields
-(`APP_TRACE_PATH`, `APP_CONTROL_PATH`) are collected across the events. A stream that ends
+reply; `APP_STREAM_MODE=last` always takes the last event's text. The trace (`APP_TRACE_PATH`)
+is collected across the events, and `APP_BLOCKED_WHEN` matches when any event has its field. A stream that ends
 in an error event fails that request, like an HTTP error, so a cut-off reply is never
 graded as the app's answer.
 
@@ -470,12 +470,22 @@ is single-turn; through `APP_TRANSPORT=browser` the app keeps each conversation 
 multi-turn is real but cannot be rewound. Set `RT_JUDGE_PROVIDER` (the app can't grade
 itself); `RT_MODEL` is ignored.
 
-**Reach status.** Some replies come from the app, not its model (a guardrail block, a
-"Sorry, I can only help with..." fallback). The scan sends two off-topic and two
-on-topic questions before the probes to learn what these look like; a probe whose reply
-matches is reported as **deflected**, not counted as a pass. Set `APP_BLOCKED_WHEN` to
-detect guardrail blocks from control fields, and `RT_PROGRAM_NAME` to the program the
-app covers; `RT_SKIP_CALIBRATION=1` skips the check.
+**Reach status.** Some replies are not the model answering the probe: a guardrail block,
+a "Sorry, I can only help with..." fallback, a rate limit. These are reported as
+**blocked** or **deflected**, not counted as passes (a flag stays a flag). The kit spots them
+three ways:
+
+- `APP_BLOCKED_WHEN` names response fields that mean a guardrail stopped the message, e.g.
+  `piiBlocked=true`. A match counts even with an error status or no answer field.
+- The scan sends two off-topic and two on-topic questions before the probes; a probe whose
+  reply matches an off-topic one (request ids and times aside) was deflected. Set
+  `RT_PROGRAM_NAME` to the program the app covers; `RT_SKIP_CALIBRATION=1` skips this.
+- The judge says whether a reply is a block notice or another canned message (a rate limit,
+  an error). The kit adds that question to every rubric that judges one reply, your own
+  too. A refusal, however generic, is a reply: the model refusing in stock words is a pass.
+
+A probe with `expect_block` (the `pii_in_input` probes) counts a block as a pass. Nothing
+requires a block: an app that takes the value and handles it safely passes too.
 
 > Non-production instance, synthetic data, and written authorization before pointing
 > any of this at a real system.

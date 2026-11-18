@@ -194,6 +194,7 @@ from harnesses.pyrit_campaigns.rubrics import (
     require_valid,
     rubric_format_string,
     version_labels,
+    with_reply_kind,
 )
 from harnesses.pyrit_campaigns.system_prompt import (
     CanaryLeakScorer,
@@ -884,7 +885,7 @@ def build_rubric_scorers(
         if key in PAIR_RUBRICS:
             continue
         scorers[key] = RubricScorer(
-            rubric_prompt=rubric_format_string(rubrics[key]["system_prompt"]),
+            rubric_prompt=rubric_format_string(with_reply_kind(rubrics[key]["system_prompt"])),
             judge=judge,
             category=key,
             judge_context=judge_context,
@@ -901,7 +902,7 @@ def rubric_prompt(rubric: dict, system_prompt: str | None, slots: dict[str, str]
     With `slots`, they are filled first (see fill_slots), so a [[TOKEN]] in the system
     prompt's own text is left as it is.
     """
-    text = rubric_format_string(rubric["system_prompt"])
+    text = rubric_format_string(with_reply_kind(rubric["system_prompt"]))
     if slots is not None:
         text = fill_slots(text, slots)
     return fill_system_prompt(text, system_prompt)
@@ -1517,6 +1518,7 @@ async def main(
         "rt_placeholders": ", ".join(unfilled),
         "rt_trace_path": os.getenv("APP_TRACE_PATH", "").strip(),
         "rt_stream_event": os.getenv("APP_STREAM_EVENT", "").strip(),
+        "rt_blocked_when": os.getenv("APP_BLOCKED_WHEN", "").strip(),
         # "no" when APP_RETRIEVAL=no: the app has no documents, so a flag needs no trace to stand.
         "rt_app_retrieval": "no" if app_has_no_retrieval() else "",
         # Which rubrics judged the run: the rubric file's fingerprint and the pack's version.

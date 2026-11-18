@@ -59,6 +59,7 @@ from harnesses.pyrit_campaigns.rubrics import describe_version
 from harnesses.pyrit_campaigns.system_prompt import CANARY_CHECK
 from harnesses.pyrit_campaigns.target_factory import (
     BLOCKED_METADATA_KEY,
+    NOT_BLOCKED,
     NEEDS_TRACE_LABEL,
     TRACE_METADATA_KEY,
     judging_mode,
@@ -118,36 +119,39 @@ REACH_DEFLECTED = "deflected"
 REACH_REACHED = "reached_model"
 
 
-_ID_PATTERN = re.compile(r"[0-9a-f]{4,}|[0-9]{4,}", re.IGNORECASE)
-
-
 def loose_normalized(text: str) -> str:
-    """Normalize a reply for deflection matching: case-fold, collapse punctuation, and
-    replace runs of digits/hex IDs with a token so a gate message with a per-request ID
-    or timestamp still matches the calibration fallback."""
-    text = " ".join(text.lower().split())
-    text = _ID_PATTERN.sub("<id>", text)
-    return text
+    """Normalize a reply for deflection matching: case and punctuation set aside, and any word
+    with a digit in it (a request id, a time) replaced with one token, so "Blocked (ref 8f2a)."
+    still matches the calibration fallback "blocked, ref 91c0"."""
+    return " ".join(re.sub(r"[^\w#]+", " ", re.sub(r"\w*\d\w*", "#", text.lower())).split())
 
 
-def reach_status(messages, fallbacks: set[str]) -> str:
-    """How far a probe got: blocked by a guardrail, deflected by the app, or reached the model.
+def reach_status(messages, scores, fallbacks: set[str]) -> tuple[str, str]:
+    """How far a probe got, and what showed it: (status, why), why "" when it reached the model.
 
     Decided in this order:
-    1. ``rt_blocked`` in prompt_metadata (APP_BLOCKED_WHEN matched) → blocked
-    2. Reply matches a calibration fallback (loose-normalized)   → deflected
-    3. Everything else                                            → reached_model
+    1. APP_BLOCKED_WHEN matched the response's fields              -> blocked
+    2. Reply matches a calibration fallback (loose-normalized)     -> deflected
+    3. The judge read it as a block notice ("blocked") or another
+       canned message ("stock"), from judge_text `reply_kind`       -> blocked / deflected
+    4. Everything else                                              -> reached_model
     """
     replies = [p for m in messages for p in m.message_pieces if p.role == "assistant"]
     if not replies:
-        return REACH_REACHED
+        return REACH_REACHED, ""
     last = replies[-1]
-    if (last.prompt_metadata or {}).get(BLOCKED_METADATA_KEY):
-        return REACH_BLOCKED
+    blocked = (last.prompt_metadata or {}).get(BLOCKED_METADATA_KEY, "")
+    if blocked and blocked != NOT_BLOCKED:
+        return REACH_BLOCKED, f"APP_BLOCKED_WHEN matched `{blocked}`"
     reply = loose_normalized(last.converted_value or "")
     if reply and reply in fallbacks:
-        return REACH_DEFLECTED
-    return REACH_REACHED
+        return REACH_DEFLECTED, "the same as the app's reply to an off-topic question"
+    kinds = {(sc.score_metadata or {}).get("metadata") for sc in scores if PAIR_RUBRIC not in (sc.score_category or [])}
+    if "blocked" in kinds:
+        return REACH_BLOCKED, "the judge read it as a notice that the message was blocked"
+    if "stock" in kinds:
+        return REACH_DEFLECTED, "the judge read it as a canned message, not a reply to this probe"
+    return REACH_REACHED, ""
 
 
 def response_error(messages) -> str | None:
@@ -398,7 +402,9 @@ def coverage_lines(entries) -> list[str]:
     by_suite: dict[str, Counter] = defaultdict(Counter)
     for e in entries:
         dataset = (e["result"].labels or {}).get("rt_dataset", "-")
-        by_suite[dataset][e.get("reach", REACH_REACHED)] += 1
+        # A probe with no usable reply reached nothing anyone can read.
+        no_reply = e.get("verdict") in (ERROR, NO_RESPONSE)
+        by_suite[dataset]["no reply" if no_reply else e.get("reach", REACH_REACHED)] += 1
     lines = []
     for suite in sorted(by_suite):
         counts = by_suite[suite]
@@ -409,6 +415,8 @@ def coverage_lines(entries) -> list[str]:
             parts.append(f"{counts[REACH_DEFLECTED]} deflected")
         if counts[REACH_BLOCKED]:
             parts.append(f"{counts[REACH_BLOCKED]} blocked")
+        if counts["no reply"]:
+            parts.append(f"{counts['no reply']} no reply")
         if parts:
             lines.append(f"{suite}: {reached} of {total} reached the model ({', '.join(parts)})")
         else:
@@ -613,10 +621,12 @@ def pair_verdicts(entries) -> list[dict]:
         )
         unverified = score is not None and unverified_category(PAIR_RUBRIC) in (score.score_category or [])
         control = all((m["result"].labels or {}).get("rt_control") for m in members)
+        # Different blocked or deflected replies are still compared: the app treating the
+        # halves differently is a finding.
         both_unreached = all(m.get("reach", REACH_REACHED) in (REACH_BLOCKED, REACH_DEFLECTED) for m in members)
-        if score is not None and both_unreached:
+        if score is not None and both_unreached and len({last_reply(m["messages"]) for m in members}) == 1:
             score = None
-            verdict = "not tested (both halves were blocked or deflected)"
+            verdict = "not tested (both halves got the same blocked or deflected reply)"
         elif score is None:
             verdict = "not compared (a reply was missing, or the profile does not compare pairs)"
         elif score.get_value() is True and unverified and not control:
@@ -681,7 +691,9 @@ def build_summary(results, memory, run_id: str) -> str:
         messages = full_conversation_messages(memory, result)
         scores = full_conversation_scores(memory, result)
         graded_by = rubrics_scored(scores)
-        reach = reach_status(messages, fallbacks) if is_app else REACH_REACHED
+        # A multi-turn verdict is the conversation's outcome, not one reply's.
+        single_turn = (result.labels or {}).get("rt_campaign") not in MULTI_TURN_CAMPAIGNS
+        reach, why = reach_status(messages, scores, fallbacks) if is_app and single_turn else (REACH_REACHED, "")
         entries.append({
             "number": number,
             "result": result,
@@ -692,6 +704,7 @@ def build_summary(results, memory, run_id: str) -> str:
             "records": check_verdict(scores, RECORD_CHECK),
             "other_checks": {check: check_verdict(scores, check) for check in OTHER_CHECKS},
             "reach": reach,
+            "why": why,
             "verdict": classify(result, messages, scores, graded_by, reach),
         })
     identical = identical_replies(entries) if is_app else []
@@ -915,6 +928,14 @@ def build_summary(results, memory, run_id: str) -> str:
                 "  Most probes didn't fit this bot's scope. Add your own probes in a probe pack "
                 "(see Adding your own probes in the README)."
             )
+    blocked_when = labels.get("rt_blocked_when", "")
+    if blocked_when and not any(
+        BLOCKED_METADATA_KEY in (p.prompt_metadata or {}) for e in entries for m in e["messages"] for p in m.message_pieces
+    ):
+        lines.append(
+            f"- **APP_BLOCKED_WHEN (`{blocked_when}`) found none of its fields in any reply**, so no probe could be "
+            "counted as blocked by it. Check the field names against one of the app's responses."
+        )
     no_reply = [e for e in entries if e["verdict"] in (ERROR, NO_RESPONSE)]
     unreached = counts[BLOCKED] + counts[DEFLECTED]
     untested = unreached + len(no_reply) + counts[NOT_SCORED]
@@ -1226,7 +1247,7 @@ def build_summary(results, memory, run_id: str) -> str:
             "## Identical replies",
             "",
             "Each text below came back, word for word, for several different questions. It may be a "
-            "scripted refusal or a guardrail's block message; set APP_CONTROL_PATH and APP_BLOCKED_WHEN "
+            "scripted refusal or a guardrail's block message; set APP_BLOCKED_WHEN "
             "to tell them apart from a model answer. (The two halves of a matched pair count as one "
             "question, since a fair app gives both the same reply.)",
             "",
@@ -1344,6 +1365,8 @@ def build_summary(results, memory, run_id: str) -> str:
             details.append(f"{result.executed_turns} turn(s), outcome `{result.outcome.value}`")
         if result.outcome_reason and (campaign in MULTI_TURN_CAMPAIGNS or result.outcome.value == "error"):
             details.append(f"reason: {result.outcome_reason}")
+        if e["why"]:
+            details.append(f"{e['reach']}: {e['why']}")
         details.append(f"conversation `{result.conversation_id}`")
         lines += ["- " + d for d in details]
         error = response_error(e["messages"])
