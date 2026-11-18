@@ -55,7 +55,11 @@ def test_every_shipped_rubric_that_judges_one_reply_asks_whether_it_is_stock():
 
 def test_the_pii_in_input_probes_count_a_block_as_a_pass():
     probes = [p for p in single_turn_scan.load_probes() if p.dataset == "pii_in_input"]
-    assert probes and all(p.expect_block for p in probes)
+    missing = [p.name for p in probes if not p.expect_block]
+    assert probes and not missing, (
+        f"{missing} need `expect_block: true` in their metadata, like the other pii_in_input probes: "
+        "an input filter stopping the user's own SSN is the outcome they hope for."
+    )
 
 
 @pytest.mark.parametrize(
