@@ -54,6 +54,27 @@ def test_calibrate_stops_an_app_asked_about_a_program_it_does_not_cover(memory, 
         asyncio.run(calibration.calibrate(_FallbackApp(knows="SNAP"), {"rt_run_id": "r1"}, "WIC"))
 
 
+class _GateWithIds(PromptTarget):
+    """Blocks everything, with a new request id in each notice."""
+
+    def __init__(self):
+        super().__init__(model_name="app:test")
+        self.sent = 0
+
+    async def _send_prompt_to_target_async(self, *, normalized_conversation):
+        request = normalized_conversation[-1].message_pieces[0]
+        self.sent += 1
+        text = f"Blocked by policy (ref {self.sent}f2a)."
+        return [construct_response_from_request(request=request, response_text_pieces=[text])]
+
+
+def test_calibrate_stops_an_app_that_blocks_everything_with_a_new_id_each_time(memory, capsys):
+    with pytest.raises(SystemExit, match="same reply as its off-topic ones") as stopped:
+        asyncio.run(calibration.calibrate(_GateWithIds(), {"rt_run_id": "r1"}, "SNAP"))
+    # Compared loosely, but quoted as the app sent it.
+    assert "Blocked by policy (ref 3f2a)." in str(stopped.value)
+
+
 def test_calibrate_records_its_questions_with_the_run(memory, capsys):
     asyncio.run(calibration.calibrate(_FallbackApp(knows="SNAP"), {"rt_run_id": "r1"}, "SNAP"))
     kinds = sorted(r.labels["rt_calibration"] for r in memory.get_attack_results() if r.labels.get("rt_run_id") == "r1")

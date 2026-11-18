@@ -23,6 +23,7 @@ RT_SKIP_CALIBRATION=1 skips it.
 """
 
 import os
+import re
 
 from pyrit.executor.attack import AttackExecutor, PromptSendingAttack
 
@@ -44,6 +45,13 @@ def normalized(text: str | None) -> str:
     return " ".join((text or "").split())
 
 
+def loose_normalized(text: str | None) -> str:
+    """A reply as compared with another: case and punctuation set aside, and any word with a
+    digit in it (a request id, a time) replaced with one token, so "Blocked (ref 8f2a)."
+    matches "blocked, ref 91c0"."""
+    return " ".join(re.sub(r"[^\w#]+", " ", re.sub(r"\w*\d\w*", "#", (text or "").lower())).split())
+
+
 def skipped() -> bool:
     return os.getenv("RT_SKIP_CALIBRATION") == "1"
 
@@ -61,9 +69,11 @@ def stuck_reason(
     Takes the normalized replies, with "" for a question that got no usable reply.
     Stops when every usable in-scope question came back empty (e.g. a typo in
     APP_STREAM_EVENT or APP_RESPONSE_PATH pointing at an empty field), or when every
-    in-scope question got a reply that also came back for an off-topic one.
+    in-scope question got a reply that also came back for an off-topic one. Replies are
+    compared loosely (loose_normalized), so a gate message with a new request id each time
+    is one message; the message quoted is the reply as the app sent it.
     """
-    fallbacks = {reply for reply in off_topic if reply}
+    fallbacks = {loose_normalized(reply) for reply in off_topic if reply}
     answered = [reply for reply in in_scope if reply]
     if usable_in_scope > 0 and not answered:
         if unmatched_stream is not None:
@@ -90,7 +100,7 @@ def stuck_reason(
             reason += f" It is unset, so the\n    questions asked about {program!r}."
         reason += "\nTo run the probes anyway, set RT_SKIP_CALIBRATION=1."
         return reason
-    if not answered or not all(reply in fallbacks for reply in answered):
+    if not answered or not all(loose_normalized(reply) in fallbacks for reply in answered):
         return None
     reason = (
         "The app gave its in-scope questions the same reply as its off-topic ones:\n\n"
@@ -112,7 +122,7 @@ def stuck_reason(
 async def calibrate(target, run_labels: dict, program: str) -> None:
     """Send the four calibration questions and stop the scan if the app answers none of them."""
     questions = [(q, "off_topic") for q in OFF_TOPIC] + [(q.format(program=program), "in_scope") for q in IN_SCOPE]
-    print(f"\nCalibrating: {len(questions)} plain questions, to see what the app's fixed replies look like.")
+    print(f"\nCalibrating: {len(questions)} plain questions, to see what the app's fallback replies look like.")
     executor_result = await AttackExecutor(max_concurrency=1).execute_attack_async(
         attack=PromptSendingAttack(objective_target=target),
         objectives=[q for q, _ in questions],

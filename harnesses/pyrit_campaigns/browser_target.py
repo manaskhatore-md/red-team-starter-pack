@@ -6,7 +6,7 @@ the app's own API requests from inside its signed-in page, so the kit can supply
 conversation history itself; see that class for its settings.
 
 Used as RT_PROVIDER=app with APP_TRANSPORT=browser, so the scan treats it as an app in
-every other way (calibration, fixed replies, the app's own system prompt). Settings, all
+every other way (calibration, blocked and deflected replies, the app's own system prompt). Settings, all
 from .env:
 
     APP_BROWSER_URL       the chat page

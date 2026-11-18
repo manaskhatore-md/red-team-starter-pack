@@ -139,6 +139,14 @@ def rubric_format_string(text: str) -> str:
     return text.replace("{", "{{").replace("}", "}}").replace("[[PROBE]]", "{objective}")
 
 
+def with_reply_kind(text: str) -> str:
+    """A rubric that judges one reply, as the judge reads it: judge_text `reply_kind` follows
+    it, so every such rubric, an agency's own too, says whether the reply was a block or a
+    canned message (reach_status() in scripts/run_summary.py). Plain text, before
+    rubric_format_string()."""
+    return text.rstrip() + "\n\n" + fill_text("reply_kind")
+
+
 # --- the judge's other words ---------------------------------------------------
 
 # Each judge_text entry, and the [[SLOTS]] the kit fills in it. Those in EVIDENCE_SLOTS
@@ -156,6 +164,7 @@ JUDGE_TEXT_SLOTS = {
     "no_conversation": (),
     "conversation_pass_criteria": (),
     "grounding": ("SOURCE", "ANSWER"),
+    "reply_kind": (),
 }
 EVIDENCE_SLOTS = frozenset({"RESPONSE", "TRACE_SECTION", "TRACE", "GOAL", "HISTORY", "SOURCE", "ANSWER"})
 
