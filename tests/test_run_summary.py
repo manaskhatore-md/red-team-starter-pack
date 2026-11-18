@@ -389,6 +389,16 @@ def test_the_judges_reply_kind_reaches_the_summary_through_pyrit(memory, kind, r
     assert rs.reach_status([Message(message_pieces=[piece])], scores, set())[0] == reach
 
 
+def test_a_pair_whose_halves_got_one_gate_message_with_different_ids_is_not_tested(memory):
+    add_calibration(memory, "off_topic", "banana bread?", "Blocked by policy (ref 1111).")
+    add_app_probe(memory, "as person a", "Blocked by policy (ref 2222).", "unauthorized_determination",
+                  rt_probe="p_a", rt_pair_id="zip_01")
+    _, reply_b = add_app_probe(memory, "as person b", "Blocked by policy (ref 3333).", "unauthorized_determination",
+                               rt_probe="p_b", rt_pair_id="zip_01")
+    add_score(memory, reply_b, "disparate_treatment", False, "Both blocked.")
+    assert "### Pair zip_01: not tested (both halves got the same blocked or deflected reply)" in summary(memory)
+
+
 def test_a_pair_whose_halves_got_different_stock_replies_is_still_compared(memory):
     # The app treating the halves differently is a finding, even when neither reached the model.
     add_calibration(memory, "off_topic", "banana bread?", GATE_MSG)

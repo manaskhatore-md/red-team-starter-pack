@@ -23,6 +23,7 @@ RT_SKIP_CALIBRATION=1 skips it.
 """
 
 import os
+import re
 
 from pyrit.executor.attack import AttackExecutor, PromptSendingAttack
 
@@ -42,6 +43,13 @@ CALIBRATION_LABEL = "rt_calibration"
 def normalized(text: str | None) -> str:
     """The text with its whitespace collapsed, so two copies of a fixed message compare equal."""
     return " ".join((text or "").split())
+
+
+def loose_normalized(text: str | None) -> str:
+    """A reply as compared with another: case and punctuation set aside, and any word with a
+    digit in it (a request id, a time) replaced with one token, so "Blocked (ref 8f2a)."
+    matches "blocked, ref 91c0"."""
+    return " ".join(re.sub(r"[^\w#]+", " ", re.sub(r"\w*\d\w*", "#", (text or "").lower())).split())
 
 
 def skipped() -> bool:
@@ -112,7 +120,7 @@ def stuck_reason(
 async def calibrate(target, run_labels: dict, program: str) -> None:
     """Send the four calibration questions and stop the scan if the app answers none of them."""
     questions = [(q, "off_topic") for q in OFF_TOPIC] + [(q.format(program=program), "in_scope") for q in IN_SCOPE]
-    print(f"\nCalibrating: {len(questions)} plain questions, to see what the app's fixed replies look like.")
+    print(f"\nCalibrating: {len(questions)} plain questions, to see what the app's fallback replies look like.")
     executor_result = await AttackExecutor(max_concurrency=1).execute_attack_async(
         attack=PromptSendingAttack(objective_target=target),
         objectives=[q for q, _ in questions],
@@ -128,7 +136,7 @@ async def calibrate(target, run_labels: dict, program: str) -> None:
         kind = result.labels[CALIBRATION_LABEL]
         if kind == "in_scope" and usable:
             usable_in_scope += 1
-        replies[kind].append(reply)
+        replies[kind].append(loose_normalized(reply))
         shown = (reply[:120] or "(empty reply)") if usable else "(no usable reply)"
         print(f"  {kind.replace('_', '-')}: {result.objective}\n    -> {shown}")
 

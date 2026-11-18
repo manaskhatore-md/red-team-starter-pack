@@ -272,7 +272,7 @@ warning that its `Scripts` folder isn't on your `PATH`. Either way, `.\rt` still
 The rest of this README is reference — reach for a section when you need it:
 
 - **[Access-control & OAuth/API checks](#access-control--oauthapi-checks)** — verify login gates, OAuth tokens, headers, cookies, and outsider account blocking
-- **[Testing your app in depth](#testing-your-app-in-depth)** — browser transport, system-prompt-leak detection, fixed replies, which campaigns fit an app
+- **[Testing your app in depth](#testing-your-app-in-depth)** — browser transport, system-prompt-leak detection, blocked and deflected replies, which campaigns fit an app
 - **[Choosing a target](#choosing-a-target)** — other providers, and pinning the judge and attacker models
 - **[Running on Bedrock](#running-on-bedrock)** — AWS credentials and model access
 - **[The system prompt and canary token](#the-system-prompt-and-the-canary-token-in-it)** — how leaks are caught, and the planted records

@@ -1479,7 +1479,10 @@ class AppChatTarget(PromptTarget):
         except ValueError:
             if not stopped:
                 raise
-            # A block's response need not have the answer field: what came back is the reply.
+            text = ""
+        # A block's response need not fill the answer field: what came back is the reply, so a
+        # notice that repeats the user's SSN is still checked.
+        if stopped and not text:
             text = body
         trace = self.trace_text(body, content_type)
         metadata = {}
@@ -1487,7 +1490,9 @@ class AppChatTarget(PromptTarget):
             metadata[TRACE_METADATA_KEY] = trace
         if blocked:
             metadata[BLOCKED_METADATA_KEY] = blocked
-        metadata.update(self.stream_event_match(body, content_type))
+        if not stopped:
+            # A block from before the model has none of the model's events: not an APP_STREAM_EVENT miss.
+            metadata.update(self.stream_event_match(body, content_type))
         return [
             construct_response_from_request(
                 request=request,

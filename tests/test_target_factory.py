@@ -988,8 +988,12 @@ def _reply_from_app():
          '{"notice": "Remove personal details.", "blocked": true}'),
         ("blocked=true", 400, '{"error": "content filtered", "blocked": true}', "blocked=True",
          '{"error": "content filtered", "blocked": true}'),
+        # An empty answer field: the notice, which may repeat the user's SSN, is still checked.
+        ("blocked=true", 200, '{"answer": null, "notice": "Blocked SSN 666-07-4821.", "blocked": true}', "blocked=True",
+         '{"answer": null, "notice": "Blocked SSN 666-07-4821.", "blocked": true}'),
     ],
-    ids=["top-level", "dotted", "one-of-several", "not-blocked", "no-field", "no-answer-field", "error-status"],
+    ids=["top-level", "dotted", "one-of-several", "not-blocked", "no-field", "no-answer-field", "error-status",
+         "empty-answer-field"],
 )
 def test_app_blocked_when_reads_its_fields_from_the_response(fake_app, clean_env, blocked_when, status, body, recorded, reply):
     clean_env.setenv("APP_RESPONSE_PATH", "answer")
@@ -998,6 +1002,19 @@ def test_app_blocked_when_reads_its_fields_from_the_response(fake_app, clean_env
     piece = _reply_from_app()
     assert (piece.prompt_metadata or {}).get(target_factory.BLOCKED_METADATA_KEY) == recorded
     assert piece.converted_value == reply
+
+
+def test_a_streamed_block_is_not_an_app_stream_event_miss(fake_app, clean_env):
+    # An input filter that answers with its own event, before any of the model's.
+    clean_env.setenv("APP_RESPONSE_PATH", "delta")
+    clean_env.setenv("APP_STREAM_EVENT", "delta")
+    clean_env.setenv("APP_BLOCKED_WHEN", "guardrail.action=block")
+    body = 'event: guardrail\ndata: {"guardrail": {"action": "block"}, "notice": "Not submitted."}\n\n'
+    fake_app["replies"] = [(200, body, "text/event-stream")]
+    piece = _reply_from_app()
+    assert piece.prompt_metadata[target_factory.BLOCKED_METADATA_KEY] == "guardrail.action=block"
+    assert target_factory.UNMATCHED_STREAM_METADATA_KEY not in piece.prompt_metadata
+    assert "Not submitted." in piece.converted_value
 
 
 def test_an_error_status_without_a_block_still_fails(fake_app, clean_env):

@@ -1732,7 +1732,7 @@ async def main(
                         f"  {name}: as written {plain_flags} of {plain_answered}, encoded {encoded_flags} of {encoded_answered}"
                         + ("  <- flagged more often encoded" if more else "")
                     )
-            print("  The run summary reads these with fixed replies left out (Encoded vs. as written).")
+            print("  The run summary reads these with blocked and deflected replies left out (Encoded vs. as written).")
         else:
             for enc_name in pass_names:
                 if not any(enc_name in tally for tally in versions.values()):

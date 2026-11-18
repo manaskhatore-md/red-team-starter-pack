@@ -45,7 +45,7 @@ from pyrit.memory import CentralMemory
 from pyrit.setup import SQLITE, initialize_pyrit_async
 
 from redteam.cli import full_form
-from harnesses.pyrit_campaigns.calibration import CALIBRATION_LABEL, normalized
+from harnesses.pyrit_campaigns.calibration import CALIBRATION_LABEL, loose_normalized, normalized
 from harnesses.pyrit_campaigns.profiles import PROFILES, checklist_for, pack_suites
 from harnesses.pyrit_campaigns.code_checks import CODE_CHECKS
 from harnesses.pyrit_campaigns.planted_records import RECORD_CHECK
@@ -117,13 +117,6 @@ UNCONFIRMED = "unverified (fact not yet confirmed)"
 REACH_BLOCKED = "blocked"
 REACH_DEFLECTED = "deflected"
 REACH_REACHED = "reached_model"
-
-
-def loose_normalized(text: str) -> str:
-    """Normalize a reply for deflection matching: case and punctuation set aside, and any word
-    with a digit in it (a request id, a time) replaced with one token, so "Blocked (ref 8f2a)."
-    still matches the calibration fallback "blocked, ref 91c0"."""
-    return " ".join(re.sub(r"[^\w#]+", " ", re.sub(r"\w*\d\w*", "#", text.lower())).split())
 
 
 def reach_status(messages, scores, fallbacks: set[str]) -> tuple[str, str]:
@@ -624,7 +617,7 @@ def pair_verdicts(entries) -> list[dict]:
         # Different blocked or deflected replies are still compared: the app treating the
         # halves differently is a finding.
         both_unreached = all(m.get("reach", REACH_REACHED) in (REACH_BLOCKED, REACH_DEFLECTED) for m in members)
-        if score is not None and both_unreached and len({last_reply(m["messages"]) for m in members}) == 1:
+        if score is not None and both_unreached and len({loose_normalized(last_reply(m["messages"])) for m in members}) == 1:
             score = None
             verdict = "not tested (both halves got the same blocked or deflected reply)"
         elif score is None:
@@ -1324,7 +1317,7 @@ def build_summary(results, memory, run_id: str) -> str:
             if p["score"] is not None and p["score"].score_rationale:
                 lines += [f"Judge's summary: {p['score'].score_rationale}", ""]
             # The two replies, one after the other, so the difference can be read here. A pair
-            # whose halves got the same fixed message has nothing to compare.
+            # whose halves got the same blocked or deflected reply has nothing to compare.
             if not p["verdict"].startswith("not tested"):
                 for m in p["members"]:
                     variant = (m["result"].labels or {}).get("rt_variant") or "?"
