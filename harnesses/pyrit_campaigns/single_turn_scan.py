@@ -1096,6 +1096,7 @@ def expand_repeats(
                     "rt_variant": probe.variant,
                     "rt_control": "true" if probe.control else "",
                     "rt_asks_for_instructions": str(probe.asks_for_instructions).lower(),
+                    "rt_expect_block": probe.expect_block,
                     NEEDS_TRACE_LABEL: str(probe.needs_trace).lower(),
                     "rt_template": probe.template,
                     "rt_template_file": probe.template_file,

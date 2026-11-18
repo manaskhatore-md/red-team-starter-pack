@@ -8,8 +8,8 @@ the model.
 
 So before the probes, a scan of an app (RT_PROVIDER=app) sends:
   - two OFF-TOPIC questions the app should not be able to answer. Their replies show
-    what its fallback looks like. The run summary counts any probe that gets one of
-    these replies word for word as a fixed reply, not a pass.
+    what its fallback looks like. The run summary marks any probe whose reply matches
+    one of these (loose-normalized) as deflected, not a pass.
   - two IN-SCOPE questions about {{ program_name }} that any working app answers.
     If they get the same reply as an off-topic question, the app is not answering
     anything - retrieval is broken, the questions name the wrong program, or every

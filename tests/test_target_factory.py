@@ -975,6 +975,42 @@ def test_app_parses_ndjson_and_lambda_streaming_bodies_in_concat_and_last_modes(
 
 
 @pytest.mark.parametrize(
+    "control_path, blocked_when, body, expected_blocked",
+    [
+        # Multiple top-level fields: the working case before this fix.
+        ("blocked,guardrail", "blocked=true,guardrail.action=block",
+         '{"answer": "no", "blocked": true, "guardrail": {"action": "block"}}', "blocked=True"),
+        # Single top-level field.
+        ("blocked", "blocked=true",
+         '{"answer": "no", "blocked": true}', "blocked=True"),
+        # Single dotted path.
+        ("guardrail.action", "guardrail.action=block",
+         '{"answer": "no", "guardrail": {"action": "block"}}', "guardrail.action=block"),
+        # Mixed: dotted + top-level.
+        ("guardrail.action,blocked", "guardrail.action=block",
+         '{"answer": "no", "guardrail": {"action": "block"}, "blocked": true}', "guardrail.action=block"),
+        # No match.
+        ("blocked", "blocked=true",
+         '{"answer": "yes", "blocked": false}', ""),
+    ],
+    ids=["multi-toplevel", "single-toplevel", "single-dotted", "dotted-and-toplevel", "no-match"],
+)
+def test_app_blocked_when_detects_all_control_path_shapes(fake_app, clean_env, control_path, blocked_when, body, expected_blocked):
+    clean_env.setenv("APP_RESPONSE_PATH", "answer")
+    clean_env.setenv("APP_CONTROL_PATH", control_path)
+    clean_env.setenv("APP_BLOCKED_WHEN", blocked_when)
+    fake_app["replies"] = [(200, body)]
+    target = build_target()
+    message = Message(message_pieces=[MessagePiece(role="user", original_value="hi", conversation_id=str(uuid.uuid4()))])
+    try:
+        reply = asyncio.run(target.send_prompt_async(message=message))[0].message_pieces[0]
+    finally:
+        asyncio.run(target_factory.close_target(target))
+    blocked = (reply.prompt_metadata or {}).get(target_factory.BLOCKED_METADATA_KEY, "")
+    assert blocked == expected_blocked
+
+
+@pytest.mark.parametrize(
     "kind, body, first_event",
     [
         ("SSE", 'event: message\ndata: {"wrong": "field"}\ndata: [DONE]\n', '{"wrong": "field"}'),

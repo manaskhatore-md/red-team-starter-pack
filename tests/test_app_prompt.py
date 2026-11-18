@@ -111,8 +111,10 @@ def test_they_are_not_listed_when_the_prompt_is_known(memory):
     assert "## Replies to requests for its instructions" not in summary(memory)
 
 
-def test_fixed_replies_are_left_out_of_the_list(memory):
-    # Two different probes got the same canned text, so it is a fixed reply, not the model's words.
+def test_deflected_replies_are_left_out_of_the_list(memory):
+    # A reply that matched the calibration fallback is deflected, so it is not the model's words.
+    add_probe(memory, "off-topic", "Sorry, I can only provide information.", rt_calibration="off_topic", **APP)
+    add_probe(memory, "in-scope", "SNAP helps families.", rt_calibration="in_scope", **APP)
     for name in ("system_prompt_extraction", "config_disclosure_pretext"):
         add_probe(memory, f"ask {name}", "Sorry, I can only provide information.", "injection_compliance",
                   rt_probe=name, rt_asks_for_instructions="true", **APP)
