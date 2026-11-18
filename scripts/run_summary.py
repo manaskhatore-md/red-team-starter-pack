@@ -973,12 +973,14 @@ def build_summary(results, memory, run_id: str) -> str:
         )
     unreached = counts[BLOCKED] + counts[DEFLECTED]
     untested = unreached + len(no_reply) + counts[NOT_SCORED]
+    # An expect_block probe that was blocked is a pass, but not the model's own reply.
+    block_passes = sum(e["verdict"] == PASSED and e["reach"] == REACH_BLOCKED for e in entries)
+    passed = f"{counts[PASSED] - block_passes} passed with the model's own reply" + (
+        f" and {block_passes} by being blocked, as those probes hope for" if block_passes else ""
+    )
+    if block_passes and not untested:
+        lines.append(f"- **{passed}.**")
     if untested:
-        # An expect_block probe that was blocked is a pass, but not the model's own reply.
-        block_passes = sum(e["verdict"] == PASSED and e["reach"] == REACH_BLOCKED for e in entries)
-        passed = f"{counts[PASSED] - block_passes} passed with the model's own reply" + (
-            f" and {block_passes} by being blocked, as those probes hope for" if block_passes else ""
-        )
         lines.append(
             (f"- **{passed}. " if campaign != "multi_turn_crescendo" else "- **")
             + f"{untested} of {len(entries)} did not test the model**, so they are neither passes nor flags:"
@@ -1133,8 +1135,13 @@ def build_summary(results, memory, run_id: str) -> str:
     lines.append("")
 
     flagged_by = Counter(r for e in entries for r in flagged_rubrics(e["scores"]) if r != PAIR_RUBRIC)
-    # A blocked/deflected reply is not a grading of the model, so it is not counted as one.
-    graded = Counter(r for e in entries if e["verdict"] not in (BLOCKED, DEFLECTED) for r in e["graded_by"])
+    # A blocked/deflected reply is not a grading of the model, so it is not counted as one: nor is
+    # an expect_block probe's pass by being blocked. (A flag on a block notice still counts.)
+    graded = Counter(
+        r for e in entries
+        if e["verdict"] not in (BLOCKED, DEFLECTED) and not (e["verdict"] == PASSED and e["reach"] != REACH_REACHED)
+        for r in e["graded_by"]
+    )
     # A rubric whose every flag was unverified still ran: its row says it graded none.
     rubrics_run = {r for e in entries for r in (*e["graded_by"], *reply_unverified_flags(e["scores"]))}
     if rubrics_run or pairs_compared or canary_checked or records_checked or any(other_checked.values()):
@@ -1163,10 +1170,11 @@ def build_summary(results, memory, run_id: str) -> str:
             description = cell(rubrics.get(PAIR_RUBRIC, {}).get("description", ""), 120)
             lines.append(f"| {PAIR_RUBRIC} (pairs) | {pairs_flagged} | {pairs_compared} | {description} |")
         untested_pairs = sum(p["verdict"].startswith("not tested") for p in pairs)
-        if unreached:
+        if unreached or block_passes:
             lines += [
                 "",
-                f"Graded leaves out the {unreached} result(s) that were blocked or deflected"
+                f"Graded leaves out the {unreached + block_passes} result(s) that were blocked or deflected"
+                + (f" ({block_passes} of them passes by being blocked)" if block_passes else "")
                 + (f" and the {untested_pairs} pair(s) whose halves both were" if untested_pairs else "")
                 + ", since the model saw none of them.",
             ]
