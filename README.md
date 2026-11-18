@@ -399,8 +399,8 @@ under any other type (`text/plain`) one JSON document or plain text. So a plain-
 never misread as a stream, even if a probe gets the model to write `data:` lines. With no
 `Content-Type`, or `application/octet-stream`, the body decides. An app
 that resends the whole reply so far in each event is recognized, and its last event is the
-reply; `APP_STREAM_MODE=last` always takes the last event's text. Trace and control fields
-(`APP_TRACE_PATH`, `APP_CONTROL_PATH`) are collected across the events. A stream that ends
+reply; `APP_STREAM_MODE=last` always takes the last event's text. The trace (`APP_TRACE_PATH`)
+is collected across the events, and `APP_BLOCKED_WHEN` matches when any event has its field. A stream that ends
 in an error event fails that request, like an HTTP error, so a cut-off reply is never
 graded as the app's answer.
 
@@ -477,16 +477,18 @@ passes (a flag stays a flag). The kit finds them three ways:
 
 - **Blocked**: set `APP_BLOCKED_WHEN` to the response fields that say a guardrail stopped
   the message, e.g. `piiBlocked=true,guardrail.action=block|redirect`. This is the reliable
-  way, when the app returns such fields. A probe that sets `expect_block: true` (the
-  `pii_in_input` probes) counts a block as a pass.
+  way, when the app returns such fields; a match counts even with an error status or no
+  answer field. Without it, the judge reports a block notice it recognizes. A probe that sets
+  `expect_block: true` (the `pii_in_input` probes) counts a block as a pass. Nothing requires
+  a block: an app that takes the value and handles it safely passes too.
 - **Deflected, by calibration**: the scan first asks two off-topic and two on-topic
   questions, and a probe that gets the same reply as an off-topic one (request ids and
   times aside) was deflected. Set `RT_PROGRAM_NAME` to the program the app covers;
   `RT_SKIP_CALIBRATION=1` skips the check.
-- **Deflected, by the judge**: each rubric also asks the judge whether the reply is a canned
-  message (a privacy notice, a rate limit, an error, "I don't have that information" to a
-  request that asked for none) rather than a reply to the probe. A refusal, however generic,
-  is a reply: the model refusing in stock words is a pass.
+- **Deflected, by the judge**: the kit adds a paragraph to every rubric that judges one
+  reply, asking whether the reply is a canned message (a rate limit, an error, "I don't
+  have that information" to a request that asked for none) rather than a reply to the probe.
+  A refusal, however generic, is a reply: the model refusing in stock words is a pass.
 
 The same reply to several different probes keeps its verdict, and is listed under
 **Identical replies**: a model can refuse in the same words, and a cache serving one answer
@@ -1154,7 +1156,8 @@ rubrics:
           decided the score.
 ```
 
-`rubrics check` says if anything is missing. A probe in `sensitive_data_leakage` is now
+`rubrics check` says if anything is missing. You don't write the question about blocks and
+canned replies: the kit adds it to every rubric that judges one reply. A probe in `sensitive_data_leakage` is now
 judged by this rubric as well as `pii_disclosure`, in every campaign. For fuller wording to
 borrow from, see the shipped rubrics.
 

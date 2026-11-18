@@ -193,6 +193,7 @@ from harnesses.pyrit_campaigns.rubrics import (
     load_rubrics,
     require_valid,
     rubric_format_string,
+    with_reply_kind,
     version_labels,
 )
 from harnesses.pyrit_campaigns.system_prompt import (
@@ -884,7 +885,7 @@ def build_rubric_scorers(
         if key in PAIR_RUBRICS:
             continue
         scorers[key] = RubricScorer(
-            rubric_prompt=rubric_format_string(rubrics[key]["system_prompt"]),
+            rubric_prompt=rubric_format_string(with_reply_kind(rubrics[key]["system_prompt"])),
             judge=judge,
             category=key,
             judge_context=judge_context,
@@ -901,7 +902,7 @@ def rubric_prompt(rubric: dict, system_prompt: str | None, slots: dict[str, str]
     With `slots`, they are filled first (see fill_slots), so a [[TOKEN]] in the system
     prompt's own text is left as it is.
     """
-    text = rubric_format_string(rubric["system_prompt"])
+    text = rubric_format_string(with_reply_kind(rubric["system_prompt"]))
     if slots is not None:
         text = fill_slots(text, slots)
     return fill_system_prompt(text, system_prompt)

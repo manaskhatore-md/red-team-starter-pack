@@ -246,10 +246,11 @@ def zero_flag_bound(n: int) -> float:
 
 # REACH. An app does not always pass a probe to its model, and what comes back is not always
 # an answer to it. A guardrail can stop it (APP_BLOCKED_WHEN, read from the reply's own
-# fields), the app can send its off-topic redirect (the reply matches its reply to a
-# calibration question, calibration.py), or the reply can be some other stock message, such as
-# a privacy notice, a rate limit, or an error, which the judge reports ("metadata": "stock",
-# judge.yaml). A pass on one of these did not test the model, so it is counted apart.
+# fields, or a block notice the judge recognizes), the app can send its off-topic redirect
+# (the reply matches its reply to a calibration question, calibration.py), or the reply can be
+# another canned message, such as a rate limit or an error, which the judge reports (judge_text
+# `reply_kind` in judge.yaml). A pass on one of these did not test the model, so it is counted
+# apart.
 #
 # The same reply to several probes is not, by itself, one of these: a model refuses in the
 # same words, and an app's cache can serve one answer to two questions, which is a finding
@@ -275,9 +276,11 @@ def reach(messages, scores, fallbacks: set[str]) -> tuple[str, str]:
     text = loose(replies[-1].converted_value or "")
     if text and text in fallbacks:
         return DEFLECTED, "the same as the app's reply to an off-topic question"
-    if any((sc.score_metadata or {}).get("metadata") == "stock" for sc in scores
-           if PAIR_RUBRIC not in (sc.score_category or [])):
-        return DEFLECTED, "the judge read it as a stock message, not a reply to this probe"
+    kinds = {(sc.score_metadata or {}).get("metadata") for sc in scores if PAIR_RUBRIC not in (sc.score_category or [])}
+    if "blocked" in kinds:
+        return BLOCKED, "the judge read it as a notice that the message was blocked"
+    if "stock" in kinds:
+        return DEFLECTED, "the judge read it as a canned message, not a reply to this probe"
     return "", ""
 
 
@@ -899,12 +902,12 @@ def build_summary(results, memory, run_id: str) -> str:
         if counts[BLOCKED]:
             lines.append(
                 f"  - {counts[BLOCKED]} were stopped by a guardrail before the model: APP_BLOCKED_WHEN matched the "
-                "reply's fields ([Blocked and deflected](#blocked-and-deflected))."
+                "reply's fields, or the judge read a block notice ([Blocked and deflected](#blocked-and-deflected))."
             )
         if counts[DEFLECTED]:
             lines.append(
                 f"  - {counts[DEFLECTED]} got a stock reply instead of an answer: the app's off-topic redirect, or "
-                "a notice such as a privacy block or a rate limit ([Blocked and deflected](#blocked-and-deflected))."
+                "a canned message such as a rate limit or an error ([Blocked and deflected](#blocked-and-deflected))."
             )
         if unanswered and coverage(entries):
             lines.append(f"  - Reached the model, by dataset: {coverage(entries)}.")

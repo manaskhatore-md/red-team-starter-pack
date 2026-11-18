@@ -458,10 +458,6 @@ def _holds_whole_value(value, slot: str) -> bool:
 # so the judge and reports see what tools or sources the app used without putting raw
 # JSON traces into converted_value (where {HISTORY}, the attacker, and regex checks read).
 TRACE_METADATA_KEY = "rt_trace"
-# Stored on the assistant MessagePiece's prompt_metadata when APP_CONTROL_PATH is set,
-# so guardrail and reach checks can read control fields (e.g. blocked, guardrail.action)
-# from single-JSON or streamed responses.
-CONTROL_METADATA_KEY = "rt_control"
 # Stored on the assistant MessagePiece's prompt_metadata when APP_BLOCKED_WHEN is set: the
 # condition the reply met ("piiBlocked=true"), so the run summary counts the probe as blocked
 # before the model and says what proved it; NOT_BLOCKED when the reply had a field the setting
@@ -1032,16 +1028,13 @@ class AppChatTarget(PromptTarget):
                               event named neither way is a "message". Unset: every event,
                               but a reply whose text comes from more than one kind is an
                               error, since the others are likely tool-call arguments or
-                              the model's reasoning. Only the reply is narrowed: trace and
-                              control fields are still read from every event.
+                              the model's reasoning. Only the reply is narrowed: the trace
+                              and APP_BLOCKED_WHEN's fields are still read from every event.
         APP_TRACE_PATH        optional: where tool calls, retrieved sources, or citations
                               are in the response, dotted (or comma-separated paths), e.g.
                               trace.rounds or citations. Shown to the judge in
                               <response_trace> and included in reports, without being
                               sent back in {HISTORY} or scanned as user-visible reply text.
-        APP_CONTROL_PATH      optional: where guardrail or routing control fields are in
-                              the response, dotted (or comma-separated paths), e.g.
-                              blocked,guardrail. Stored in prompt_metadata["rt_control"].
         APP_BLOCKED_WHEN      optional: response fields that mean a guardrail stopped the
                               message before the model, e.g. piiBlocked=true or
                               guardrail.action=block|redirect. See blocked_by().
@@ -1078,7 +1071,6 @@ class AppChatTarget(PromptTarget):
         stream_mode: str = "concat",
         stream_event: str = "",
         trace_path: str = "",
-        control_path: str = "",
         blocked_when: str = "",
         token_command: str = "",
         headers: dict[str, str] | None = None,
@@ -1133,7 +1125,6 @@ class AppChatTarget(PromptTarget):
         self._stream_mode = mode
         self._stream_events = frozenset(n.strip() for n in stream_event.split(",") if n.strip())
         self._trace_path = trace_path.strip()
-        self._control_path = control_path.strip()
         self._blocked_when = parse_blocked_when(blocked_when)
         self._token_command = token_command.strip()
         self._token_lock = asyncio.Lock()
@@ -1162,7 +1153,6 @@ class AppChatTarget(PromptTarget):
             stream_mode=os.getenv("APP_STREAM_MODE") or "concat",
             stream_event=os.getenv("APP_STREAM_EVENT", ""),
             trace_path=os.getenv("APP_TRACE_PATH", ""),
-            control_path=os.getenv("APP_CONTROL_PATH", ""),
             blocked_when=os.getenv("APP_BLOCKED_WHEN", ""),
             token_command=os.getenv("APP_TOKEN_COMMAND", ""),
             headers=headers,
@@ -1409,13 +1399,6 @@ class AppChatTarget(PromptTarget):
             return text[:head] + " ... [truncated] ... " + text[-tail:]
         return text
 
-    def control_text(self, body: str, content_type: str | None = None) -> str:
-        """The guardrail/control fields, read from APP_CONTROL_PATH in the response body ("" if unset or absent)."""
-        if not self._control_path:
-            return ""
-        _kind, events = _parse_response_events(body, content_type)
-        return _extract_paths(events, self._control_path, clean_trace=False)
-
     async def _refresh_token(self) -> None:
         """Run APP_TOKEN_COMMAND to get a fresh bearer token and store it in the Authorization header."""
         token = (await asyncio.to_thread(run_token_command, self._token_command, self._timeout)).strip()
@@ -1459,13 +1442,17 @@ class AppChatTarget(PromptTarget):
         )
         if status in APP_RETRY_STATUSES:
             raise RateLimitException(status_code=status, message=body[:300])
-        if not 200 <= status < 300:
+        # Checked first: a guardrail's block can come with an error status (a content filter's
+        # 400) or without the answer field, and is still the app's reply to the probe.
+        blocked = self._blocked_when and blocked_by(_parse_response_events(body, content_type)[1], self._blocked_when)
+        stopped = bool(blocked) and blocked != NOT_BLOCKED
+        if not 200 <= status < 300 and not stopped:
             # The status alone is ambiguous on API Gateway: 403 "Missing Authentication
             # Token" is a wrong URL, 403 "Forbidden" a missing or wrong API key, and 502
             # a Lambda that crashed or returned the wrong shape. The body says which.
             raise RuntimeError(f"The app returned HTTP {status}: {body[:300]}")
         error = _stream_error(body, content_type)
-        if error:
+        if error and not stopped:
             # Whatever text came before the error is a cut-off reply: fail the request
             # like an HTTP error, rather than grade part of an answer as the whole one.
             raise RuntimeError(f"The app's streamed reply ended with an error: {error[:300]}")
@@ -1481,15 +1468,17 @@ class AppChatTarget(PromptTarget):
                 f"was read as it came. If the app streams its replies, {STREAM_TYPES_HINT}; if it doesn't, the "
                 "model's reply only looked like a stream."
             )
-        text = self.reply_text(body, content_type)
+        try:
+            text = self.reply_text(body, content_type)
+        except ValueError:
+            if not stopped:
+                raise
+            # A block's response need not have the answer field: what came back is the reply.
+            text = body
         trace = self.trace_text(body, content_type)
-        control = self.control_text(body, content_type)
         metadata = {}
         if trace:
             metadata[TRACE_METADATA_KEY] = trace
-        if control:
-            metadata[CONTROL_METADATA_KEY] = control
-        blocked = self._blocked_when and blocked_by(_parse_response_events(body, content_type)[1], self._blocked_when)
         if blocked:
             metadata[BLOCKED_METADATA_KEY] = blocked
         metadata.update(self.stream_event_match(body, content_type))

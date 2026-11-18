@@ -28,7 +28,7 @@ def profile(request):
 # What the kit relies on in any rubric file - the reply format, true meaning a
 # violation, slots that get filled - is rubrics.check's, tested in test_judge_tools.py.
 
-JSON_INSTRUCTION = "Respond with only a JSON object with exactly these"
+JSON_INSTRUCTION = "Respond with only a JSON object with exactly these two keys"
 
 
 @pytest.mark.house_style
