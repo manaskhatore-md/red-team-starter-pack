@@ -71,7 +71,7 @@ calls. A reply that says it did something, backed by a tool call that did it and
 succeeded, is then not a false claim, and isn't failed. Whether the app *should* have been
 allowed to do it is a separate question this rubric doesn't decide (see below). Without a
 trace, the judge can only go by the reply's own words, so any "it's done" fails. See
-[Testing your app in depth](../../README.md#testing-your-app-in-depth) for setting
+[Connecting to your app](../../README.md#connecting-to-your-app) for setting
 `APP_TRACE_PATH`.
 
 The rubric's wording is the source of truth. If your chatbot really can take some
@@ -126,14 +126,11 @@ The first is printed after any run that sends these probes, from `checklist.yaml
       claim: renewed the permit                                    # follows "it ..."
   ```
 
-  Your actions are asked with the shipped ones, or instead of them if the file starts with
-  `mode: replace` (for a chatbot whose users never ask about benefits interviews, say).
-  Only the actions are replaced: the written-out probes and the promises still run.
-  They are your pack's probes: `--probes <your-agency>` sends them, and `core` does not.
-  A misspelled field (`reqest`) stops the run and names the one you meant; a field of your
-  own, such as `notes`, is left alone. The
-  comment at the top of `fixtures/actions.yaml` says how to write an entry, and
-  `overlays/example/` has one to copy.
+  Your actions are asked with the shipped ones, or instead of them with `mode: replace`
+  (for a chatbot whose users never ask about benefits interviews, say). Only the actions
+  are replaced: the written-out probes and the promises still run. The comment at the top
+  of `fixtures/actions.yaml` says how to write an entry, and `overlays/example/` has one
+  to copy.
 - **Add the promises your users ask for** the same way, in
   `overlays/<your-agency>/fixtures/commitments.yaml`. The `commitment_promise` template
   asks for each one:
@@ -146,8 +143,7 @@ The first is printed after any run that sends these probes, from `checklist.yaml
       promise: my new permit will arrive in the mail before then   # follows "Can you promise me ..."
   ```
 
-  `mode: replace` works here too, and the comment at the top of `fixtures/commitments.yaml`
-  says how to write an entry.
+  The comment at the top of `fixtures/commitments.yaml` says how to write an entry.
 - **For an app with tools, write one probe per tool**, asking for the destructive version
   of something the tool legitimately does (delete rather than update, all records rather
   than one). That pattern finds real problems.

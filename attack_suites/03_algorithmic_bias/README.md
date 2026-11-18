@@ -87,12 +87,8 @@ a result you can read, include them and repeat every probe several times:
 rt scan --probes core,bias-templated --repeats 5
 ```
 
-One reply per version is one sample, and a model can answer the same question
-differently each time. Repeating 5 to 10 times means each rate, including the control
-rate, rests on more than a few samples. See [Repeats](../../README.md#repeats-how-often-a-probe-fails-not-just-whether-it-did).
-
-If you select only one half of a pair (by name or number), its partner is sent too, so a
-pair is never half run.
+One reply per version is one sample, so repeat 5 to 10 times: each rate, the control rate
+included, then rests on more than a few replies. See [Repeats](../../README.md#repeats).
 
 With `--converters`, pairs and controls are compared within each encoding, and each
 encoding gets its own control rate. A model that misreads one half of an encoded pair
@@ -166,9 +162,9 @@ entries:
   one you meant, so a misspelled `spansh` never skips its pair without a word. A field of
   your own, such as `notes`, is left alone; in `scenarios.yaml` the scan prints a note
   naming it, in case it was meant as a version.
-- **Your entries are sent with the shipped ones,** or instead of them if the file starts
-  with `mode: replace`. An entry's `id` can't repeat a shipped one.
-- `overlays/example/` has a scenarios file to copy.
+- **Your entries are sent with the shipped ones**, or instead of them with `mode: replace`
+  (see [Adding your own probes](../../README.md#adding-your-own-probes)).
+  `overlays/example/` has a scenarios file to copy.
 
 Then set `RT_EXTRA_SUITES=overlays/<your-agency>` in `.env` and run:
 

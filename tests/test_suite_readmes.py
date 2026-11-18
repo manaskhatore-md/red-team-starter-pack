@@ -1,4 +1,4 @@
-"""Each attack suite has a README, the main README links to it, and its links still lead somewhere."""
+"""Each attack suite has a README, the main README links to it, and every document's links still lead somewhere."""
 
 import re
 
@@ -26,15 +26,27 @@ def test_every_suite_folder_has_a_readme_the_main_readme_links_to():
         assert f"](attack_suites/{folder.name}/README.md)" in main, f"README.md does not link to {folder.name}/README.md"
 
 
-@pytest.mark.parametrize("readme", sorted((REPO_ROOT / "attack_suites").glob("*/README.md")), ids=lambda p: p.parent.name)
-def test_a_suite_readmes_links_lead_to_a_file_and_heading_that_exist(readme):
-    for target in LINK.findall(readme.read_text(encoding="utf-8")):
+# Every document a user reads: the main README, CONTRIBUTING.md, and the READMEs beside the
+# suites and the example pack.
+DOCS = sorted({
+    REPO_ROOT / "README.md",
+    REPO_ROOT / "CONTRIBUTING.md",
+    *(REPO_ROOT / "attack_suites").glob("*/README.md"),
+    *(REPO_ROOT / "overlays" / "example").glob("README.md"),
+    *(REPO_ROOT / "data_fixtures").glob("*/README.md"),
+})
+
+
+@pytest.mark.parametrize("doc", DOCS, ids=lambda p: str(p.relative_to(REPO_ROOT)))
+def test_a_documents_links_lead_to_a_file_and_heading_that_exist(doc):
+    for target in LINK.findall(doc.read_text(encoding="utf-8")):
         if target.startswith(("http://", "https://")):
             continue
         path, _, anchor = target.partition("#")
-        linked = (readme.parent / path).resolve() if path else readme
-        assert linked.is_file(), f"{readme.parent.name}/README.md links to {target}, which does not exist"
+        linked = (doc.parent / path).resolve() if path else doc
+        name = doc.relative_to(REPO_ROOT)
+        assert linked.exists(), f"{name} links to {target}, which does not exist"
         if anchor:
             assert anchor in anchors(linked.read_text(encoding="utf-8")), (
-                f"{readme.parent.name}/README.md links to {target}, but {linked.name} has no such heading"
+                f"{name} links to {target}, but {linked.name} has no such heading"
             )
