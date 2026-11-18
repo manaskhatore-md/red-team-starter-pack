@@ -70,17 +70,26 @@ a template its own file of the same name instead (see FIXTURE FEEDS in probes.py
 caller passes it to expand() as `source`.
 """
 
+import copy
 import datetime
 import difflib
+import functools
 import logging
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
-import yaml
 from pyrit.models import SeedDataset, SeedPrompt
 
-from harnesses.pyrit_campaigns.profiles import REPO_ROOT
+from harnesses.pyrit_campaigns.profiles import REPO_ROOT, load_yaml_file
+
+try:
+    from jinja2.sandbox import SandboxedEnvironment
+    from pyrit.models.seeds.seed import PartialUndefined
+
+    _JINJA_ENV = SandboxedEnvironment(undefined=PartialUndefined)
+except ImportError:  # pragma: no cover
+    _JINJA_ENV = None
 
 FIXTURES_DIR = "fixtures"
 DEFAULT_VARIABLE = "fixture"
@@ -147,14 +156,26 @@ class _TemplateFieldNotice(logging.Filter):
         return not self.NOTICE.search(record.getMessage())
 
 
-def load_dataset(path: Path) -> SeedDataset:
-    """SeedDataset.from_yaml_file, without PyRIT's error about the fields of template seeds."""
+@functools.lru_cache(maxsize=64)
+def _read_dataset(resolved: str, raw: bytes) -> SeedDataset:
     logger, notice = logging.getLogger("pyrit.models.seeds.seed"), _TemplateFieldNotice()
     logger.addFilter(notice)
     try:
-        return SeedDataset.from_yaml_file(path)
+        return SeedDataset.from_yaml_file(Path(resolved))
     finally:
         logger.removeFilter(notice)
+
+
+def load_dataset(path: Path) -> SeedDataset:
+    """SeedDataset.from_yaml_file, without PyRIT's error about the fields of template seeds."""
+    if not path.is_file():
+        return SeedDataset.from_yaml_file(path)
+    return copy.deepcopy(_read_dataset(str(path.resolve()), path.read_bytes()))
+
+
+@functools.lru_cache(maxsize=2048)
+def _compiled_template(text: str):
+    return _JINJA_ENV.from_string(text)
 
 
 def fill(text: str, **values) -> str:
@@ -164,7 +185,17 @@ def fill(text: str, **values) -> str:
         # drops one final \n. Most pass criteria are like this, and building a template
         # for each one was a good part of loading the probes.
         return text
-    return SeedPrompt(value=text, data_type="text").render_template_value_silent(**values)
+    if _JINJA_ENV is None or "{%" in text:
+        return SeedPrompt(value=text, data_type="text").render_template_value_silent(**values)
+    try:
+        template = _compiled_template(text)
+    except Exception:
+        return SeedPrompt(value=text, data_type="text").render_template_value_silent(**values)
+    try:
+        return template.render(**values)
+    except Exception as e:
+        logging.getLogger("pyrit.models.seeds.seed").error("Error rendering template: %s", e)
+        return text
 
 
 def fixture_path(dataset_file: Path, name: str) -> Path:
@@ -181,7 +212,7 @@ def read_fixture(path: Path, variable: str | None = None, allow_empty: bool = Fa
     shown = _shown(path)
     if not path.exists():
         raise SystemExit(f"Missing fixture file: {shown}")
-    data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    data = load_yaml_file(path) or {}
     if not isinstance(data, dict):
         raise SystemExit(f"{shown}: needs `variable:` and an `entries:` list")
     own = data.get("variable")

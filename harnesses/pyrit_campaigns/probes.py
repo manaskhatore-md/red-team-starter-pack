@@ -7,8 +7,6 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
-import yaml
-
 from harnesses.pyrit_campaigns import profiles
 from harnesses.pyrit_campaigns.probe_templates import (
     FixtureFile,
@@ -316,7 +314,7 @@ def _check_fed(fixture: FixtureFile, asks: set[str], templates) -> None:
 
 def _fixtures_read(path: Path) -> set[str]:
     """The fixtures the templates in a probe file name in `expand_with`."""
-    data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    data = profiles.load_yaml_file(path) or {}
     seeds = data.get("seeds") if isinstance(data, dict) else None
     return {
         str(seed["metadata"]["expand_with"])

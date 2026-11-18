@@ -415,15 +415,80 @@ def test_loading_a_template_logs_no_rendering_error(templated, caplog):
         "{ braces that are not a blank }",
         "{{ program_name }} households",
         "{{ unknown }} stays as written",
+        "{{ unknown.field }} stays as written when the object is missing",
         "{% if program_name %}a {{ program_name }} probe{% endif %}",
+        "{{ program_name | upper }} with a filter",
+        "{# a comment #}{{ program_name }}",
+        "a windows\r\nline break beside {{ program_name }}",
+        "a final newline beside {{ program_name }}\n",
+        "{{ program_name.attr.deeper }} on a value that has no such field",
     ],
 )
 def test_fill_gives_what_pyrit_gives(text):
-    # fill() skips building a template for text with nothing to fill: it must still
-    # give exactly what PyRIT's own rendering gives.
+    # fill() skips building a template for text with nothing to fill and caches compiled
+    # templates for the rest: every case must still give what PyRIT's own rendering gives.
     from pyrit.models import SeedPrompt
 
     from harnesses.pyrit_campaigns.probe_templates import fill
 
     values = {"program_name": "SNAP"}
     assert fill(text, **values) == SeedPrompt(value=text, data_type="text").render_template_value_silent(**values)
+
+
+def test_fill_gives_what_pyrit_gives_for_every_shipped_probe(clean_env):
+    # fill() renders templates itself, not through PyRIT, so it can cache them. A PyRIT
+    # upgrade that changes how PyRIT fills a template must fail here, rather than quietly
+    # change what the kit sends. Every text a load fills, with the example pack too.
+    from pyrit.models import SeedPrompt
+
+    from harnesses.pyrit_campaigns import probe_templates, probes
+
+    calls = []
+    real_fill = probe_templates.fill
+
+    def recording_fill(text, **values):
+        calls.append((text, values))
+        return real_fill(text, **values)
+
+    clean_env.setattr(probe_templates, "fill", recording_fill)
+    clean_env.setattr(probes, "fill", recording_fill)
+    probes.load_probes()
+    clean_env.setenv("RT_EXTRA_SUITES", "overlays/example")
+    probes.load_probes()
+
+    # The shipped probes have hundreds of blanks; far fewer means the recording missed them.
+    assert sum("{{" in text for text, _ in calls) > 100
+    differ = [
+        text
+        for text, values in calls
+        if real_fill(text, **values) != SeedPrompt(value=text, data_type="text").render_template_value_silent(**values)
+    ]
+    assert not differ, f"fill() and PyRIT fill {len(differ)} text(s) differently, the first: {differ[0]!r}"
+
+
+def test_cached_datasets_and_fixtures_reload_on_file_edits_and_isolate_mutations(tmp_path):
+    from harnesses.pyrit_campaigns.probe_templates import load_dataset, read_fixture
+
+    fixture = tmp_path / "facts.yaml"
+    fixture.write_text("variable: fact\nentries:\n  - id: fee\n    claim: '$45'\n", encoding="utf-8")
+    first = read_fixture(fixture)
+    first.entries[0]["claim"] = "mutated in memory"
+    assert read_fixture(fixture).entries[0]["claim"] == "$45"
+
+    fixture.write_text("variable: fact\nentries:\n  - id: fee\n    claim: '$50'\n", encoding="utf-8")
+    assert read_fixture(fixture).entries[0]["claim"] == "$50"
+
+    dataset = tmp_path / "suite.yaml"
+    dataset.write_text(
+        "name: s\ndataset_name: s\nharm_categories: [x]\nseeds:\n  - value: first prompt\n    name: p1\n",
+        encoding="utf-8",
+    )
+    loaded = load_dataset(dataset)
+    loaded.seeds.clear()
+    assert [s.value for s in load_dataset(dataset).seeds] == ["first prompt"]
+
+    dataset.write_text(
+        "name: s\ndataset_name: s\nharm_categories: [x]\nseeds:\n  - value: updated prompt\n    name: p1\n",
+        encoding="utf-8",
+    )
+    assert [s.value for s in load_dataset(dataset).seeds] == ["updated prompt"]

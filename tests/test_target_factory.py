@@ -1638,3 +1638,17 @@ def test_smoke_test_names_app_stream_event_and_seen_kinds_when_stream_matches_no
     out = capsys.readouterr().out
     assert "Hint: no stream event matched APP_STREAM_EVENT=response.output_txt.delta" in out
     assert "response.output_text.delta" in out
+
+
+def test_app_ssl_context_reuses_cached_bundle_until_ssl_env_changes(clean_env):
+    import certifi
+
+    clean_env.delenv("SSL_CERT_FILE", raising=False)
+    clean_env.delenv("SSL_CERT_DIR", raising=False)
+    default_ctx = target_factory.app_ssl_context()
+    assert target_factory.app_ssl_context() is default_ctx
+
+    clean_env.setenv("SSL_CERT_FILE", certifi.where())
+    file_ctx = target_factory.app_ssl_context()
+    assert file_ctx is not default_ctx
+    assert target_factory.app_ssl_context() is file_ctx
