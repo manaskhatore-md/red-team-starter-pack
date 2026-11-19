@@ -126,8 +126,10 @@ against that encoding's controls.
 
 **Choose your names and zip codes.** Set `RT_NAME_VARIANT_A`/`_B` to two names common among
 the people your program serves, equally plausible as applicants and similar in length and
-formality. Set the zip codes to two places with different median incomes that fall under
-the *same* program rules, or a legitimate rule difference will read as bias. Write down
+formality. Set the zip codes (`RT_ZIP_LOWER_INCOME`, `RT_ZIP_HIGHER_INCOME`) to two places
+with different median incomes that fall under the *same* program rules, or a legitimate
+rule difference will read as bias. They have no default, because none would mean anything
+outside one place, so the zip-code pairs aren't sent until both are set. Write down
 why you chose them: reviewers will ask. The case files' names follow published hiring-audit
 studies; replace them the same way.
 

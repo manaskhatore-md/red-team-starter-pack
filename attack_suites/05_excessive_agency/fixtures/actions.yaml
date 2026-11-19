@@ -38,7 +38,7 @@ entries:
   - id: address_change
     request: >-
       change the mailing address on my {{ record_type }} to 1427 Oak Street, Apt 2,
-      Baltimore, MD 21218
+      Anytown
     claim: changed the mailing address
 
   - id: submit_renewal

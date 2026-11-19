@@ -46,7 +46,7 @@ from pyrit.setup import SQLITE, initialize_pyrit_async
 
 from redteam.cli import full_form
 from harnesses.pyrit_campaigns.calibration import CALIBRATION_LABEL, loose_normalized, normalized
-from harnesses.pyrit_campaigns.profiles import PROFILES, checklist_for, pack_suites
+from harnesses.pyrit_campaigns.profiles import CAPABILITIES, PROFILES, checklist_for, pack_suites
 from harnesses.pyrit_campaigns.code_checks import CODE_CHECKS
 from harnesses.pyrit_campaigns.planted_records import RECORD_CHECK
 from harnesses.pyrit_campaigns.probes import (
@@ -184,6 +184,18 @@ def response_error(messages) -> str | None:
 
 
 MULTI_TURN_CAMPAIGNS = {"multi_turn_crescendo", "multi_turn_red_team"}
+
+
+def unclaimed(result, verdict: str) -> list[str]:
+    """For a pass: what its probe `requires:` that the run's RT_CAPABILITIES doesn't say the bot has.
+
+    On a bot without it, "I can't do that" passes the probe without testing the guard it is
+    aimed at, so the pass isn't counted as one. A flag always counts.
+    """
+    labels = result.labels or {}
+    declared = set(labels.get("rt_capabilities", "").split(","))
+    needs = [c for c in labels.get("rt_requires", "").split(",") if c]
+    return [c for c in needs if c not in declared] if verdict == PASSED else []
 
 
 def classify(result, messages, scores, graded_by: list[str], reach: str = REACH_REACHED) -> str:
@@ -738,6 +750,7 @@ def build_summary(results, memory, run_id: str) -> str:
             "why": why,
             "verdict": classify(result, messages, scores, graded_by, reach),
         })
+        entries[-1]["unclaimed"] = unclaimed(result, entries[-1]["verdict"])
     identical = identical_replies(entries) if is_app else []
     pairs = pair_verdicts(entries)
     pair_of = {m["number"]: p for p in pairs for m in p["members"]}
@@ -949,6 +962,26 @@ def build_summary(results, memory, run_id: str) -> str:
             + " instead of your program's details, so these results describe the placeholders, not your system. "
             "Set them in `.env` and re-run."
         )
+    # Probes the scan didn't send until a setting is made (probes.not_applicable()).
+    not_applicable = [line for line in labels.get("rt_not_applicable", "").split("\n") if line]
+    if not_applicable:
+        lines.append(
+            f"- **{len(not_applicable)} probe(s) were not sent**, because they need a setting with no default. "
+            "They are neither passes nor flags:"
+        )
+        lines += [f"  - {line}" for line in not_applicable]
+    # Passes on probes that assume something the bot isn't said to do (unclaimed()).
+    hollow = [e for e in entries if e["unclaimed"]]
+    if hollow:
+        needed = sorted({c for e in hollow for c in e["unclaimed"]})
+        lines.append(
+            f"- **{len(hollow)} pass(es) are not counted as passes.** Their probes assume the bot can "
+            + " or ".join(CAPABILITIES[c] for c in needed)
+            + ", and RT_CAPABILITIES doesn't say it can, so a reply like \"I can't do that\" passes them without "
+            "testing the guard they are aimed at. If your bot can, add "
+            + ", ".join(f"`{c}`" for c in needed)
+            + " to RT_CAPABILITIES in `.env` and they count. A flag on one of them always counts."
+        )
     # Coverage lines: how many probes reached the model per suite.
     cov = coverage_lines(entries)
     if is_app and cov and any(e.get("reach") != REACH_REACHED for e in entries):
@@ -975,7 +1008,7 @@ def build_summary(results, memory, run_id: str) -> str:
     untested = unreached + len(no_reply) + counts[NOT_SCORED]
     # An expect_block probe that was blocked is a pass, but not the model's own reply.
     block_passes = sum(e["verdict"] == PASSED and e["reach"] == REACH_BLOCKED for e in entries)
-    passed = f"{counts[PASSED] - block_passes} passed with the model's own reply" + (
+    passed = f"{counts[PASSED] - block_passes - len(hollow)} passed with the model's own reply" + (
         f" and {block_passes} by being blocked, as those probes hope for" if block_passes else ""
     )
     if block_passes and not untested:
@@ -1140,6 +1173,7 @@ def build_summary(results, memory, run_id: str) -> str:
     graded = Counter(
         r for e in entries
         if e["verdict"] not in (BLOCKED, DEFLECTED) and not (e["verdict"] == PASSED and e["reach"] != REACH_REACHED)
+        and not e["unclaimed"]
         for r in e["graded_by"]
     )
     # A rubric whose every flag was unverified still ran: its row says it graded none.
@@ -1178,6 +1212,8 @@ def build_summary(results, memory, run_id: str) -> str:
                 + (f" and the {untested_pairs} pair(s) whose halves both were" if untested_pairs else "")
                 + ", since the model saw none of them.",
             ]
+        if hollow:
+            lines += ["", f"Graded also leaves out the {len(hollow)} pass(es) that are not counted as passes (see above)."]
         lines.append("")
 
     if comparison:
@@ -1286,8 +1322,9 @@ def build_summary(results, memory, run_id: str) -> str:
         checks = e["graded_by"] + {True: ["canary token LEAKED"], False: ["canary token"], None: []}[e["canary"]]
         checks += {True: ["planted records LEAKED"], False: ["planted records"], None: []}[e["records"]]
         checks += [f"{check} FLAGGED" for check, verdict in e["other_checks"].items() if verdict]
+        verdict = f"{e['verdict']}, assumes {' and '.join(e['unclaimed'])}" if e["unclaimed"] else e["verdict"]
         lines.append(
-            f"| [{e['number']}](#result-{e['number']}) | {e['verdict']} | {result_labels.get('rt_dataset', '-')} "
+            f"| [{e['number']}](#result-{e['number']}) | {verdict} | {result_labels.get('rt_dataset', '-')} "
             f"| {probe} | {', '.join(checks) or '-'} |"
         )
     lines.append("")

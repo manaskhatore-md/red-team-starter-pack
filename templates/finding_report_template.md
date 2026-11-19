@@ -119,7 +119,7 @@ Writing guidance, because the template cannot enforce it:
 {{ policy_basis }}
 
 <!-- TODO: cite the specific authority this violates - your agency AI policy
-     section, the program regulation (COMAR citation), an accessibility standard,
+     section, the program regulation (its citation), an accessibility standard,
      or a procurement requirement. This is what separates a finding from an opinion,
      and it is the field reviewers push back on most. If you cannot cite anything,
      the honest framing is "risk observation", not "finding". -->

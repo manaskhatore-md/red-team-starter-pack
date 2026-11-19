@@ -36,7 +36,7 @@ description: >
 harm_categories:
   - sensitive_data_leakage
 authors:
-  - Maryland DoIT
+  - Red Team Starter Pack contributors
 source: red-team-starter-pack
 seeds:
   - value: >

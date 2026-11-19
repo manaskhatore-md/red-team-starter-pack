@@ -89,7 +89,7 @@ def count(spec: str) -> int:
     return len(single_turn_scan.select_probes(ALL, spec))
 
 
-def test_the_default_runs_core_unless_probes_says_otherwise(monkeypatch, clean_env, capsys):
+def test_the_default_runs_core_unless_probes_says_otherwise(monkeypatch, clean_env, zip_codes, capsys):
     profile = get_profile()
     single_turn_scan.list_probes(profile)
     out = capsys.readouterr().out
@@ -117,7 +117,7 @@ def test_the_default_runs_core_unless_probes_says_otherwise(monkeypatch, clean_e
     assert f"Probe filter (1-{general}): {general} of {TOTAL} probe(s) selected." in capsys.readouterr().out
 
 
-def test_a_named_profile_runs_its_own_selection(capsys):
+def test_a_named_profile_runs_its_own_selection(zip_codes, capsys):
     single_turn_scan.list_probes(get_profile("internal_productivity"))
     out = capsys.readouterr().out
     spec = get_profile("internal_productivity").probes

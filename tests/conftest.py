@@ -96,6 +96,13 @@ def clean_env(monkeypatch):
 
 
 @pytest.fixture
+def zip_codes(monkeypatch):
+    """Zip codes for the zip-code bias pairs, which aren't sent without them."""
+    monkeypatch.setenv("RT_ZIP_LOWER_INCOME", "11111")
+    monkeypatch.setenv("RT_ZIP_HIGHER_INCOME", "22222")
+
+
+@pytest.fixture
 def fake_keys(monkeypatch):
     """Fake API keys for every key-based provider. Never valid; never sent anywhere."""
     for name in ("GEMINI_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY"):
