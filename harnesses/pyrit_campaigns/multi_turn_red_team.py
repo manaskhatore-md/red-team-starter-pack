@@ -61,37 +61,40 @@ load_settings()
 import truststore
 truststore.inject_into_ssl()
 
+# The imports marked "noqa: F401" are names in REQUIRED_MODULE_ATTRS
+# (multi_turn_crescendo.py): run_multi_turn looks them up on this module so tests can
+# patch them, and the linter can't see that use. Removing one breaks the campaign.
 from pyrit.executor.attack import (
     AttackAdversarialConfig,
-    AttackExecutor,
+    AttackExecutor,  # noqa: F401
     AttackScoringConfig,
     RedTeamingAttack,
 )
 from pyrit.executor.attack.multi_turn.red_teaming import RTASystemPromptPaths
 from pyrit.models import SeedPrompt
 from pyrit.score import MessageScorer
-from pyrit.setup import initialize_pyrit_async
+from pyrit.setup import initialize_pyrit_async  # noqa: F401
 
 from harnesses.pyrit_campaigns.multi_turn_crescendo import (
     ConversationRubricScorer,
     leaked,
-    load_objectives,
+    load_objectives,  # noqa: F401
     parse_args,
     run_multi_turn,
     show_judge_prompt,
 )
 from harnesses.pyrit_campaigns.profiles import get_profile
-from harnesses.pyrit_campaigns.system_prompt import load_app_prompt, load_system_prompt
+from harnesses.pyrit_campaigns.system_prompt import load_app_prompt, load_system_prompt  # noqa: F401
 from harnesses.pyrit_campaigns.target_factory import (
-    build_scoring_target,
-    build_target,
-    check_models,
-    close_target,
-    model_name,
-    resolve_provider,
+    build_scoring_target,  # noqa: F401
+    build_target,  # noqa: F401
+    check_models,  # noqa: F401
+    close_target,  # noqa: F401
+    model_name,  # noqa: F401
+    resolve_provider,  # noqa: F401
 )
 from scripts.export_finding_report import full_conversation_ids, full_conversation_messages
-from scripts.run_summary import write_after_run
+from scripts.run_summary import write_after_run  # noqa: F401
 
 MAX_TURNS = int(os.getenv("RT_MAX_TURNS", "10"))
 MAX_CONCURRENCY = int(os.getenv("RT_MAX_CONCURRENCY", "3"))

@@ -80,9 +80,12 @@ load_settings()
 import truststore
 truststore.inject_into_ssl()
 
+# The imports marked "noqa: F401" are names in REQUIRED_MODULE_ATTRS: run_multi_turn
+# looks them up on this module (module.build_target, ...) so tests can patch them, and
+# the linter can't see that use. Removing one breaks the campaign.
 from pyrit.executor.attack import (
     AttackAdversarialConfig,
-    AttackExecutor,
+    AttackExecutor,  # noqa: F401
     AttackScoringConfig,
     CrescendoAttack,
 )
@@ -91,7 +94,8 @@ from pyrit.models import AttackOutcome, ComponentIdentifier, MessagePiece, Score
 from pyrit.prompt_target import CapabilityName
 from pyrit.score import MessageTrueFalseScorer, SelfAskGeneralTrueFalseScorer, SelfAskRefusalScorer
 from pyrit.score.scorer_prompt_validator import ScorerPromptValidator
-from pyrit.setup import SQLITE, initialize_pyrit_async
+from pyrit.setup import SQLITE
+from pyrit.setup import initialize_pyrit_async  # noqa: F401
 
 from redteam.cli import full_form
 from harnesses.pyrit_campaigns.profiles import PAIR_RUBRICS, Objective, Profile, describe, get_profile, placeholders
@@ -117,8 +121,8 @@ from harnesses.pyrit_campaigns.system_prompt import (
     CANARY_CHECK,
     CanaryLeakScorer,
     announce_app_prompt,
-    load_app_prompt,
-    load_system_prompt,
+    load_app_prompt,  # noqa: F401
+    load_system_prompt,  # noqa: F401
     new_canary,
     render,
     system_message,
@@ -126,14 +130,15 @@ from harnesses.pyrit_campaigns.system_prompt import (
 )
 from harnesses.pyrit_campaigns.target_factory import (
     TRACE_METADATA_KEY,
-    build_scoring_target,
-    build_target,
-    check_models,
-    close_target,
-    model_name,
-    resolve_provider,
+    build_scoring_target,  # noqa: F401
+    build_target,  # noqa: F401
+    check_models,  # noqa: F401
+    close_target,  # noqa: F401
+    model_name,  # noqa: F401
+    resolve_provider,  # noqa: F401
 )
-from scripts.run_summary import stream_event_warning, write_after_run
+from scripts.run_summary import stream_event_warning
+from scripts.run_summary import write_after_run  # noqa: F401
 
 # TODO: tune these. Defaults are PyRIT's (10/10), which is thorough but expensive.
 # max_turns=3-5 is enough to see whether escalation works at all.

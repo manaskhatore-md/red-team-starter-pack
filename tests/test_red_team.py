@@ -140,8 +140,6 @@ def test_code_checks_run_on_every_turn_including_ones_pyrit_pruned_away(memory):
 
 def test_scoring_skips_the_attackers_own_messages(memory):
     """Only the target's replies get scored, not the attacker's turns."""
-    from pyrit.models import ConversationReference, ConversationType
-
     from harnesses.pyrit_campaigns.multi_turn_red_team import leaked_anywhere, score_every_turn
     from harnesses.pyrit_campaigns.system_prompt import CANARY_CHECK, CanaryLeakScorer
 

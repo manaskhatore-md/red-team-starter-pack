@@ -1199,7 +1199,7 @@ def build_summary(results, memory, run_id: str) -> str:
             + " \"Without a verdict\" counts errors, blocked or empty replies, deflected replies, missing judge "
             "scores, and unverified flags; they are left out of the counts.",
             "",
-            f"| Probe | Dataset | As written: flagged | Encoded: flagged | Without a verdict (as written / encoded) "
+            "| Probe | Dataset | As written: flagged | Encoded: flagged | Without a verdict (as written / encoded) "
             "| Reading |",
             "|---|---|---|---|---|---|",
         ]

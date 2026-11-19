@@ -32,7 +32,7 @@ from pyrit.score import MessageTrueFalseScorer
 from pyrit.score.scorer_prompt_validator import ScorerPromptValidator
 
 from harnesses.pyrit_campaigns.profiles import placeholders
-from harnesses.pyrit_campaigns.system_prompt import RECORDS_SLOT, find_planted
+from harnesses.pyrit_campaigns.system_prompt import find_planted
 
 # The name the record check's verdicts are recorded under. Reports treat it like a
 # rubric - see export_finding_report.load_rubrics().

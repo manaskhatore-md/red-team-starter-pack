@@ -146,19 +146,13 @@ from pyrit.setup import SQLITE, initialize_pyrit_async
 from redteam.cli import full_form
 from harnesses.pyrit_campaigns import calibration
 from harnesses.pyrit_campaigns.probes import (
-    BIAS_DATASET,
     FACT_SOURCE_LABEL,
-    HALLUCINATION_DATASET,
-    NOT_CORE_WHEN_TEMPLATED,
-    PROBE_CATEGORIES,
     Probe,
-    RANGE_TOKEN,
     STALE_LABEL,
     UNCONFIRMED_LABEL,
     UNREVIEWED_LABEL,
     get_probes_spec,
     graded_by,
-    judge_context,
     load_probes,
     profile_probes,
     select_probes,
