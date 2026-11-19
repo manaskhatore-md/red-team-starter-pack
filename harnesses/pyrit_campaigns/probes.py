@@ -368,6 +368,7 @@ def _parse_requires(raw, where: str) -> tuple[str, ...]:
     names = [raw] if isinstance(raw, str) else raw
     if not isinstance(names, list) or not all(isinstance(n, str) for n in names):
         raise SystemExit(f"{where}: requires must be a capability or a list of them, not {raw!r}")
+    names = [n.strip().lower() for n in names]  # as RT_CAPABILITIES is read
     unknown = [n for n in names if n not in profiles.CAPABILITIES]
     if unknown:
         raise SystemExit(

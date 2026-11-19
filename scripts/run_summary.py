@@ -511,11 +511,15 @@ def failure_rates(entries) -> list[dict]:
     for e in entries:
         result_labels = e["result"].labels or {}
         key = (result_labels.get("rt_dataset", "-"), shown_name(e["result"]))
-        row = rows.setdefault(key, {"dataset": key[0], "probe": key[1], "flagged": 0, "passed": 0, "no_verdict": 0})
+        row = rows.setdefault(key, {"dataset": key[0], "probe": key[1], "flagged": 0, "passed": 0, "no_verdict": 0,
+                                    "not_counted": 0})
         if e["verdict"] in (FLAGGED, ACHIEVED):
             row["flagged"] += 1
-        elif e["verdict"] in (PASSED, HELD):
+        elif e["verdict"] in (PASSED, HELD, UNCLAIMED):
+            # An uncounted pass stays in the rate's denominator: leaving it out while its
+            # flags count would push the rate toward "flagged every time".
             row["passed"] += 1
+            row["not_counted"] += e["verdict"] == UNCLAIMED
         elif e["verdict"] != PAIR_ONLY:
             row["no_verdict"] += 1
     # A probe sent only to be compared has no verdict of its own; its pair's row says how it did.
@@ -534,7 +538,8 @@ def encoding_comparison(entries) -> list[dict]:
     def add_verdict(side: dict, verdict: str) -> None:
         if verdict in (FLAGGED, ACHIEVED):
             side["flagged"] += 1
-        elif verdict in (PASSED, HELD):
+        elif verdict in (PASSED, HELD, UNCLAIMED):
+            # An uncounted pass is still the answer the encoded copy is compared with.
             side["passed"] += 1
         else:
             side["no_verdict"] += 1
@@ -610,11 +615,12 @@ def template_rates(entries) -> tuple[list[dict], list[dict]]:
             by_template.setdefault(
                 (result_labels.get("rt_dataset", "-"), template),
                 {"dataset": result_labels.get("rt_dataset", "-"), "name": template, "others": set(),
-                 "flagged": 0, "passed": 0, "no_verdict": 0},
+                 "flagged": 0, "passed": 0, "no_verdict": 0, "not_counted": 0},
             ),
             by_entry.setdefault(
                 fixture,
-                {"file": file.rsplit("/", 1)[-1], "name": entry, "others": set(), "flagged": 0, "passed": 0, "no_verdict": 0},
+                {"file": file.rsplit("/", 1)[-1], "name": entry, "others": set(), "flagged": 0, "passed": 0, "no_verdict": 0,
+                 "not_counted": 0},
             ),
         )
         rows[0]["others"].add(entry)
@@ -622,17 +628,25 @@ def template_rates(entries) -> tuple[list[dict], list[dict]]:
         for row in rows:
             if e["verdict"] in (FLAGGED, ACHIEVED):
                 row["flagged"] += 1
-            elif e["verdict"] in (PASSED, HELD):
+            elif e["verdict"] in (PASSED, HELD, UNCLAIMED):
                 row["passed"] += 1
+                row["not_counted"] += e["verdict"] == UNCLAIMED
             else:
                 row["no_verdict"] += 1
     return list(by_template.values()), list(by_entry.values())
 
 
-def rate_reading(flagged: int, tested: int) -> str:
-    """The Reading column of a failure-rate row."""
+def rate_reading(flagged: int, tested: int, not_counted: int = 0) -> str:
+    """The Reading column of a failure-rate row.
+
+    not_counted passes (see unclaimed()) are in tested, but say nothing about the guard, so
+    there is no bound on how often it could fail.
+    """
     if not tested:
         return "nothing tested"
+    if not_counted:
+        return (f"flagged some of the time; {not_counted} pass(es) not counted" if flagged
+                else f"not tested: {not_counted} pass(es) not counted")
     if not flagged:
         return f"never flagged; could still fail up to {zero_flag_bound(tested):.0%} of the time"
     if flagged == tested:
@@ -667,10 +681,13 @@ def pair_verdicts(entries) -> list[dict]:
         control = all((m["result"].labels or {}).get("rt_control") for m in members)
         # Different blocked or deflected replies are still compared: the app treating the
         # halves differently is a finding.
-        both_unreached = all(m.get("reach", REACH_REACHED) in (REACH_BLOCKED, REACH_DEFLECTED) for m in members)
-        if score is not None and both_unreached and len({loose_normalized(last_reply(m["messages"])) for m in members}) == 1:
+        unreached = [m.get("reach", REACH_REACHED) in (REACH_BLOCKED, REACH_DEFLECTED) for m in members]
+        # So is an uncounted pass (unclaimed()): two identical "I can't" replies say nothing about fairness.
+        untested = all(r or m.get("unclaimed") for r, m in zip(unreached, members))
+        if score is not None and untested and len({loose_normalized(last_reply(m["messages"])) for m in members}) == 1:
             score = None
-            verdict = "not tested (both halves got the same blocked or deflected reply)"
+            verdict = ("not tested (both halves got the same blocked or deflected reply)" if all(unreached)
+                       else "not tested (both halves got the same reply, and their passes are not counted)")
         elif score is None or any(m.get("verdict") in (ERROR, NO_RESPONSE) for m in members):
             # A half with no usable reply (a 429 once the retries ran out, say) cannot be compared.
             score = None
@@ -982,11 +999,11 @@ def build_summary(results, memory, run_id: str) -> str:
         needed = sorted({c for e in hollow for c in e["unclaimed"]})
         lines.append(
             f"- **{len(hollow)} pass(es) are not counted as passes.** Their probes assume the bot can "
-            + " or ".join(CAPABILITIES[c] for c in needed)
+            + " or ".join(CAPABILITIES.get(c, c) for c in needed)
             + ", and RT_CAPABILITIES doesn't say it can, so a reply like \"I can't do that\" passes them without "
             "testing the guard they are aimed at. If your bot can, add "
             + ", ".join(f"`{c}`" for c in needed)
-            + " to RT_CAPABILITIES in `.env` and they count. A flag on one of them always counts."
+            + " to RT_CAPABILITIES in `.env` and they count from your next run. A flag on one of them always counts."
         )
     # Coverage lines: how many probes reached the model per suite.
     cov = coverage_lines(entries)
@@ -1239,7 +1256,7 @@ def build_summary(results, memory, run_id: str) -> str:
                 "control, so the As written column is empty and a flag does not show the encoding got through."
             )
             + " \"Without a verdict\" counts errors, blocked or empty replies, deflected replies, missing judge "
-            "scores, unverified flags, and passes not counted; they are left out of the counts.",
+            "scores, and unverified flags; they are left out of the counts.",
             "",
             f"| Probe | Dataset | As written: flagged | Encoded: flagged | Without a verdict (as written / encoded) "
             "| Reading |",
@@ -1261,8 +1278,7 @@ def build_summary(results, memory, run_id: str) -> str:
             "## Failure rates",
             "",
             f"How often each probe was flagged across its {repeats} repeats. \"Without a verdict\" counts "
-            "errors, blocked or empty replies, deflected replies, missing judge scores, unverified flags, and passes "
-            "not counted; those "
+            "errors, blocked or empty replies, deflected replies, missing judge scores, and unverified flags; those "
             "repeats have no verdict, so they are left out of the rate.",
             "",
             "| Probe | Dataset | Flagged | Without a verdict | Reading |",
@@ -1270,7 +1286,7 @@ def build_summary(results, memory, run_id: str) -> str:
         ]
         for row in failure_rates(entries):
             tested = row["flagged"] + row["passed"]
-            reading = rate_reading(row["flagged"], tested)
+            reading = rate_reading(row["flagged"], tested, row["not_counted"])
             lines.append(
                 f"| {row['probe']} | {row['dataset']} | {row['flagged']} of {tested} | {row['no_verdict']} | {reading} |"
             )
@@ -1307,7 +1323,7 @@ def build_summary(results, memory, run_id: str) -> str:
             tested = row["flagged"] + row["passed"]
             lines.append(
                 f"| {row['name']} | {row['dataset']} | {len(row['others'])} | {row['flagged']} of {tested} "
-                f"| {row['no_verdict']} | {rate_reading(row['flagged'], tested)} |"
+                f"| {row['no_verdict']} | {rate_reading(row['flagged'], tested, row['not_counted'])} |"
             )
         lines += [
             "",
@@ -1318,7 +1334,7 @@ def build_summary(results, memory, run_id: str) -> str:
             tested = row["flagged"] + row["passed"]
             lines.append(
                 f"| {row['name']} | {row['file']} | {len(row['others'])} | {row['flagged']} of {tested} "
-                f"| {row['no_verdict']} | {rate_reading(row['flagged'], tested)} |"
+                f"| {row['no_verdict']} | {rate_reading(row['flagged'], tested, row['not_counted'])} |"
             )
         lines.append("")
 
@@ -1387,12 +1403,12 @@ def build_summary(results, memory, run_id: str) -> str:
         ]
         for e in asked:
             name = with_repeat(shown_name(e["result"]), e["result"])
-            lines += [f"**[{e['number']}](#result-{e['number']}) {name}** ({e['verdict']})", "", fence(reply_as_sent(e["messages"])), ""]
+            lines += [f"**[{e['number']}](#result-{e['number']}) {name}** ({shown_verdict(e)})", "", fence(reply_as_sent(e["messages"])), ""]
 
     if pairs:
         lines += ["## Matched pairs", ""]
         lines.append(
-            "Each pair asks the same question twice, changing one attribute (dialect, name, zip code, "
+            "Each pair asks the same question twice, changing one attribute (dialect, name, address, "
             "language, or a disclosed disability). The judge compares the two replies."
         )
         if repeats > 1:
