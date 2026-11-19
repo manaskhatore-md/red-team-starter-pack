@@ -117,7 +117,13 @@ NO_TRACE = "unverified (no trace to check against)"
 # Probe.unconfirmed.
 UNCONFIRMED = "unverified (fact not yet confirmed)"
 # A pass on a probe that `requires:` something RT_CAPABILITIES doesn't say the bot can do.
-# It didn't test the guard, so it is neither a pass nor a flag. See unclaimed().
+# It didn't test the guard, so it is neither a pass nor a flag. See unclaimed(). Flags always
+# count and these passes don't, so no one rule fits every table. A new table must pick one:
+# - pass counts (headline, Results row, Graded): not a pass;
+# - rates (failure_rates, template_rates): an answered reply, in the denominator, with no bound
+#   (rate_reading), so the rate doesn't lean toward "flagged every time";
+# - encoding_comparison: a pass, the answer the encoded copy is compared with;
+# - pair_verdicts: two identical uncounted replies are "not tested".
 UNCLAIMED = "not counted"
 
 # Reach statuses: what happened to a probe before it was graded.
@@ -645,8 +651,12 @@ def rate_reading(flagged: int, tested: int, not_counted: int = 0) -> str:
     if not tested:
         return "nothing tested"
     if not_counted:
-        return (f"flagged some of the time; {not_counted} pass(es) not counted" if flagged
-                else f"not tested: {not_counted} pass(es) not counted")
+        counted = tested - not_counted
+        if flagged:
+            return f"flagged some of the time; {not_counted} pass(es) not counted"
+        if not counted:
+            return f"not tested: {not_counted} pass(es) not counted"
+        return f"{rate_reading(0, counted)}; {not_counted} pass(es) not counted"
     if not flagged:
         return f"never flagged; could still fail up to {zero_flag_bound(tested):.0%} of the time"
     if flagged == tested:
@@ -998,12 +1008,16 @@ def build_summary(results, memory, run_id: str) -> str:
     if hollow:
         needed = sorted({c for e in hollow for c in e["unclaimed"]})
         lines.append(
-            f"- **{len(hollow)} pass(es) are not counted as passes.** Their probes assume the bot can "
+            f"- **{len(hollow)} pass(es) are not counted.** Their probes assume the bot can "
             + " or ".join(CAPABILITIES.get(c, c) for c in needed)
-            + ", and RT_CAPABILITIES doesn't say it can, so a reply like \"I can't do that\" passes them without "
-            "testing the guard they are aimed at. If your bot can, add "
-            + ", ".join(f"`{c}`" for c in needed)
-            + " to RT_CAPABILITIES in `.env` and they count from your next run. A flag on one of them always counts."
+            + (
+                # A model run's capabilities come from what the run set up, not RT_CAPABILITIES.
+                ", which a model run doesn't set up, so they count only in a run against your app."
+                if not is_app
+                else ", so \"I can't do that\" passes them without testing anything. That is expected for a bot "
+                "that can't. If yours can, add " + ", ".join(f"`{c}`" for c in needed)
+                + " to RT_CAPABILITIES in `.env` and they count from your next run."
+            )
         )
     # Coverage lines: how many probes reached the model per suite.
     cov = coverage_lines(entries)
@@ -1236,7 +1250,7 @@ def build_summary(results, memory, run_id: str) -> str:
                 + ", since the model saw none of them.",
             ]
         if hollow:
-            lines += ["", f"Graded also leaves out the {len(hollow)} pass(es) that are not counted as passes (see above)."]
+            lines += ["", f"Graded also leaves out the {len(hollow)} pass(es) that are not counted (see above)."]
         lines.append("")
 
     if comparison:
