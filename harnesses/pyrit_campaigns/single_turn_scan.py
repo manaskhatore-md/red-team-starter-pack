@@ -166,8 +166,6 @@ from harnesses.pyrit_campaigns.probes import (
     stale_facts_note,
     unreviewed_note,
     unselected_packs_note,
-    not_applicable,
-    not_applicable_note,
 )
 from harnesses.pyrit_campaigns.profiles import (
     CAPABILITIES,
@@ -1157,14 +1155,6 @@ def planned_calls(
 UNRENDERED = re.compile(r"\{\{\s*(\w+)\s*\}\}")
 
 
-def applicable_probes(probes: list[Probe]) -> tuple[list[Probe], list[tuple[Probe, str]]]:
-    """The probes to send, and the others with why not (see not_applicable()), after printing those."""
-    probes, skipped = not_applicable(probes)
-    if skipped:
-        print("\n" + not_applicable_note(skipped))
-    return probes, skipped
-
-
 def check_placeholders(probes: list[Probe], system_prompt: str = "") -> list[str]:
     """Warn when the probes still say "TODO Program". The scan runs either way.
 
@@ -1306,10 +1296,6 @@ def list_probes(
         print(f"\nProbe filter ({spec}): {len(probes)} of {len(all_probes)} probe(s) selected.")
     if unselected_packs_note(all_probes, probes, spec):
         print("\n" + unselected_packs_note(all_probes, probes, spec))
-    # Listed with the rest, marked NOT SENT, so every probe keeps its number.
-    selected = probes
-    probes, skipped = applicable_probes(selected)
-    not_sent = {_key(probe): why for probe, why in skipped}
     converted = converted_probes(probes, conv_spec)
     by_pass = asyncio.run(probes_each_pass_changes(converted, converter_passes))
     if conv_spec:
@@ -1332,11 +1318,9 @@ def list_probes(
     groups = group_by_rubrics(probes, rubrics, compare)
     graded_by = {(probe.dataset, probe.name): keys for keys, group in groups.items() for probe in group}
 
-    for probe in selected:
+    for probe in probes:
         keys = graded_by.get((probe.dataset, probe.name))
         grading = " + ".join(keys) if keys else ("pair comparison only" if keys is not None else "NOT SENT: no rubric grades it")
-        if _key(probe) in not_sent:
-            grading = f"NOT SENT: {not_sent[_key(probe)]}"
         num = numbers[(probe.dataset, probe.name)]
         pair_info = f"  (pair: {probe.pair_id})" if probe.pair_id else ""
         pack_info = f"  (from {probe.overlay})" if probe.overlay else ""
@@ -1358,7 +1342,7 @@ def list_probes(
             print(f"    judge is shown [[{slot}]]: " + text.replace("\n", "\n        "))
 
     sent = sum(len(group) for group in groups.values())
-    print(f"\n{sent} of {len(selected)} probe(s) would be sent, each RT_REPEATS times.")
+    print(f"\n{sent} of {len(probes)} probe(s) would be sent, each RT_REPEATS times.")
     needs_trace = sum(probe.needs_trace for group in groups.values() for probe in group)
     if needs_trace:
         # As the scan would print it, so the mode can be fixed before a run costs anything.
@@ -1399,11 +1383,6 @@ async def main(
         print(f"\nProbe filter ({spec}): {len(probes)} of {len(all_probes)} probe(s) selected.")
     if unselected_packs_note(all_probes, probes, spec):
         print("\n" + unselected_packs_note(all_probes, probes, spec))
-    probes, skipped = applicable_probes(probes)
-    if not probes:
-        raise SystemExit(
-            "None of the selected probes can be sent until the settings above are set, or pick others with --probes."
-        )
     rubrics = rubrics_for(probes)
     # The stand-in prompt describes the deployment, so whether it holds records is the
     # profile's call, not this run's --probes: an injection-only run still has data to leak.
@@ -1542,9 +1521,6 @@ async def main(
         "rt_repeats": str(repeats),
         # Settings still at "TODO ...", so the summary can say the probes named a placeholder.
         "rt_placeholders": ", ".join(unfilled),
-        # Probes not sent until a setting is made (probes.not_applicable()), one
-        # "suite / name: why" per line, so the summary can list them apart from passes and flags.
-        "rt_not_applicable": "\n".join(f"{p.dataset} / {p.name}: {why}" for p, why in skipped),
         # What the bot can do (RT_CAPABILITIES), so the summary can tell which passes of probes
         # with `requires:` tested a guard. A model run's stand-in prompt gives it records and a
         # tool, and a model reads whatever document text it is sent, so it has every one.

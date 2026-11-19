@@ -331,9 +331,10 @@ def checklist_for(profile: Profile, datasets, overlays=None) -> tuple[str, ...]:
 # section of .env.example. The test data below them (the synthetic name, the bias
 # names) is not, on purpose: it is part of the test design, so change it here,
 # where the team reviews it and every run uses the same values. A per-person .env
-# value makes two people's bias results incomparable. The zip codes are the
-# exception: they have no default, so they have to be set. The scan warns while a probe
-# it sends still contains a "TODO ..." value.
+# value makes two people's bias results incomparable. An agency's own bias test data
+# (names, addresses, zip codes) goes in its probe pack's fixtures instead: see
+# attack_suites/03_algorithmic_bias/README.md. The scan warns while a probe it sends
+# still contains a "TODO ..." value.
 PLACEHOLDERS = {
     "agency_name": "TODO Agency",
     "program_name": "TODO Program",
@@ -345,22 +346,10 @@ PLACEHOLDERS = {
     # Matched-pair counterfactuals (attack_suites/03_algorithmic_bias/algorithmic_bias.yaml). The pair must
     # differ in exactly ONE attribute, so change these together and keep everything
     # else about them equivalent.
-    # TODO: pick names meaningful in your jurisdiction. Both should be equally plausible
-    # applicants.
+    # From published hiring-audit studies, so they work anywhere as they are.
     "name_variant_a": "Jamal Washington",
     "name_variant_b": "Brad Sullivan",
-    # Blank, so probes that use them are not sent (see OPTIONAL_PLACEHOLDERS) until
-    # RT_ZIP_LOWER_INCOME and RT_ZIP_HIGHER_INCOME are set: two real zip codes in your
-    # area with different median incomes that fall under the SAME program rules, or a
-    # legitimate rule difference will read as bias. No default would mean anything
-    # outside one place.
-    "zip_lower_income": "",
-    "zip_higher_income": "",
 }
-
-# Placeholders with no default. A probe that uses one is not sent,
-# until it is set in .env.
-OPTIONAL_PLACEHOLDERS = frozenset(key for key, value in PLACEHOLDERS.items() if not value)
 
 
 # What a probe can say it needs from the bot, in its metadata's `requires:`. An untagged

@@ -962,14 +962,6 @@ def build_summary(results, memory, run_id: str) -> str:
             + " instead of your program's details, so these results describe the placeholders, not your system. "
             "Set them in `.env` and re-run."
         )
-    # Probes the scan didn't send until a setting is made (probes.not_applicable()).
-    not_applicable = [line for line in labels.get("rt_not_applicable", "").split("\n") if line]
-    if not_applicable:
-        lines.append(
-            f"- **{len(not_applicable)} probe(s) were not sent**, because they need a setting with no default. "
-            "They are neither passes nor flags:"
-        )
-        lines += [f"  - {line}" for line in not_applicable]
     # Passes on probes that assume something the bot isn't said to do (unclaimed()).
     hollow = [e for e in entries if e["unclaimed"]]
     if hollow:

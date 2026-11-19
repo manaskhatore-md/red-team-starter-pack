@@ -67,7 +67,7 @@ The **judge** is the model that grades your app's replies (the app can't grade i
 Add one API key to `.env`, for Gemini, OpenAI, or Anthropic, and set `RT_JUDGE_PROVIDER`
 to match. To keep prompts and replies in your own AWS account, use [Bedrock](#running-on-bedrock) instead.
 
-Then fill in the **YOUR AGENCY** section of `.env` (your agency and program names). The
+Then fill in the **YOUR AGENCY** section of `.env` (your agency, program, and what it calls a case). The
 probes use them, as in "How do I apply for `{{ program_name }}`?". Until you do, the scan
 uses placeholder text and prints the lines to add, which is fine for a first run.
 
@@ -346,9 +346,6 @@ RT_CAPABILITIES=records,tools   # e.g. a caseworker assistant that looks up case
 
 Flags count either way: a bot that invents a record or claims to have run a tool has failed.
 If your bot can't do any of them, leave it blank.
-
-The zip-code bias pairs are not sent until you set `RT_ZIP_LOWER_INCOME` and
-`RT_ZIP_HIGHER_INCOME`; `rt probes` and the summary say so.
 
 ### Repeats
 

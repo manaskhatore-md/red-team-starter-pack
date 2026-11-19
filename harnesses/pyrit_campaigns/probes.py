@@ -37,7 +37,6 @@ KIT_SLOTS = frozenset({
     "PASS_CRITERIA",
 })
 SLOT = re.compile(r"\[\[([A-Z][A-Z0-9_]*)\]\]")
-PLACEHOLDER = re.compile(r"\{\{\s*(\w+)\s*\}\}")
 
 
 @dataclass(frozen=True)
@@ -71,9 +70,6 @@ class Probe:
     # What the probe needs the bot to be able to do for a pass to test anything
     # (profiles.CAPABILITIES), from its metadata's `requires:`. Untagged: any bot.
     requires: tuple[str, ...] = ()
-    # Settings the probe uses that have no default and aren't set (profiles.OPTIONAL_PLACEHOLDERS),
-    # e.g. RT_ZIP_LOWER_INCOME. Until they are, the probe is not sent (not_applicable()).
-    needs_settings: tuple[str, ...] = ()
     # Facts the judge is shown about this probe, from its metadata's judge_context:
     # (SLOT, text) pairs, each filling [[SLOT]] in the rubrics that grade it.
     judge_context: tuple[tuple[str, str], ...] = ()
@@ -174,32 +170,6 @@ def unreviewed_note(probes) -> str:
         "that community) check each, then add it to the entry's reviewed_by and reviewed_on:"
     ]
     lines += [f"  - {fixture}: {', '.join(sorted(versions))}" for fixture, versions in entries.items()]
-    return "\n".join(lines)
-
-
-def not_applicable(probes: list[Probe]) -> tuple[list[Probe], list[tuple[Probe, str]]]:
-    """The probes to send, and the others with why not: they use a setting with no default
-    that isn't set (the bias zip codes). A matched pair goes together: half a pair can't be
-    compared, so the other half gives its reason.
-    """
-    key = lambda p: (p.dataset, p.name)
-    why = {key(p): f"needs {' and '.join(p.needs_settings)}" if p.needs_settings else "" for p in probes}
-    pair_why = {}
-    for p in probes:
-        if p.pair_id and why[key(p)]:
-            pair_why.setdefault((p.dataset, p.overlay, p.pair_id), why[key(p)])
-    for p in probes:
-        if p.pair_id and not why[key(p)] and (p.dataset, p.overlay, p.pair_id) in pair_why:
-            why[key(p)] = pair_why[(p.dataset, p.overlay, p.pair_id)]
-    return [p for p in probes if not why[key(p)]], [(p, why[key(p)]) for p in probes if why[key(p)]]
-
-
-def not_applicable_note(skipped: list[tuple[Probe, str]]) -> str:
-    """A paragraph listing the probes not sent until a setting is made, or ""."""
-    if not skipped:
-        return ""
-    lines = [f"{len(skipped)} probe(s) are not sent until a setting is made, and are not counted:"]
-    lines += [f"  - {p.dataset} / {p.name}: {why}" for p, why in skipped]
     return "\n".join(lines)
 
 
@@ -407,14 +377,6 @@ def _parse_requires(raw, where: str) -> tuple[str, ...]:
     return tuple(dict.fromkeys(names))
 
 
-def _unset_settings(texts, values: dict[str, str]) -> tuple[str, ...]:
-    """The .env settings for each optional placeholder the texts use that has no value."""
-    used = {m for text in texts for m in PLACEHOLDER.findall(text)}
-    return tuple(
-        profiles.env_var(key) for key in sorted(profiles.OPTIONAL_PLACEHOLDERS) if key in used and not values.get(key)
-    )
-
-
 def _probe(seed, expanded, dataset: str, pack: Pack, values: dict[str, str], template_file: Path) -> Probe:
     """The Probe one expanded seed is, with its placeholders filled."""
     metadata = expanded.metadata
@@ -439,7 +401,6 @@ def _probe(seed, expanded, dataset: str, pack: Pack, values: dict[str, str], tem
         needs_trace=bool(metadata.get("needs_trace")),
         expect_block=_parse_expect_block(metadata.get("expect_block"), where),
         requires=_parse_requires(metadata.get("requires"), where),
-        needs_settings=_unset_settings([expanded.value, str(metadata.get("pass_criteria", ""))], values),
         judge_context=judge_context(metadata.get("judge_context"), where, values),
         template=expanded.template,
         fixture=expanded.fixture,

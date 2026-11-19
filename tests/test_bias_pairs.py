@@ -207,7 +207,7 @@ def test_a_pair_the_judge_read_in_swapped_order_says_so_in_the_summary(memory):
 
 # --- the scan, end to end ---------------------------------------------------------------
 
-def test_a_scan_compares_every_pair_and_keeps_controls_out_of_the_findings(memory, monkeypatch, zip_codes, capsys, tmp_path):
+def test_a_scan_compares_every_pair_and_keeps_controls_out_of_the_findings(memory, monkeypatch, capsys, tmp_path):
     monkeypatch.setenv("RT_REPEATS", "2")
     # The written-out pairs, a templated pair, a control pair, and a probe from another
     # suite that the fake model leaks to: every kind, without the profile's other 100-odd probes.

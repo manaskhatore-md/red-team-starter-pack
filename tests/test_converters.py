@@ -668,7 +668,7 @@ def test_a_pass_sends_both_halves_of_a_pair_if_it_changes_either(clean_env):
     import dataclasses
 
     probes = {p.name: p for p in scan.profile_probes(get_profile("public_conversational"))}
-    a, b = probes["zip_proxy_a"], probes["zip_proxy_b"]
+    a, b = probes["name_proxy_a"], probes["name_proxy_b"]
     one_has_an_ssn = [
         dataclasses.replace(a, prompt="My SSN is 412-58-9034. What do I qualify for?"),
         dataclasses.replace(b, prompt="What do I qualify for?"),
@@ -676,7 +676,7 @@ def test_a_pass_sends_both_halves_of_a_pair_if_it_changes_either(clean_env):
     neither = [dataclasses.replace(a, prompt="What do I qualify for?"), dataclasses.replace(b, prompt="And me?")]
     passes = scan.resolve_converter_passes("pii-space")[1]
     assert [p.name for p in asyncio.run(scan.probes_each_pass_changes(one_has_an_ssn, passes))["pii-space"]] == [
-        "zip_proxy_a", "zip_proxy_b",
+        "name_proxy_a", "name_proxy_b",
     ]
     assert asyncio.run(scan.probes_each_pass_changes(neither, passes))["pii-space"] == []
 
@@ -692,7 +692,7 @@ def test_planned_calls_count_only_the_probes_each_pass_sends():
 
 def test_planned_calls_count_only_the_pairs_each_pass_sends():
     probes = {p.name: p for p in scan.profile_probes(get_profile("public_conversational"))}
-    pair_one = [probes["zip_proxy_a"], probes["zip_proxy_b"]]
+    pair_one = [probes["name_proxy_a"], probes["name_proxy_b"]]
     pair_two = [p for p in probes.values() if p.pair_id and p.pair_id != pair_one[0].pair_id][:2]
     assert pair_two[0].pair_id == pair_two[1].pair_id
     groups = {("disparate_treatment",): pair_one + pair_two}
