@@ -8,3 +8,8 @@ pytest>=8
 
 # Pre-commit hooks, including the gitleaks secret scan - see .pre-commit-config.yaml.
 pre-commit>=3
+
+# The linter (rules in pyproject.toml). Pinned so everyone gets the same findings.
+# When you bump it, bump the same version in .pre-commit-config.yaml (ruff-pre-commit
+# rev) and .github/workflows/lint.yml (version) to match.
+ruff==0.17.6

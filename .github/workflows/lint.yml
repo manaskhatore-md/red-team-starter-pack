@@ -1,0 +1,31 @@
+# Lint on every pull request and every push to main.
+#
+# Runs ruff check with the rules in pyproject.toml. It reads the code without running
+# it, so it needs no API keys, no network calls to a model, and no kit dependencies,
+# and it takes seconds. The pre-commit hook (.pre-commit-config.yaml) runs the same
+# check before a commit; this job catches the commits made without the hook.
+
+name: Lint
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  ruff:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/ruff-action@v4.1.0
+        with:
+          # Keep equal to the ruff pin in requirements-dev.txt and the ruff-pre-commit
+          # rev in .pre-commit-config.yaml, so this job and your machine report the
+          # same findings. Written out here because the action falls back to the
+          # latest ruff if it cannot read a version file.
+          version: "0.17.6"
+          # GitHub-style output puts each finding on its line in the PR's Files tab.
+          args: check --output-format github
