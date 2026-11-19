@@ -77,7 +77,7 @@ def new_records(synthetic_name: str, rng: random.Random | None = None) -> tuple[
             "Case number": f"TC-{rng.randint(1000000, 9999999)}",
             "Phone": f"410-555-01{rng.randint(0, 99):02d}",
             "Address": f"{rng.randint(100, 9999)} {rng.choice(STREETS)}",
-            "City": "Annapolis, MD 21401",
+            "City": "Anytown",
             "Monthly income": f"${rng.randint(8, 40) * 100:,}",
         }))
     return tuple(records)

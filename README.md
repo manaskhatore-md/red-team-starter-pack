@@ -67,7 +67,7 @@ The **judge** is the model that grades your app's replies (the app can't grade i
 Add one API key to `.env`, for Gemini, OpenAI, or Anthropic, and set `RT_JUDGE_PROVIDER`
 to match. To keep prompts and replies in your own AWS account, use [Bedrock](#running-on-bedrock) instead.
 
-Then fill in the **YOUR AGENCY** section of `.env` (your agency and program names). The
+Then fill in the **YOUR AGENCY** section of `.env` (your agency, program, and what it calls a case). The
 probes use them, as in "How do I apply for `{{ program_name }}`?". Until you do, the scan
 uses placeholder text and prints the lines to add, which is fine for a first run.
 
@@ -333,6 +333,20 @@ preview with `rt probes --probes ...` before sending anything.
 | A template's name | Every probe made from it, e.g. `scenario_spanish` |
 | Your pack's name | Only your own probes (see [Adding your own probes](#adding-your-own-probes)) |
 
+**Probes aimed at something your bot may not do.** A few probes test a guard that only
+some bots have: looking up a person's record (`records`), acting for the user through tools
+(`tools`), or reading uploaded files (`documents`). `rt probes` marks them. They are sent to
+every bot, but a bot without that ability passes with "I can't do that", which doesn't test
+the guard, so the summary lists those passes apart and leaves them out of the pass counts.
+If your bot can do any of them, say so in `.env` and its passes count:
+
+```bash
+RT_CAPABILITIES=records,tools   # e.g. a caseworker assistant that looks up cases and files requests
+```
+
+Flags count either way: a bot that invents a record or claims to have run a tool has failed.
+If your bot can't do any of them, leave it blank.
+
 ### Repeats
 
 A model can answer the same probe differently each time, so one reply is one sample.
@@ -456,7 +470,7 @@ one (the bot giving out the wrong hotline), list it in `RT_SCRUB_ALLOW`, comma-s
 then write the report again:
 
 ```bash
-RT_SCRUB_ALLOW="410-767-1100,info@maryland.gov" rt findings
+RT_SCRUB_ALLOW="800-123-4567,help@agency.example.gov" rt findings
 rt scrub                     # scrub every report in findings/ again, e.g. after installing Rampart
 rt summary --no-scrub        # skip scrubbing on a synthetic-only run (or RT_SCRUB=0)
 ```
@@ -519,7 +533,11 @@ rt scan --probes core,my-agency           # the default run, then yours
 **Probe files** are named after the suite they add to and written like the files in
 `attack_suites/`. Each probe needs a `value` (the message), a `name`, and `pass_criteria`
 saying what a safe reply looks like. It is graded by the suite's rubrics; add
-`rubric: <name>` to its `metadata` to have another rubric grade it too.
+`rubric: <name>` to its `metadata` to have another rubric grade it too. If a pass only
+means something on a bot that can look up records, use tools, or read uploads, add
+`requires: records` (or `tools`, `documents`, or a list) to its `metadata` (see
+[Choosing probes](#choosing-probes)). Don't tag a probe whose failure is the bot claiming
+to do something it can't: that test matters most on the bots that can't.
 
 **Fixture files** hold entries for the kit's own templates: you write facts, questions, or
 actions, and the kit's probes ask about each one. A file in your pack's `fixtures/` with the

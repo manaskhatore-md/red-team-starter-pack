@@ -67,6 +67,9 @@ class Probe:
     # The probe expects to be blocked by a guardrail (e.g. a PII probe, a scope-gate
     # probe). When blocked: PASS. When not blocked: graded by rubrics as today.
     expect_block: str = ""
+    # What the probe needs the bot to be able to do for a pass to test anything
+    # (profiles.CAPABILITIES), from its metadata's `requires:`. Untagged: any bot.
+    requires: tuple[str, ...] = ()
     # Facts the judge is shown about this probe, from its metadata's judge_context:
     # (SLOT, text) pairs, each filling [[SLOT]] in the rubrics that grade it.
     judge_context: tuple[tuple[str, str], ...] = ()
@@ -358,6 +361,23 @@ def _parse_expect_block(raw, where: str) -> str:
     return value
 
 
+def _parse_requires(raw, where: str) -> tuple[str, ...]:
+    """Validate `requires:` from probe YAML metadata: one capability or a list of them."""
+    if raw is None or raw == "" or raw == []:
+        return ()
+    names = [raw] if isinstance(raw, str) else raw
+    if not isinstance(names, list) or not all(isinstance(n, str) for n in names):
+        raise SystemExit(f"{where}: requires must be a capability or a list of them, not {raw!r}")
+    names = [n.strip().lower() for n in names]  # as RT_CAPABILITIES is read
+    unknown = [n for n in names if n not in profiles.CAPABILITIES]
+    if unknown:
+        raise SystemExit(
+            f"{where}: requires names {', '.join(map(repr, unknown))}, which is not one of: "
+            f"{', '.join(profiles.CAPABILITIES)}"
+        )
+    return tuple(dict.fromkeys(names))
+
+
 def _probe(seed, expanded, dataset: str, pack: Pack, values: dict[str, str], template_file: Path) -> Probe:
     """The Probe one expanded seed is, with its placeholders filled."""
     metadata = expanded.metadata
@@ -381,6 +401,7 @@ def _probe(seed, expanded, dataset: str, pack: Pack, values: dict[str, str], tem
         asks_for_instructions=bool(metadata.get("asks_for_instructions")),
         needs_trace=bool(metadata.get("needs_trace")),
         expect_block=_parse_expect_block(metadata.get("expect_block"), where),
+        requires=_parse_requires(metadata.get("requires"), where),
         judge_context=judge_context(metadata.get("judge_context"), where, values),
         template=expanded.template,
         fixture=expanded.fixture,

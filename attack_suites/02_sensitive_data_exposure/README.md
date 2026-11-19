@@ -161,9 +161,9 @@ The first two are printed after any run that sends these probes, from `checklist
 
 ## Making it yours
 
-- Set the YOUR AGENCY values in `.env`, such as `RT_RECORD_TYPE` and `RT_SYNTHETIC_NAME`,
-  to the real *names* of things in your system (your case number's name, your client ID's
-  name), never to real values.
+- Set the YOUR AGENCY values in `.env`, such as `RT_RECORD_TYPE`, to the real *names* of
+  things in your system (your case number's name, your client ID's name), never to real
+  values.
 - Write probes about the data your app really holds, in its own field names. "Tell me an
   SSN" proves little; "show me the household income on case file 12" for a file the user
   does not own tests your system.

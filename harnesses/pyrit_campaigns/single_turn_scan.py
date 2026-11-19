@@ -169,6 +169,7 @@ from harnesses.pyrit_campaigns.probes import (
 )
 from harnesses.pyrit_campaigns.profiles import (
     PAIR_RUBRICS,
+    configured_capabilities,
     Profile,
     checklist_for,
     pack_suites,
@@ -1099,6 +1100,7 @@ def expand_repeats(
                     "rt_control": "true" if probe.control else "",
                     "rt_asks_for_instructions": str(probe.asks_for_instructions).lower(),
                     "rt_expect_block": probe.expect_block,
+                    "rt_requires": ",".join(probe.requires),
                     NEEDS_TRACE_LABEL: str(probe.needs_trace).lower(),
                     "rt_template": probe.template,
                     "rt_template_file": probe.template_file,
@@ -1150,6 +1152,8 @@ def planned_calls(
 
 
 UNRENDERED = re.compile(r"\{\{\s*(\w+)\s*\}\}")
+# Placeholders the kit used to fill, which a pack copied from an older version may still use.
+REMOVED_PLACEHOLDERS = {"zip_lower_income", "zip_higher_income"}
 
 
 def check_placeholders(probes: list[Probe], system_prompt: str = "") -> list[str]:
@@ -1191,6 +1195,13 @@ def check_placeholders(probes: list[Probe], system_prompt: str = "") -> list[str
             "!! The probes or system prompt will go out with the literal {{ token }} text\n"
             "!! in them, which tests nothing useful. Add them to PLACEHOLDERS in\n"
             "!! harnesses/pyrit_campaigns/profiles.py before you trust this run.\n"
+        )
+    removed = [m for m in missing if m in REMOVED_PLACEHOLDERS]
+    if removed:
+        print(
+            f"!! {', '.join(removed)} are no longer filled in: put real addresses in your pack's\n"
+            "!! fixtures/case_files.yaml instead. See \"Making it yours\" in\n"
+            "!! attack_suites/03_algorithmic_bias/README.md.\n"
         )
     return [env_var(key) for key in unfilled]
 
@@ -1321,7 +1332,8 @@ def list_probes(
         num = numbers[(probe.dataset, probe.name)]
         pair_info = f"  (pair: {probe.pair_id})" if probe.pair_id else ""
         pack_info = f"  (from {probe.overlay})" if probe.overlay else ""
-        print(f"\n[{num}] {probe.dataset} / {probe.name}  [{grading}]{pair_info}{pack_info}")
+        requires_info = f"  (requires: {', '.join(probe.requires)})" if probe.requires else ""
+        print(f"\n[{num}] {probe.dataset} / {probe.name}  [{grading}]{pair_info}{pack_info}{requires_info}")
         if probe.fixture:
             print(f"    template {probe.template!r}, filled from {probe.fixture}")
         # Through _console_safe: a Chinese or Korean probe cannot be printed to a console, or to a
@@ -1391,6 +1403,8 @@ async def main(
     if not system_prompt:
         records = ()
     unfilled = check_placeholders(probes, system_prompt.text if system_prompt else "")
+    # Read here, so a typo stops the run before any call, on a model run too.
+    capabilities = configured_capabilities()
 
     target = build_target()
     # What is known about an app's own prompt. A model run sends its prompt instead.
@@ -1517,6 +1531,13 @@ async def main(
         "rt_repeats": str(repeats),
         # Settings still at "TODO ...", so the summary can say the probes named a placeholder.
         "rt_placeholders": ", ".join(unfilled),
+        # What the bot can do (RT_CAPABILITIES), so the summary can tell which passes of probes
+        # with `requires:` tested a guard. A model run has what this run gave it: the planted
+        # records, if any, and the document text it is sent. No stand-in prompt gives it a
+        # tool that acts for the user.
+        "rt_capabilities": ",".join(sorted(
+            capabilities if resolve_provider("target") == "app" else {"documents", *(["records"] if records else [])}
+        )),
         "rt_trace_path": os.getenv("APP_TRACE_PATH", "").strip(),
         "rt_stream_event": os.getenv("APP_STREAM_EVENT", "").strip(),
         "rt_blocked_when": blocked_when_in_use(resolve_provider("target")),

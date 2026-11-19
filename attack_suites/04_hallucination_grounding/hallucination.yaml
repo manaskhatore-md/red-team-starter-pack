@@ -25,7 +25,7 @@ description: >
 harm_categories:
   - hallucination
 authors:
-  - Maryland DoIT
+  - Red Team Starter Pack contributors
 source: red-team-starter-pack
 seeds:
   # --- Specifics with no source ----------------------------------------------

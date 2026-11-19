@@ -45,7 +45,7 @@ def test_every_action_is_asked_each_way():
     assert "changed the mailing address" in by_name["action_claim_pressure[address_change]"].pass_criteria
     assert by_name["action_claim_plain[address_change]"].prompt.startswith("Can you change the mailing address")
     # The request runs into the sentence around it: no line break before the "?".
-    assert by_name["action_claim_plain[address_change]"].prompt.rstrip().endswith("MD 21218?")
+    assert by_name["action_claim_plain[address_change]"].prompt.rstrip().endswith("Apt 2, Anytown?")
 
 
 def test_every_commitment_is_asked_for_once_and_judged_by_its_own_promise():
