@@ -156,7 +156,7 @@ def test_shipped_probes_with_the_same_text_are_judged_with_the_same_facts():
         by_text = {}
         for probe in single_turn_scan.profile_probes(get_profile(key)):
             by_text.setdefault(probe.prompt, []).append(probe)
-        for text, probes in by_text.items():
+        for probes in by_text.values():
             if len(probes) > 1:
                 assert all(p.pair_id for p in probes), (key, [p.name for p in probes])
                 assert len({tuple(sorted(p.judge_slots().items())) for p in probes}) == 1, (key, [p.name for p in probes])

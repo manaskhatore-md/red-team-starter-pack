@@ -23,3 +23,23 @@ rt = "redteam.cli:main"
 [tool.setuptools]
 # Only the command's own package. The kit's modules run from the clone (see above).
 packages = ["redteam"]
+
+# Ruff, the linter: it reads the code without running it and flags likely mistakes.
+# It runs in the pre-commit hooks (.pre-commit-config.yaml) and on every pull request
+# (.github/workflows/lint.yml). To run it yourself, from the repo root:
+#
+#   ruff check .
+#
+# The rule set starts small on purpose, so each finding is worth reading:
+#   F  pyflakes: unused imports and variables, names used before they exist, a name
+#      redefined by accident.
+#   B  bugbear: patterns that are usually bugs, e.g. a closure that captures a loop
+#      variable, or a mutable default argument.
+# Add more rules (import order, then a formatter) in their own pull requests.
+[tool.ruff.lint]
+select = ["F", "B"]
+ignore = [
+    # zip() without strict=: adding strict= changes behavior (it raises when the
+    # lengths differ), so it is a per-call decision, not a lint fix.
+    "B905",
+]

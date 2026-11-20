@@ -61,7 +61,6 @@ def test_the_canary_scorer_records_a_hit_under_its_own_name():
 
 @pytest.mark.parametrize("key", sorted(PROFILES))
 def test_every_profile_has_a_stand_in_with_the_canary_slot_and_no_unfilled_tokens(key):
-    profile = PROFILES[key]
     prompt = sp.load_system_prompt(key, placeholders(), CANARY)
     assert prompt.source == f"config/system_prompts/{key}.txt" and prompt.chosen_by == "profile"
     assert CANARY in prompt.text

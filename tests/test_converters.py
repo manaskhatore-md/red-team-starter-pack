@@ -483,7 +483,8 @@ def test_multi_turn_campaigns_run_control_and_encoded_passes(monkeypatch, clean_
             async def execute_attack_async(self, *, attack, objectives, field_overrides, **kwargs):
                 has_converters = bool(getattr(attack, "_request_converters", None))
                 enc = field_overrides[0]["memory_labels"]["rt_encoding"]
-                recorded_passes.append((enc, has_converters, len(objectives)))
+                # This loop pass's list: the class is redefined and used within each pass.
+                recorded_passes.append((enc, has_converters, len(objectives)))  # noqa: B023
                 return SimpleNamespace(completed_results=[], incomplete_objectives=[])
 
         clean_env.setenv("RT_PROFILE", "internal_productivity")

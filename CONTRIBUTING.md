@@ -27,11 +27,27 @@ calls a model, and a failure there is a bug in the kit.
 ## Before you commit
 
 Turn on the pre-commit hooks once per clone, so gitleaks checks every commit for secrets
-(this repo is public):
+(this repo is public) and ruff lints the Python files you changed:
 
 ```bash
 pre-commit install
 ```
+
+Ruff reads the code without running it and flags likely mistakes: an unused import or
+variable, a name used before it exists, a closure that captures a loop variable. The rules
+are in `pyproject.toml`. The same check runs on every pull request (the Lint job), so a
+finding left in shows as a failed check on the PR. To run it yourself, or fix the
+findings it can fix:
+
+```bash
+ruff check .
+ruff check --fix .
+```
+
+Read what `--fix` removes before you commit it. Some imports look unused but are looked
+up by name: the ones marked `# noqa: F401` in the multi-turn campaigns are patch points
+for the tests. If ruff is wrong about a line, add `# noqa: CODE` with the reason, rather
+than turning the rule off for everyone.
 
 ## Where things are
 
@@ -39,10 +55,11 @@ pre-commit install
 README.md, CONTRIBUTING.md
 .env.example                 every common setting, with a one-line description
 requirements.txt             what the campaigns need: PyRIT (1.1.0 or later), LiteLLM, provider SDKs
-requirements-dev.txt         adds pytest and pre-commit
-pyproject.toml               only for `uv pip install -e .`, which installs the rt command
+requirements-dev.txt         adds pytest, pre-commit, and ruff
+pyproject.toml               `uv pip install -e .` (installs the rt command), and ruff's rules
+.pre-commit-config.yaml      the hooks run before each commit: gitleaks and ruff
 rt, rt.cmd                   the rt command without installing it
-.github/workflows/           the CI gate, off until you enable it
+.github/workflows/           the Lint job on every pull request, and the red team CI gate (off until you enable it)
 
 redteam/cli.py               the rt command: each rt COMMAND runs one module below
 config/objectives/           each profile's multi-turn goals

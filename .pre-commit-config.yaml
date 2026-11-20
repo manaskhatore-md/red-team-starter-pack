@@ -14,8 +14,17 @@
 # pre-commit's cache. If policy blocks that, install the gitleaks binary instead
 # (https://github.com/gitleaks/gitleaks/releases) and change the hook id to
 # gitleaks-system.
+#
+# ruff-check runs the linter (rules in pyproject.toml) on the Python files you are
+# committing. It reports problems and stops the commit; it does not change your
+# files. Keep its rev equal to the ruff version in requirements-dev.txt, which the
+# lint job on pull requests uses.
 repos:
   - repo: https://github.com/gitleaks/gitleaks
     rev: v8.30.1
     hooks:
       - id: gitleaks
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.17.6
+    hooks:
+      - id: ruff-check

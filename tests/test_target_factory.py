@@ -286,7 +286,8 @@ def failing_provider(clean_env, fake_keys, memory):
         state.update(status=status, hits=0)
         target = build_target(provider="openai")
         message = Message(message_pieces=[MessagePiece(role="user", original_value="hi", conversation_id="c")])
-        with pytest.raises(Exception):
+        # Any error: the error type differs by status code, and the test counts retries.
+        with pytest.raises(Exception):  # noqa: B017
             asyncio.run(target.send_prompt_async(message=message))
         return state["hits"]
 
