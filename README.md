@@ -233,7 +233,7 @@ provider's default.
 ```ini
 RT_PROVIDER=gemini           # the model under test: gemini | openai | anthropic | bedrock | vertex | app
 RT_MODEL=...                 # optional; ignored with app
-RT_JUDGE_PROVIDER=...        # grades the replies; unset uses RT_PROVIDER. Use a different one
+RT_JUDGE_PROVIDER=...        # grades the replies; unset uses RT_PROVIDER (required for app). Use a different one
 RT_JUDGE_MODEL=...           # pin it: a judge that changes between runs changes the results
 RT_ADVERSARIAL_PROVIDER=...  # writes the attacks in multi-turn campaigns; unset uses the judge's
 RT_ADVERSARIAL_MODEL=...

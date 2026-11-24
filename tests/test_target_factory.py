@@ -604,12 +604,95 @@ def test_app_target_is_labeled_by_host_and_path(fake_app):
     assert re.fullmatch(r"app:127\.0\.0\.1:\d+/test/chat", model_name(build_target()))
 
 
-def test_a_model_setting_is_ignored_for_an_app(fake_app, clean_env, capsys):
+def test_a_model_setting_is_ignored_for_an_app(fake_app, fake_keys, clean_env, capsys):
     # The app picks its own model. A leftover RT_MODEL from a model run used to stop
-    # the run as a provider mismatch.
+    # the run as a provider mismatch, and also triggered a false "same as target"
+    # warning when the judge legitimately used that model.
     clean_env.setenv("RT_MODEL", "gemini/gemini-3.8-flash")
+    assert target_factory.resolve_model("target") is None
     assert _send_to_app() == "hello from the app"
     assert "RT_MODEL=gemini/gemini-3.8-flash is ignored" in capsys.readouterr().out
+
+    clean_env.setenv("RT_JUDGE_PROVIDER", "gemini")
+    build_scoring_target()
+    assert "model under test" not in capsys.readouterr().out
+
+    clean_env.setenv("RT_ADVERSARIAL_PROVIDER", "gemini")
+    build_target("adversarial")
+    assert "model under test" not in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(
+    "role, env, expected",
+    [
+        (
+            "judge",
+            {"RT_PROVIDER": "app"},
+            "The judge cannot use provider 'app' (RT_JUDGE_PROVIDER is unset, so it falls back to RT_PROVIDER=app)",
+        ),
+        (
+            "judge",
+            {"RT_PROVIDER": "app", "RT_JUDGE_MODEL": "bedrock/converse/us.anthropic.claude-sonnet-4-5-20250929-v1:0"},
+            "Set RT_JUDGE_PROVIDER to a model provider",
+        ),
+        (
+            "judge",
+            {"RT_PROVIDER": "gemini", "RT_JUDGE_PROVIDER": "app"},
+            "The judge cannot use provider 'app' (RT_JUDGE_PROVIDER=app)",
+        ),
+        (
+            "adversarial",
+            {"RT_PROVIDER": "app"},
+            "RT_ADVERSARIAL_PROVIDER and RT_JUDGE_PROVIDER are unset, so it falls back to RT_PROVIDER=app). "
+            "The app under test cannot act as the attacker. Set RT_JUDGE_PROVIDER to a model provider",
+        ),
+        (
+            "adversarial",
+            {"RT_PROVIDER": "gemini", "RT_JUDGE_PROVIDER": "app"},
+            "RT_ADVERSARIAL_PROVIDER is unset, so it falls back to RT_JUDGE_PROVIDER=app). "
+            "The app under test cannot act as the attacker. Set RT_JUDGE_PROVIDER to a model provider",
+        ),
+        (
+            "adversarial",
+            {"RT_PROVIDER": "app", "RT_JUDGE_PROVIDER": "anthropic", "RT_ADVERSARIAL_PROVIDER": "app"},
+            "The attacker cannot use provider 'app' (RT_ADVERSARIAL_PROVIDER=app). "
+            "The app under test cannot act as the attacker. Set RT_ADVERSARIAL_PROVIDER to a model provider",
+        ),
+    ],
+)
+def test_app_cannot_be_judge_or_attacker(fake_app, clean_env, capsys, role, env, expected):
+    for key, value in env.items():
+        clean_env.setenv(key, value)
+    with pytest.raises(SystemExit) as e:
+        build_target(role)
+    assert expected in str(e.value)
+    assert fake_app["requests"] == []
+    assert "is ignored" not in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("role", ["judge", "adversarial"])
+def test_explicit_provider_app_is_rejected_for_non_target_roles(clean_env, role):
+    clean_env.setenv("APP_TRANSPORT", "browser")
+    with pytest.raises(SystemExit, match="cannot use provider 'app'.*Pass a model provider"):
+        build_target(role, provider="app")
+
+
+def test_whitespace_only_judge_provider_is_treated_as_unset_in_mismatch_error(fake_keys, clean_env):
+    clean_env.setenv("RT_JUDGE_PROVIDER", "   ")
+    clean_env.setenv("RT_JUDGE_MODEL", "bedrock/converse/us.anthropic.claude-opus-5-5")
+    with pytest.raises(SystemExit, match="RT_JUDGE_PROVIDER is unset"):
+        build_scoring_target()
+
+
+def test_unknown_non_target_provider_options_omit_app(clean_env):
+    with pytest.raises(SystemExit) as target_err:
+        build_target("target", provider="nope")
+    assert "app" in str(target_err.value)
+
+    for role in ("judge", "adversarial"):
+        with pytest.raises(SystemExit) as err:
+            build_target(role, provider="nope")
+        assert "app" not in str(err.value)
 
 
 # --- an app that takes the whole conversation with each request ({HISTORY}) ---------

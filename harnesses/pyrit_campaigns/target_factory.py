@@ -126,7 +126,7 @@ ROLES: dict[str, tuple[str, str, str | None]] = {
 def resolve_provider(role: str = "target") -> str:
     """The provider a role runs on: its own setting, else the fallback role's."""
     provider_var, _model_var, fallback = ROLES[role]
-    provider = os.getenv(provider_var)
+    provider = os.getenv(provider_var, "").strip()
     if provider:
         return provider.lower()
     return resolve_provider(fallback) if fallback else "gemini"
@@ -143,14 +143,46 @@ def resolve_model(role: str = "target", provider: str | None = None) -> str | No
     """The model a role calls: its own model setting, else the provider's default.
 
     The model setting applies only on the role's own provider. Asked about another
-    provider, this returns that provider's default instead.
+    provider, this returns that provider's default instead. Returns None for "app"
+    because the deployed app picks its own model.
     """
     role_provider = resolve_provider(role)
     provider = (provider or role_provider).lower()
+    if provider == "app":
+        return None
     model = os.getenv(ROLES[role][1])
     if model and provider == role_provider:
         return model
     return default_model(provider)
+
+
+def _reject_app_for_role(role: str, *, explicit_provider: bool) -> None:
+    """Stop when a non-target role (judge or attacker) resolves to provider 'app'."""
+    name, reason = {
+        "judge": ("judge", "The app under test cannot grade its own replies."),
+        "adversarial": ("attacker", "The app under test cannot act as the attacker."),
+    }[role]
+    provider_var, _model_var, fallback = ROLES[role]
+    model_providers = ", ".join((*PROVIDER_DEFAULTS, "bedrock", "vertex"))
+    if explicit_provider:
+        source = ""
+        fix = "Pass a model provider"
+    elif os.getenv(provider_var, "").strip():
+        source = f" ({provider_var}=app)"
+        fix = f"Set {provider_var} to a model provider"
+    else:
+        unset = [provider_var]
+        cur = fallback
+        while cur and not os.getenv(ROLES[cur][0], "").strip():
+            unset.append(ROLES[cur][0])
+            cur = ROLES[cur][2]
+        origin = ROLES[cur][0] if cur else "RT_PROVIDER"
+        if len(unset) == 1:
+            source = f" ({unset[0]} is unset, so it falls back to {origin}=app)"
+        else:
+            source = f" ({' and '.join(unset)} are unset, so it falls back to {origin}=app)"
+        fix = "Set RT_JUDGE_PROVIDER to a model provider"
+    raise SystemExit(f"The {name} cannot use provider 'app'{source}. {reason} {fix} ({model_providers}).")
 
 
 def build_target(role: str = "target", *, provider: str | None = None, model: str | None = None) -> PromptTarget:
@@ -161,16 +193,22 @@ def build_target(role: str = "target", *, provider: str | None = None, model: st
             attacker in multi-turn campaigns). Picks which settings are read - see
             ROLES.
         provider: Overrides the role's provider setting. One of PROVIDER_DEFAULTS,
-            "bedrock", "vertex", or "app".
+            "bedrock", "vertex", or "app" (target role only).
         model: Overrides the role's model setting.
     """
-    provider = (provider or resolve_provider(role)).lower()
-    model = model or resolve_model(role, provider)
-    if provider == "app" and model:
-        # The app picks its own model, so a model setting does nothing - say so rather
-        # than let the run look like it tests that model.
-        print(f"Note: {ROLES[role][1]}={model} is ignored - with provider app, the app picks its own model.")
+    explicit_provider = (provider or "").strip().lower()
+    provider = explicit_provider or resolve_provider(role)
+    if provider == "app":
+        if role != "target":
+            _reject_app_for_role(role, explicit_provider=bool(explicit_provider))
+        ignored = model or (os.getenv(ROLES[role][1]) if resolve_provider(role) == "app" else None)
+        if ignored:
+            # The app picks its own model, so a model setting does nothing - say so rather
+            # than let the run look like it tests that model.
+            print(f"Note: {ROLES[role][1]}={ignored} is ignored - with provider app, the app picks its own model.")
         model = None
+    else:
+        model = model or resolve_model(role, provider)
     _check_model_matches_provider(role, provider, model)
     label = {"target": "Target", "judge": "Judge", "adversarial": "Attacker"}[role]
     if role != "target" and model and model == resolve_model("target"):
@@ -268,9 +306,8 @@ def build_target(role: str = "target", *, provider: str | None = None, model: st
         print(f"{label}: {target._endpoint} (app)")
         return target
 
-    raise SystemExit(
-        f"Unknown {ROLES[role][0]} {provider!r}. Options: {', '.join(PROVIDER_DEFAULTS)}, bedrock, vertex, app"
-    )
+    options = (*PROVIDER_DEFAULTS, "bedrock", "vertex", *(["app"] if role == "target" else []))
+    raise SystemExit(f"Unknown {ROLES[role][0]} {provider!r}. Options: {', '.join(options)}")
 
 
 # The model-id prefix LiteLLM routes on, for each provider that has one.
@@ -303,7 +340,7 @@ def _check_model_matches_provider(role: str, provider: str, model: str | None) -
     if owner is None or owner == provider:
         return
     provider_var, model_var, fallback = ROLES[role]
-    if os.getenv(provider_var):
+    if os.getenv(provider_var, "").strip():
         why = f"{provider_var}={provider}"
     elif fallback:
         why = f"{provider_var} is unset, so it follows {ROLES[fallback][0]}"
