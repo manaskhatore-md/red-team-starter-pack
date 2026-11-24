@@ -50,7 +50,7 @@ SETTINGS = {
 SETTING_HELP = {
     "--profile": "e.g. public_conversational; see Deployment profiles in the README",
     "--provider": "the model under test: app, gemini, anthropic, openai, bedrock, vertex",
-    "--judge": "the model that grades the replies (same choices as --provider)",
+    "--judge": "the model that grades the replies: gemini, anthropic, openai, bedrock, vertex",
     "--repeats": "send each probe or objective N times",
 }
 # rt all's own option. Like SETTINGS, no module may have an option by this name.

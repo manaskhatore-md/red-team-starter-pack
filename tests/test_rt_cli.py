@@ -51,6 +51,7 @@ def test_settings_are_taken_out_and_set_for_the_one_command():
     assert _only("--provider app --judge gemini adaptive").settings == {
         "RT_PROVIDER": "app", "RT_JUDGE_PROVIDER": "gemini",
     }
+    assert "app" not in cli.SETTING_HELP["--judge"]
 
 
 def test_only_exact_setting_names_are_taken():
